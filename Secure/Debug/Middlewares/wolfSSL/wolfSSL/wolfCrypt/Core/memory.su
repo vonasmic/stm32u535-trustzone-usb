@@ -1,0 +1,7 @@
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:591:31:ForceZero	24	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:112:5:wolfSSL_SetAllocators	24	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:122:5:wolfSSL_GetAllocators	24	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:331:7:wolfSSL_Malloc	24	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:418:6:wolfSSL_Free	16	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:459:7:wolfSSL_Realloc	24	static
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/memory.c:1681:6:wc_ForceZero	16	static

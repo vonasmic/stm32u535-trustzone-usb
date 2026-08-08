@@ -1,0 +1,17 @@
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:892:13:FLASH_MassErase	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:322:19:HAL_FLASHEx_OBProgram	24	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:415:6:HAL_FLASHEx_OBGetConfig	8	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:474:19:HAL_FLASHEx_ConfigBBAttributes	8	static,ignoring_inline_asm
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:548:6:HAL_FLASHEx_GetConfigBBAttributes	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:601:6:HAL_FLASHEx_EnableSecHideProtection	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:642:6:HAL_FLASHEx_ConfigPrivMode	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:664:10:HAL_FLASHEx_GetPrivMode	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:680:19:HAL_FLASHEx_ConfigSecInversion	16	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:712:10:HAL_FLASHEx_GetSecInversion	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:727:19:HAL_FLASHEx_EnablePowerDown	16	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:816:19:HAL_FLASHEx_ConfigLowPowerRead	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:843:10:HAL_FLASHEx_GetLowPowerRead	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:856:6:HAL_FLASHEx_GetOperation	0	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:925:6:FLASH_PageErase	8	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:184:19:HAL_FLASHEx_Erase	32	static
+C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_flash_ex.c:256:19:HAL_FLASHEx_Erase_IT	24	static

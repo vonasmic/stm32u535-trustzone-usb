@@ -1,0 +1,8 @@
+../USBX/App/ux_device_descriptors.c:641:14:USBD_FrameWork_AssignEp	20	static
+../USBX/App/ux_device_descriptors.c:312:13:USBD_Desc_GetString.part.0	16	static
+../USBX/App/ux_device_descriptors.c:363:17:USBD_Device_Framework_Builder.constprop.isra	56	static
+../USBX/App/ux_device_descriptors.c:144:10:USBD_Get_Device_Framework_Speed	16	static
+../USBX/App/ux_device_descriptors.c:185:10:USBD_Get_String_Framework	32	static
+../USBX/App/ux_device_descriptors.c:236:10:USBD_Get_Language_Id_Framework	8	static
+../USBX/App/ux_device_descriptors.c:257:10:USBD_Get_Interface_Number	12	static
+../USBX/App/ux_device_descriptors.c:289:10:USBD_Get_Configuration_Number	0	static

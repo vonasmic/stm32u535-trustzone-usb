@@ -1,0 +1,12 @@
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:501:31:XorWords	2
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:513:31:xorbuf	7
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:591:31:ForceZero	5
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:668:33:ctMaskWord32GTE	1
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:773:37:min	1
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:73:5:wc_PRF	24
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:223:5:wc_PRF_TLSv1	11
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:281:5:wc_PRF_TLS	7
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:346:9:wc_Tls13_HKDF_Extract_ex	4
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:412:9:wc_Tls13_HKDF_Extract	1
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:421:9:wc_Tls13_HKDF_Expand_Label_ex	7
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/kdf.c:502:9:wc_Tls13_HKDF_Expand_Label	1

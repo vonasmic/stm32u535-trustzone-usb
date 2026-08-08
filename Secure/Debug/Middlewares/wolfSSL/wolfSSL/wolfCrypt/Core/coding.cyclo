@@ -1,0 +1,5 @@
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/coding.c:55:23:Base64_Char2Val_CT	1
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/coding.c:96:23:Base64_Char2Val_by_table	1
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/coding.c:120:5:Base64_SkipNewline	15
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/coding.c:170:5:Base64_Decode_nonCT	35
+C:/tmp/test/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/coding.c:273:5:Base64_Decode	27
