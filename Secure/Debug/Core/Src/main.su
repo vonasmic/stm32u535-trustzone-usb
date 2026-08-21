@@ -1,9 +1,4 @@
-../Core/Src/main.c:76:5:main	8	static
-../Core/Src/main.c:138:13:NonSecure_Init	24	static,ignoring_inline_asm
-../Core/Src/main.c:158:6:SystemClock_Config	160	static
-../Core/Src/main.c:221:13:MX_GTZC_S_Init	280	static
-../Core/Src/main.c:271:13:MX_ICACHE_Init	4	static
-../Core/Src/main.c:292:13:MX_RNG_Init	8	static
-../Core/Src/main.c:319:13:MX_SAU_Init	4	static
-../Core/Src/main.c:340:13:MX_GPIO_Init	16	static
-../Core/Src/main.c:366:6:Error_Handler	4	static,ignoring_inline_asm
+../Core/Src/main.c:228:13:MX_GTZC_S_Init	280	static,ignoring_inline_asm
+../Core/Src/main.c:162:6:SystemClock_Config	160	static,ignoring_inline_asm
+../Core/Src/main.c:80:5:main	64	static,ignoring_inline_asm
+../Core/Src/main.c:442:6:Error_Handler	0	static,ignoring_inline_asm

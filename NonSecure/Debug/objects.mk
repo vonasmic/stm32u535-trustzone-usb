@@ -3,7 +3,7 @@
 # Toolchain: GNU Tools for STM32 (14.3.rel1)
 ################################################################################
 
-USER_OBJS := C:/tmp/test/Secure/Debug/secure_nsclib.o
+USER_OBJS := C:/tmp/SE_firmware/Secure/Debug/secure_nsclib.o
 
 LIBS :=
 

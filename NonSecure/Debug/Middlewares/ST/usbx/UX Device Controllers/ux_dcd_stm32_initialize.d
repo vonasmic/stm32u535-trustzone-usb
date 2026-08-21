@@ -1,11 +1,11 @@
 Middlewares/ST/usbx/UX Device Controllers/ux_dcd_stm32_initialize.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32_initialize.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32_initialize.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \
  ../../Middlewares/ST/usbx/common/core/inc/ux_utility.h \
  ../../Middlewares/ST/usbx/common/core/inc/ux_system.h \
- C:/tmp/test/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h \
  ../USBX/Target/ux_stm32_config.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h \
  ../Core/Inc/stm32u5xx_hal_conf.h \
@@ -30,6 +30,8 @@ Middlewares/ST/usbx/UX Device Controllers/ux_dcd_stm32_initialize.o: \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_flash_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pwr.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pwr_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h \
@@ -40,7 +42,7 @@ Middlewares/ST/usbx/UX Device Controllers/ux_dcd_stm32_initialize.o: \
 ../USBX/App/ux_user.h:
 ../../Middlewares/ST/usbx/common/core/inc/ux_utility.h:
 ../../Middlewares/ST/usbx/common/core/inc/ux_system.h:
-C:/tmp/test/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h:
+C:/tmp/SE_firmware/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h:
 ../USBX/Target/ux_stm32_config.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h:
 ../Core/Inc/stm32u5xx_hal_conf.h:
@@ -65,6 +67,8 @@ C:/tmp/test/Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm3
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_flash_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pwr.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pwr_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h:

@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/UX Device CoreStack/ux_device_stack_class_unregister.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/core/src/ux_device_stack_class_unregister.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/core/src/ux_device_stack_class_unregister.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

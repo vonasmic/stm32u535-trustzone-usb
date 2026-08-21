@@ -39,16 +39,16 @@ ENTRY(Reset_Handler)
 _estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
 _sstack = _estack - _Min_Stack_Size;
 
-_Min_Heap_Size = 0x200;	/* required amount of heap  */
-_Min_Stack_Size = 0x400;	/* required amount of stack */
+_Min_Heap_Size = 0x8000;	/* TLS 1.3 + ML-KEM heap */
+_Min_Stack_Size = 0x1000;	/* TLS + NSC call depth */
 
 /* Memories definition */
 MEMORY
 {
   RAM	(xrw)	 : ORIGIN = 0x30000000,	LENGTH = 192K     /* Memory is divided. Actual start is 0x30000000 and actual length is 256K */
   SRAM4	(xrw)    : ORIGIN = 0x38000000,	LENGTH = 16K
-  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 120K     /* Memory is divided. Actual start is 0x0C000000 and actual length is 256K */
-  FLASH_NSC	(rx) : ORIGIN = 0x0C01E000,	LENGTH = 8K       /* Non-Secure Call-able region */
+  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 184K    /* pages 0-22, 8KB pages */
+  FLASH_NSC	(rx) : ORIGIN = 0x0C02E000,	LENGTH = 8K      /* page 23, Secure+NSC */
 }
 
 /* Sections */
@@ -134,7 +134,7 @@ SECTIONS
   .gnu.sgstubs :
   {
     . = ALIGN(4);
-    *(.gnu.sgstubs*)   /* Secure Gateway stubs */
+    KEEP(*(.gnu.sgstubs*))   /* Secure Gateway stubs — NSC entry points */
     . = ALIGN(4);
   } >FLASH_NSC
 

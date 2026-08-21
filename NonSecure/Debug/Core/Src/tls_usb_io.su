@@ -1,0 +1,9 @@
+../Core/Src/tls_usb_io.c:26:13:tls_usb_drain_tx	32	static
+../Core/Src/tls_usb_io.c:72:6:tls_usb_io_reset	0	static
+../Core/Src/tls_usb_io.c:67:6:tls_usb_io_init	0	static
+../Core/Src/tls_usb_io.c:79:6:tls_usb_cdc_activate	0	static
+../Core/Src/tls_usb_io.c:86:6:tls_usb_cdc_deactivate	8	static
+../Core/Src/tls_usb_io.c:95:6:tls_usb_cdc_parameter_change	24	static
+../Core/Src/tls_usb_io.c:116:5:tls_usb_dtr_asserted	0	static
+../Core/Src/tls_usb_io.c:121:5:tls_usb_connected	0	static
+../Core/Src/tls_usb_io.c:126:6:tls_usb_poll	24	static

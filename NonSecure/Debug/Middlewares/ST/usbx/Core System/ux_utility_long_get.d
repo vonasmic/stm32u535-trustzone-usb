@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/Core System/ux_utility_long_get.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/core/src/ux_utility_long_get.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/core/src/ux_utility_long_get.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

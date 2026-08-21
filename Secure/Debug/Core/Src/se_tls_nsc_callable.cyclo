@@ -1,0 +1,4 @@
+../Core/Src/se_tls_nsc_callable.c:31:23:SECURE_UsbRx_nsc_call	6
+../Core/Src/se_tls_nsc_callable.c:47:23:SECURE_UsbTx_nsc_call	10
+../Core/Src/se_tls_nsc_callable.c:81:23:SECURE_UsbEvent_nsc_call	5
+../Core/Src/se_tls_nsc_callable.c:103:23:SECURE_UsbService_nsc_call	1

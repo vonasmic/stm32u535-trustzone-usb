@@ -285,7 +285,7 @@
     #ifndef HAL_CONSOLE_UART
     #define HAL_CONSOLE_UART huart1
     #endif
-#elif defined(STM32U535xx) || defined(STM32U575xx) || defined(STM32U585xx) || defined(STM32U5A9xx)
+#elif defined(STM32U575xx) || defined(STM32U585xx) || defined(STM32U5A9xx)
     #define WOLFSSL_STM32U5
     #define STM32_HAL_V2
     #if defined(STM32U585xx) || defined(STM32U5A9xx)

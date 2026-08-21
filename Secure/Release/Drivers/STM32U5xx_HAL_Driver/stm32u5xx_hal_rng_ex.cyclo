@@ -1,4 +1,0 @@
-C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c:85:19:HAL_RNGEx_SetConfig	8
-C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c:192:19:HAL_RNGEx_GetConfig	4
-C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c:244:19:HAL_RNGEx_LockConfig	3
-C:/tmp/test/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c:303:19:HAL_RNGEx_RecoverSeedError	5

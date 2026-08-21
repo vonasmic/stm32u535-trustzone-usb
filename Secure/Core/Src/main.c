@@ -21,7 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "wolfssl/wolfcrypt/settings.h"
+#include "wolfssl/ssl.h"
+#include "se_usb_tls.h"
+#include "se_tls_json_client.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,9 +36,7 @@
 /* USER CODE BEGIN PD */
 
 /* Non-secure Vector table to jump to (internal Flash Bank2 here)             */
-/* Caution: address must correspond to non-secure internal Flash where is     */
-/*          mapped in the non-secure vector table                             */
-#define VTOR_TABLE_NS_START_ADDR  0x08020000UL
+#define VTOR_TABLE_NS_START_ADDR  0x08030000UL
 
 /* USER CODE END PD */
 
@@ -47,6 +48,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 RNG_HandleTypeDef hrng;
+
+RTC_HandleTypeDef hrtc;
 
 /* USER CODE BEGIN PV */
 
@@ -60,8 +63,9 @@ static void MX_GTZC_S_Init(void);
 static void MX_ICACHE_Init(void);
 static void MX_RNG_Init(void);
 static void MX_SAU_Init(void);
+static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void Secure_WolfSSL_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -97,10 +101,7 @@ int main(void)
   MX_GTZC_S_Init();
 
   /* USER CODE BEGIN SysInit */
-  while ((RCC->CR & RCC_CR_HSI48RDY) == 0U)
-  {
-  }
-  HAL_PWREx_EnableVddUSB();
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -108,8 +109,11 @@ int main(void)
   MX_ICACHE_Init();
   MX_RNG_Init();
   MX_SAU_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-
+  Secure_WolfSSL_Init();
+  se_usb_tls_init();
+  se_tls_json_init();
   /* USER CODE END 2 */
 
   /*************** Setup and jump to non-secure *******************************/
@@ -170,11 +174,14 @@ void SystemClock_Config(void)
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_4;
+  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_0;
+  RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -192,7 +199,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB3CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
@@ -312,6 +319,62 @@ static void MX_RNG_Init(void)
 }
 
 /**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  RTC_PrivilegeStateTypeDef privilegeState = {0};
+  RTC_SecureStateTypeDef secureState = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  hrtc.Init.OutPutPullUp = RTC_OUTPUT_PULLUP_NONE;
+  hrtc.Init.BinMode = RTC_BINARY_NONE;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  privilegeState.rtcPrivilegeFull = RTC_PRIVILEGE_FULL_NO;
+  privilegeState.backupRegisterPrivZone = RTC_PRIVILEGE_BKUP_ZONE_NONE;
+  privilegeState.backupRegisterStartZone2 = RTC_BKP_DR0;
+  privilegeState.backupRegisterStartZone3 = RTC_BKP_DR0;
+  if (HAL_RTCEx_PrivilegeModeSet(&hrtc, &privilegeState) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  secureState.rtcSecureFull = RTC_SECURE_FULL_YES;
+  secureState.backupRegisterStartZone2 = RTC_BKP_DR0;
+  secureState.backupRegisterStartZone3 = RTC_BKP_DR0;
+  if (HAL_RTCEx_SecureModeSet(&hrtc, &secureState) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+  /* Wall clock is set from NonSecure via SECURE_SetUnixTime_nsc_call (host TIME=). */
+  /* USER CODE END RTC_Init 2 */
+
+}
+
+/**
   * @brief SAU Initialization Function
   * @param None
   * @retval None
@@ -347,7 +410,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*IO attributes management functions */
-  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_8|GPIO_PIN_11|GPIO_PIN_12, GPIO_PIN_NSEC);
+  HAL_GPIO_ConfigPinAttributes(GPIOA, GPIO_PIN_11|GPIO_PIN_12, GPIO_PIN_NSEC);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -355,6 +418,19 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief  Initialize wolfSSL in Secure (TLS runs here; NS is USB pipe only).
+ */
+static void Secure_WolfSSL_Init(void)
+{
+    if (wolfSSL_Init() != WOLFSSL_SUCCESS) {
+        Error_Handler();
+    }
+    if (wolfCrypt_Init() != 0) {
+        Error_Handler();
+    }
+}
 
 /* USER CODE END 4 */
 

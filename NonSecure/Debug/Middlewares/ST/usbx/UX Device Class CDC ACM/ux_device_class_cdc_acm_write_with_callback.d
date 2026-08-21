@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/UX Device Class CDC ACM/ux_device_class_cdc_acm_write_with_callback.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/usbx_device_classes/src/ux_device_class_cdc_acm_write_with_callback.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/usbx_device_classes/src/ux_device_class_cdc_acm_write_with_callback.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

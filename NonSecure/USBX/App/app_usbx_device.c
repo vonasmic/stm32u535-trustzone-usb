@@ -168,7 +168,6 @@ UINT MX_USBX_Device_Stack_Init(void)
   /* Initialize and link controller HAL driver */
   ux_dcd_stm32_initialize((ULONG)USB_DRD_FS, (ULONG)&hpcd_USB_DRD_FS);
   /* USER CODE BEGIN MX_USBX_Device_Stack_Init_PostTreatment */
-
   /* USER CODE END MX_USBX_Device_Stack_Init_PostTreatment */
 
   /* USER CODE BEGIN MX_USBX_Device_Stack_Init 1 */

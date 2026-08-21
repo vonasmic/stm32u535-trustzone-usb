@@ -1,0 +1,4 @@
+../Core/Src/secure_qkd_ingest.c:15:13:qkd_wipe	1
+../Core/Src/secure_qkd_ingest.c:26:12:qkd_skip_ws.constprop.isra	4
+../Core/Src/secure_qkd_ingest.c:21:6:secure_qkd_discard	1
+../Core/Src/secure_qkd_ingest.c:130:10:secure_qkd_ingest	23

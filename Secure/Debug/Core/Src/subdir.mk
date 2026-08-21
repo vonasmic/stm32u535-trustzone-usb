@@ -6,40 +6,61 @@
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
 ../Core/Src/main.c \
+../Core/Src/se_tls_json_client.c \
+../Core/Src/se_tls_nsc_callable.c \
+../Core/Src/se_usb_tls.c \
+../Core/Src/secure_client_key.c \
 ../Core/Src/secure_nsc.c \
+../Core/Src/secure_qkd_ingest.c \
+../Core/Src/secure_wrap.c \
 ../Core/Src/stm32u5xx_hal_msp.c \
 ../Core/Src/stm32u5xx_it.c \
 ../Core/Src/syscalls.c \
 ../Core/Src/sysmem.c \
-../Core/Src/system_stm32u5xx_s.c 
+../Core/Src/system_stm32u5xx_s.c \
+../Core/Src/wc_port_time.c 
 
 OBJS += \
 ./Core/Src/main.o \
+./Core/Src/se_tls_json_client.o \
+./Core/Src/se_tls_nsc_callable.o \
+./Core/Src/se_usb_tls.o \
+./Core/Src/secure_client_key.o \
 ./Core/Src/secure_nsc.o \
+./Core/Src/secure_qkd_ingest.o \
+./Core/Src/secure_wrap.o \
 ./Core/Src/stm32u5xx_hal_msp.o \
 ./Core/Src/stm32u5xx_it.o \
 ./Core/Src/syscalls.o \
 ./Core/Src/sysmem.o \
-./Core/Src/system_stm32u5xx_s.o 
+./Core/Src/system_stm32u5xx_s.o \
+./Core/Src/wc_port_time.o 
 
 C_DEPS += \
 ./Core/Src/main.d \
+./Core/Src/se_tls_json_client.d \
+./Core/Src/se_tls_nsc_callable.d \
+./Core/Src/se_usb_tls.d \
+./Core/Src/secure_client_key.d \
 ./Core/Src/secure_nsc.d \
+./Core/Src/secure_qkd_ingest.d \
+./Core/Src/secure_wrap.d \
 ./Core/Src/stm32u5xx_hal_msp.d \
 ./Core/Src/stm32u5xx_it.d \
 ./Core/Src/syscalls.d \
 ./Core/Src/sysmem.d \
-./Core/Src/system_stm32u5xx_s.d 
+./Core/Src/system_stm32u5xx_s.d \
+./Core/Src/wc_port_time.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes
 Core/Src/%.o Core/Src/%.su Core/Src/%.cyclo: ../Core/Src/%.c Core/Src/subdir.mk
-	arm-none-eabi-gcc "$<" -mcpu=cortex-m33 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32U535xx -c -I../wolfSSL -I../Core/Inc -I../../Secure_nsclib -I../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/ -I../../Drivers/STM32U5xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32U5xx/Include -I../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy -I../../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -mcmse -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
+	arm-none-eabi-gcc "$<" -mcpu=cortex-m33 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32U535xx -DWOLFSSL_USER_SETTINGS -c -I../wolfSSL -I../Core/Inc -I../../Secure_nsclib -I../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/ -I../../Drivers/STM32U5xx_HAL_Driver/Inc -I../../Drivers/CMSIS/Device/ST/STM32U5xx/Include -I../../Drivers/STM32U5xx_HAL_Driver/Inc/Legacy -I../../Drivers/CMSIS/Include -Os -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -mcmse -MMD -MP -MF"$(@:%.o=%.d)" -MT"$@" --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -o "$@"
 
 clean: clean-Core-2f-Src
 
 clean-Core-2f-Src:
-	-$(RM) ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/secure_nsc.cyclo ./Core/Src/secure_nsc.d ./Core/Src/secure_nsc.o ./Core/Src/secure_nsc.su ./Core/Src/stm32u5xx_hal_msp.cyclo ./Core/Src/stm32u5xx_hal_msp.d ./Core/Src/stm32u5xx_hal_msp.o ./Core/Src/stm32u5xx_hal_msp.su ./Core/Src/stm32u5xx_it.cyclo ./Core/Src/stm32u5xx_it.d ./Core/Src/stm32u5xx_it.o ./Core/Src/stm32u5xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32u5xx_s.cyclo ./Core/Src/system_stm32u5xx_s.d ./Core/Src/system_stm32u5xx_s.o ./Core/Src/system_stm32u5xx_s.su
+	-$(RM) ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/se_tls_json_client.cyclo ./Core/Src/se_tls_json_client.d ./Core/Src/se_tls_json_client.o ./Core/Src/se_tls_json_client.su ./Core/Src/se_tls_nsc_callable.cyclo ./Core/Src/se_tls_nsc_callable.d ./Core/Src/se_tls_nsc_callable.o ./Core/Src/se_tls_nsc_callable.su ./Core/Src/se_usb_tls.cyclo ./Core/Src/se_usb_tls.d ./Core/Src/se_usb_tls.o ./Core/Src/se_usb_tls.su ./Core/Src/secure_client_key.cyclo ./Core/Src/secure_client_key.d ./Core/Src/secure_client_key.o ./Core/Src/secure_client_key.su ./Core/Src/secure_nsc.cyclo ./Core/Src/secure_nsc.d ./Core/Src/secure_nsc.o ./Core/Src/secure_nsc.su ./Core/Src/secure_qkd_ingest.cyclo ./Core/Src/secure_qkd_ingest.d ./Core/Src/secure_qkd_ingest.o ./Core/Src/secure_qkd_ingest.su ./Core/Src/secure_wrap.cyclo ./Core/Src/secure_wrap.d ./Core/Src/secure_wrap.o ./Core/Src/secure_wrap.su ./Core/Src/stm32u5xx_hal_msp.cyclo ./Core/Src/stm32u5xx_hal_msp.d ./Core/Src/stm32u5xx_hal_msp.o ./Core/Src/stm32u5xx_hal_msp.su ./Core/Src/stm32u5xx_it.cyclo ./Core/Src/stm32u5xx_it.d ./Core/Src/stm32u5xx_it.o ./Core/Src/stm32u5xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32u5xx_s.cyclo ./Core/Src/system_stm32u5xx_s.d ./Core/Src/system_stm32u5xx_s.o ./Core/Src/system_stm32u5xx_s.su ./Core/Src/wc_port_time.cyclo ./Core/Src/wc_port_time.d ./Core/Src/wc_port_time.o ./Core/Src/wc_port_time.su
 
 .PHONY: clean-Core-2f-Src
 

@@ -61,6 +61,7 @@ UINT MX_USBX_Init(VOID)
   }
 
   /* USER CODE BEGIN MX_USBX_Init1 */
+
   /* USER CODE END MX_USBX_Init1 */
 
   return ret;

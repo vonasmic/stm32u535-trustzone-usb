@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/UX Device CoreStack/ux_device_stack_endpoint_stall.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/core/src/ux_device_stack_endpoint_stall.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/core/src/ux_device_stack_endpoint_stall.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

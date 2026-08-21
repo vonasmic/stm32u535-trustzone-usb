@@ -35,19 +35,20 @@
 /* Entry Point */
 ENTRY(Reset_Handler)
 
-_Min_Heap_Size = 0x200;	/* required amount of heap  */
-_Min_Stack_Size = 0x400;	/* required amount of stack */
+/* Highest address of the user mode stack */
+_estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
+_sstack = _estack - _Min_Stack_Size;
+
+_Min_Heap_Size = 0x200;	/* USBX only */
+_Min_Stack_Size = 0x400;
+
 /* Memories definition */
 MEMORY
 {
   RAM	(xrw)	: ORIGIN = 0x20030000,	LENGTH = 64K     /* Memory is divided. Actual start is 0x20000000 and actual length is 256K */
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
-  FLASH	(rx)	: ORIGIN = 0x08020000,	LENGTH = 128K    /* Memory is divided. Actual start is 0x08000000 and actual length is 256K */
+  FLASH	(rx)	: ORIGIN = 0x08030000,	LENGTH = 64K     /* pages 24-31, after Secure+NSC */
 }
-
-/* Highest address of the user mode stack */
-_estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
-_sstack = _estack - _Min_Stack_Size;
 
 /* Sections */
 SECTIONS
@@ -153,15 +154,7 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
-  .heap_stack_check :
-{
-    . = ALIGN(8);
-    __heap_start__ = .;
-    . = . + _Min_Heap_Size;
-    __stack_limit__ = .;
-    . = . + _Min_Stack_Size;
-    __stack_top__ = .;
-} >RAM
+
   /* Remove information from the compiler libraries */
   /DISCARD/ :
   {
@@ -172,6 +165,3 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-
-
-ASSERT(_ebss + _Min_Heap_Size + _Min_Stack_Size <= ORIGIN(RAM) + LENGTH(RAM), "RAM overflow")

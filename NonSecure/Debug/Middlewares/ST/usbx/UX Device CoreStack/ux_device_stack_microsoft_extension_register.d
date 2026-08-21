@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/UX Device CoreStack/ux_device_stack_microsoft_extension_register.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/core/src/ux_device_stack_microsoft_extension_register.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/core/src/ux_device_stack_microsoft_extension_register.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

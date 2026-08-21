@@ -1,5 +1,5 @@
 Middlewares/ST/usbx/Core System/ux_utility_error_callback_register.o: \
- C:/tmp/test/Middlewares/ST/usbx/common/core/src/ux_utility_error_callback_register.c \
+ C:/tmp/SE_firmware/Middlewares/ST/usbx/common/core/src/ux_utility_error_callback_register.c \
  ../../Middlewares/ST/usbx/common/core/inc/ux_api.h \
  ../../Middlewares/ST/usbx/ports/generic/inc/ux_port.h \
  ../USBX/App/ux_user.h \

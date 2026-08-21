@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>test_Secure</name>
+	<name>SE_firmware_Secure</name>
 	<comment></comment>
 	<projects>
 	</projects>
@@ -30,6 +30,16 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
 	<linkedResources>
+		<link>
+			<name>wolfBoot/pkcs11_callable.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/src/pkcs11_callable.c</locationURI>
+		</link>
+		<link>
+			<name>wolfBoot/pkcs11_store.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/src/pkcs11_store.c</locationURI>
+		</link>
 		<link>
 			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal.c</name>
 			<type>1</type>
@@ -119,6 +129,36 @@
 			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_rng_ex.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rng_ex.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_rtc.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rtc.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_rtc_ex.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rtc_ex.c</locationURI>
+		</link>
+		<link>
+			<name>wolfBoot/wolfPKCS11/crypto.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/lib/wolfPKCS11/src/crypto.c</locationURI>
+		</link>
+		<link>
+			<name>wolfBoot/wolfPKCS11/internal.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/lib/wolfPKCS11/src/internal.c</locationURI>
+		</link>
+		<link>
+			<name>wolfBoot/wolfPKCS11/slot.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/lib/wolfPKCS11/src/slot.c</locationURI>
+		</link>
+		<link>
+			<name>wolfBoot/wolfPKCS11/wolfpkcs11.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/lib/wolfPKCS11/src/wolfpkcs11.c</locationURI>
 		</link>
 		<link>
 			<name>Middlewares/wolfSSL/wolfSSL/wolfCrypt/Core/aes.c</name>

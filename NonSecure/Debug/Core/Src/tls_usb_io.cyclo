@@ -1,0 +1,9 @@
+../Core/Src/tls_usb_io.c:26:13:tls_usb_drain_tx	9
+../Core/Src/tls_usb_io.c:72:6:tls_usb_io_reset	1
+../Core/Src/tls_usb_io.c:67:6:tls_usb_io_init	1
+../Core/Src/tls_usb_io.c:79:6:tls_usb_cdc_activate	1
+../Core/Src/tls_usb_io.c:86:6:tls_usb_cdc_deactivate	1
+../Core/Src/tls_usb_io.c:95:6:tls_usb_cdc_parameter_change	5
+../Core/Src/tls_usb_io.c:116:5:tls_usb_dtr_asserted	1
+../Core/Src/tls_usb_io.c:121:5:tls_usb_connected	2
+../Core/Src/tls_usb_io.c:126:6:tls_usb_poll	6

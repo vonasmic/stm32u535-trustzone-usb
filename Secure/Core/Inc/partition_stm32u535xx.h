@@ -84,12 +84,12 @@
 /*
 //     <o>Start Address <0-0xFFFFFFE0>
 */
-#define SAU_INIT_START0     0x0C01E000      /* start address of SAU region 0 */
+#define SAU_INIT_START0     0x0C02E000      /* start address of SAU region 0 */
 
 /*
 //     <o>End Address <0x1F-0xFFFFFFFF>
 */
-#define SAU_INIT_END0       0x0C01FFFF      /* end address of SAU region 0 */
+#define SAU_INIT_END0       0x0C02FFFF      /* end address of SAU region 0 */
 /*
 //     <o>Region is
 //         <0=>Non-Secure
@@ -109,7 +109,7 @@
 /*
 //     <o>Start Address <0-0xFFFFFFE0>
 */
-#define SAU_INIT_START1     0x08020000      /* start address of SAU region 1 */
+#define SAU_INIT_START1     0x08030000      /* start address of SAU region 1 */
 
 /*
 //     <o>End Address <0x1F-0xFFFFFFFF>

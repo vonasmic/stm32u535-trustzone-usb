@@ -1,4 +1,0 @@
-../USBX/App/app_usbx.c:37:6:MX_USBX_Init	8	static
-../USBX/App/app_usbx.c:74:12:_ux_utility_interrupt_disable	0	static,ignoring_inline_asm
-../USBX/App/app_usbx.c:91:6:_ux_utility_interrupt_restore	0	static,ignoring_inline_asm
-../USBX/App/app_usbx.c:105:7:_ux_utility_time_get	0	static

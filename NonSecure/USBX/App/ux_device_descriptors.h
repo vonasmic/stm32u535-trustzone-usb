@@ -315,12 +315,7 @@ uint16_t USBD_Get_Configuration_Number(uint8_t class_type, uint8_t interface_typ
 
 /* Private macro -----------------------------------------------------------*/
 /* USER CODE BEGIN Private_macro */
-#undef USBD_CDCACM_EPINCMD_ADDR
-#undef USBD_CDCACM_EPIN_ADDR
-#undef USBD_CDCACM_EPOUT_ADDR
-#define USBD_CDCACM_EPINCMD_ADDR                      0x82U
-#define USBD_CDCACM_EPIN_ADDR                         0x81U
-#define USBD_CDCACM_EPOUT_ADDR                        0x01U
+
 /* USER CODE END Private_macro */
 #define __USBD_FRAMEWORK_SET_EP(epadd, eptype, epsize, HSinterval, FSinterval) do { \
                                 /* Append Endpoint descriptor to Configuration descriptor */ \
