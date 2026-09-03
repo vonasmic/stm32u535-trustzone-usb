@@ -5,10 +5,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfc
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3260:21:mlkem_rej_uniform_c	20	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3750:13:mlkem_cbd_eta2	24	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4799:28:mlkem_csubq_c	8	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3058:12:mlkem_prf	16	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4024:12:mlkem_get_noise_eta1_c	232	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4569:12:mlkem_get_noise_c	176	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3434:12:mlkem_gen_matrix_c	96	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3058:12:mlkem_prf.constprop	16	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:1242:6:mlkem_init	0	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:1863:6:mlkem_keygen	56	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:2066:6:mlkem_encapsulate	40	static
@@ -21,8 +18,8 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfc
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3028:5:mlkem_prf_new	0	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3040:6:mlkem_prf_free	0	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3198:5:mlkem_derive_secret	24	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3537:5:mlkem_gen_matrix	8	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4618:5:mlkem_get_noise	32	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:3537:5:mlkem_gen_matrix	88	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4618:5:mlkem_get_noise	160	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:4767:5:mlkem_cmp	16	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:5059:6:mlkem_vec_compress_10	48	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/wc_mlkem_poly.c:5263:6:mlkem_vec_decompress_10	32	static

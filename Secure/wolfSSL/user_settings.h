@@ -3,48 +3,8 @@
  * @file    Secure/wolfSSL/user_settings.h
  * @brief   wolfSSL configuration for the Secure world (STM32U535, TrustZone)
  *
- * This file is the durable wolfSSL configuration for the Secure world.
- * It is a copy of the CubeMX-generated wolfSSL.I-CUBE-wolfSSL_conf.h with the
- * deltas listed below applied. CubeMX may regenerate wolfSSL.I-CUBE-wolfSSL_conf.h
- * at any time; this file is never touched by the code generator.
- *
- * Activate with -DWOLFSSL_USER_SETTINGS in the Secure .cproject preprocessor
- * list. wolfSSL's settings.h includes this file instead of the Cube conf when
- * that macro is defined.
- *
- * ============================================================================
- * DELTAS vs wolfSSL.I-CUBE-wolfSSL_conf.h (Secure)
- * ============================================================================
- *
- * 1. Platform: STM32U535xx added next to STM32U575xx
- *    Same delta as NonSecure — maps to WOLFSSL_STM32U5 + STM32_HAL_V2.
- *    The Secure world uses the same stm32u5xx_hal.h and does NOT enable
- *    NO_STM32_RNG (Secure world owns the RNG peripheral and must use it).
- *
- * 2. ML-DSA-44 enabled: WOLFSSL_HAVE_MLDSA + WOLFSSL_NO_ML_DSA_65 + WOLFSSL_NO_ML_DSA_87
- *    Same as NonSecure.  wc_mldsa.c is already in the Secure project link list
- *    but was compiled out.  Keygen/sign/verify execute in the Secure wolfCrypt
- *    engine; wolfPKCS11 routes the PKCS#11 C_GenerateKeyPair/C_Sign/C_Verify
- *    calls to the corresponding wc_* functions.
- *
- * 3. WOLFPKCS11_MLKEM + WOLFPKCS11_MLDSA added
- *    Enables wolfPKCS11 (linked from wolfboot-2.9.0/lib/wolfPKCS11) to register
- *    and dispatch ML-KEM and ML-DSA key objects.  Without these flags wolfPKCS11
- *    silently ignores PQC key types (CKK_ML_KEM, CKK_ML_DSA) even though
- *    wolfCrypt supports them.
- *
- * 4. wolfPKCS11 wolfCrypt options (WOLF_CONF_PWDBASED 0 -> 1, plus extras)
- *    wolfpkcs11/internal.h requires WOLFSSL_PUBLIC_MP (hard #error).  PIN
- *    handling needs password-based KDF (wc_PBKDF2 / wc_PKCS12_PBKDF).  RSA
- *    object copy/keygen needs WOLFSSL_KEY_GEN + WC_RSA_DIRECT.  AES-CFB is
- *    the remaining recommended wolfPKCS11 option.  Scrypt is NOT enabled
- *    (too much RAM on U535).  WOLFPKCS11_NO_TIME skips login lockout timers;
- *    <time.h> is still included because the token struct uses time_t.
- *
- * NOTE: NO_STM32_RNG is NOT set here (unlike NonSecure).
- *       The Secure build retains direct use of the STM32U5 HAL RNG.
- *       NO_STM32_HASH and NO_STM32_CRYPTO stay as-is (U535 has no HASH/CRYP).
- * ============================================================================
+ * Durable Secure wolfSSL settings (-DWOLFSSL_USER_SETTINGS). CubeMX may
+ * regenerate wolfSSL.I-CUBE-wolfSSL_conf.h; this file is not overwritten.
  ******************************************************************************
  * @attention
  *
@@ -65,7 +25,7 @@ extern "C" {
 #endif
 
 /* =========================================================================
- * WOLF_CONF_* values — same as CubeMX Secure except where noted by [DELTA]
+ * WOLF_CONF_* values
  * ========================================================================= */
 
 #define WOLF_CONF_DEBUG           0
@@ -77,6 +37,8 @@ extern "C" {
 #define WOLF_CONF_RTOS            1
 #define WOLF_CONF_RNG             1
 #define WOLF_CONF_RSA             0
+/* Keep ECC enabled: wolfSSL TLS requires HAVE_ECC for pkCurveOID (ML-DSA)
+ * and the "No cipher suites available" guard, even though KE is ML-KEM. */
 #define WOLF_CONF_ECC             1
 #define WOLF_CONF_DH              0
 #define WOLF_CONF_AESGCM          1
@@ -103,7 +65,6 @@ extern "C" {
 #define WOLF_CONF_TPM             0
 #define WOLF_CONF_PK              0
 
-/* TLS 1.3 mTLS client — no PKCS#11 / wolfPKCS11 in Secure */
 /* =========================================================================
  * Hardware platform
  * =========================================================================
@@ -112,7 +73,6 @@ extern "C" {
 #define NO_STM32_HASH
 #define NO_STM32_CRYPTO
 #define NO_TLS_UART_TEST
-/* NOTE: NO_STM32_RNG is NOT defined here — Secure world owns the RNG */
 
 #if defined(STM32WB55xx)
     #define WOLFSSL_STM32WB
@@ -256,10 +216,6 @@ extern "C" {
     #ifndef HAL_CONSOLE_UART
     #define HAL_CONSOLE_UART huart1
     #endif
-/* [DELTA 1] STM32U535xx added alongside STM32U575xx.
- * Maps to WOLFSSL_STM32U5 + STM32_HAL_V2.
- * U535 has no HASH/CRYP peripheral — NO_STM32_HASH / NO_STM32_CRYPTO are
- * NOT undef'd.  NO_STM32_RNG is NOT defined here (Secure world owns RNG). */
 #elif defined(STM32U535xx) || defined(STM32U575xx) || defined(STM32U585xx) || defined(STM32U5A9xx)
     #define WOLFSSL_STM32U5
     #define STM32_HAL_V2
@@ -393,6 +349,8 @@ extern "C" {
 #if defined(WOLF_CONF_TLS13) && WOLF_CONF_TLS13 == 1
     #define WOLFSSL_TLS13
     #define HAVE_HKDF
+    /* wolfSSL_export_keying_material: session binding value for the LV uplink. */
+    #define HAVE_KEYING_MATERIAL
 #endif
 #if defined(WOLF_CONF_DTLS) && WOLF_CONF_DTLS == 1
     #define WOLFSSL_DTLS
@@ -486,6 +444,8 @@ extern "C" {
 #if defined(WOLF_CONF_AESGCM) && WOLF_CONF_AESGCM >= 1
     #define HAVE_AESGCM
     #define HAVE_AES_DECRYPT
+    /* Te/Td T-tables are 8KB; S-box only fits Secure FLASH with libtropic. */
+    #define WOLFSSL_AES_SMALL_TABLES
     #if WOLF_CONF_AESGCM == 2
         #define GCM_TABLE_4BIT
     #else
@@ -515,10 +475,11 @@ extern "C" {
 
 #undef HAVE_CURVE25519
 #undef HAVE_ED25519
+/* Tropic01 pairing (libtropic CAL) needs X25519; Ed25519 stays optional. */
+#define HAVE_CURVE25519
+#define CURVED25519_SMALL
 #if defined(WOLF_CONF_EDCURVE25519) && WOLF_CONF_EDCURVE25519 == 1
-    #define HAVE_CURVE25519
     #define HAVE_ED25519
-    #define CURVED25519_SMALL
 #endif
 
 /* =========================================================================
@@ -581,12 +542,13 @@ extern "C" {
     #define WOLFSSL_SHA3
 #endif
 
-/* [DELTA 2] ML-DSA-44 (FIPS 204) — only the smallest parameter set */
+/* ML-DSA-44 (FIPS 204) — smallest parameter set only */
 #define WOLFSSL_HAVE_MLDSA
 #define HAVE_DILITHIUM
 #define WOLFSSL_NO_ML_DSA_65
 #define WOLFSSL_NO_ML_DSA_87
-#define WOLFSSL_NO_ML_KEM_1024    /* drop largest ML-KEM set */
+#define WOLFSSL_NO_ML_KEM_512
+#define WOLFSSL_NO_ML_KEM_1024
 
 /* =========================================================================
  * Crypto Acceleration
@@ -614,6 +576,7 @@ extern "C" {
 #define WOLFSSL_MLKEM_SMALL
 #define WOLFSSL_MLKEM_NO_ENCAPSULATE
 #define WOLFSSL_MLDSA_SMALL
+#define USE_SLOW_SHA512           /* SHA-384 via sha512.c — smaller, slower */
 
 /* =========================================================================
  * Debugging
@@ -669,6 +632,8 @@ extern "C" {
 #define NO_MD4
 #define NO_DES3
 #define NO_ERROR_STRINGS          /* drop wolfCrypt error strings — saves flash */
+#define WOLFSSL_NO_PEM            /* certs/keys are DER; drop PEM banners */
+#define NO_CODING                 /* Base64 only served PEM conversion */
 
 #ifndef WOLFSSL_SHAKE128
 #define WOLFSSL_NO_SHAKE128

@@ -34,12 +34,20 @@ Middlewares/wolfSSL/wolfSSL/wolfCrypt/Core/fe_low_mem.o: \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/wc_port.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/oid_sum.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/memory.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/error-crypt.h \
- ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/logging.h
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/logging.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/fe_operations.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/curve25519.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/random.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/sha256.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/misc.h
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/libwolfssl_sources.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/types.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h:
@@ -74,9 +82,17 @@ Middlewares/wolfSSL/wolfSSL/wolfCrypt/Core/fe_low_mem.o: \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/wc_port.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/oid_sum.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/memory.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/error-crypt.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/logging.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/fe_operations.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/curve25519.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/random.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/sha256.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/misc.h:

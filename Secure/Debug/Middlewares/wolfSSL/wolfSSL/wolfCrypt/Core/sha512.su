@@ -1,5 +1,5 @@
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:591:31:ForceZero	12	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/sha512.c:1690:12:_Transform_Sha512	248	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/sha512.c:1690:12:_Transform_Sha512	144	static
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:359:31:ByteReverseWords64	8	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/sha512.c:2596:5:wc_Sha384Update	32	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/sha512.c:2633:5:wc_Sha384FinalRaw	8	static

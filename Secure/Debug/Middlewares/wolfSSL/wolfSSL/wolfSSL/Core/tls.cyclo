@@ -6,8 +6,8 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/t
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:591:31:ForceZero	5
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:15540:12:TLSX_Write	32
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:10781:12:TLSX_KeyShare_New.isra	3
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:9234:13:TLSX_KeyShare_FreeAll.isra	12
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:10448:12:TLSX_KeyShare_Process	36
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:9234:13:TLSX_KeyShare_FreeAll.isra	13
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:10448:12:TLSX_KeyShare_Process	48
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5109:13:TLSX_PointFormat_ValidateResponse.isra	4
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:4959:12:TLSX_SupportedCurve_Append.isra	5
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:2263:13:TLSX_SNI_Free.isra	3
@@ -20,7 +20,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/t
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:4690:5:TLSX_IsGroupSupported	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:7951:22:TLSX_SignatureAlgorithms_New	2
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:7967:6:TLSX_SignatureAlgorithms_FreeAll	2
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:9204:5:TLSX_KeyShare_GenKey	34
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:9204:5:TLSX_KeyShare_GenKey	44
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:13754:7:TLSX_Find	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:1713:5:TLSX_CheckUnsupportedExtension	2
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:1742:6:TLSX_SetResponse	2
@@ -29,7 +29,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/t
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:2718:6:TLSX_SNI_SetOptions	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5610:5:TLSX_SupportedCurve_IsSupported	4
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5636:5:TLSX_SupportedCurve_Preferred	5
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5703:5:TLSX_ValidateSupportedCurves	38
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5703:5:TLSX_ValidateSupportedCurves	41
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:10590:12:TLSX_SupportedGroups_Find	5
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:10561:12:TLSX_KeyShare_Find	5
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:11854:5:TLSX_KeyShare_Choose	15
@@ -41,7 +41,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/t
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:1678:5:TLSX_Push	4
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:2647:5:TLSX_UseSNI	12
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:6083:5:TLSX_UseSupportedCurve	7
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:15859:12:TLSX_PopulateSupportedGroups	10
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:15859:12:TLSX_PopulateSupportedGroups	8
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:6061:5:TLSX_SupportedCurve_Copy	4
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:5213:5:TLSX_SupportedCurve_Parse	23
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls.c:6138:5:TLSX_UsePointFormat	9

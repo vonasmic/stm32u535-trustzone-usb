@@ -3,7 +3,7 @@
  * @brief   Secure USB rings + TLS service (command parsing lives in NonSecure)
  */
 #include "se_usb_tls.h"
-#include "se_tls_json_client.h"
+#include "se_tls_client.h"
 #include "se_time.h"
 #include "wolfssl/ssl.h"
 #include <stdarg.h>
@@ -150,10 +150,10 @@ void se_usb_tls_set_dtr(uint8_t dtr)
     uint8_t prev = s_dtr;
     s_dtr = dtr ? 1U : 0U;
     if (prev != 0U && s_dtr == 0U) {
-        se_tls_json_reset_quiet();
+        se_tls_reset_quiet();
         link_reset_flags();
     } else if (prev == 0U && s_dtr != 0U) {
-        se_tls_json_reset_quiet();
+        se_tls_reset_quiet();
         link_reset_flags();
         se_usb_tls_clear_rings();
     }
@@ -271,7 +271,7 @@ int se_tls_embed_send(WOLFSSL *ssl, char *buf, int sz, void *ctx)
 void se_usb_tls_service_once(void)
 {
     if (s_rx.overflow != 0U) {
-        se_tls_json_abort();
+        se_tls_abort();
         link_reset_flags();
         se_usb_debug_printf("RX overflow, abort");
         return;
@@ -279,10 +279,10 @@ void se_usb_tls_service_once(void)
     if ((s_active == 0U) || (s_dtr == 0U)) {
         return;
     }
-    /* NonSecure arms TLS by setting time; do not start until then. */
+    /* NonSecure arms TLS with PROVISION / ENCRYPT / DECRYPT <unix>. */
     if (se_time_is_synced() == 0) {
         return;
     }
 
-    se_tls_json_service_once();
+    se_tls_service_once();
 }

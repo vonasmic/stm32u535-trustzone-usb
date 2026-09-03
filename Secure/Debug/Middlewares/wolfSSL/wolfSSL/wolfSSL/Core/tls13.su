@@ -9,9 +9,10 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/t
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:2389:13:AddTls13Headers.isra	12	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:410:5:Tls13DeriveKey	136	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1118:12:DeriveFinishedSecret	32	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:971:5:Tls13_Exporter	208	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1184:5:DeriveEarlySecret	24	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1220:5:DeriveHandshakeSecret	96	static
-C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1262:5:DeriveMasterSecret	96	static
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1262:5:DeriveMasterSecret	104	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:1508:5:DeriveTls13Keys	64	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:3010:5:DecryptTls13	56	static
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/tls13.c:3294:5:BuildTls13Message	96	static

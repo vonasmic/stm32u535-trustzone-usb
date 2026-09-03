@@ -1,0 +1,14 @@
+../Core/Src/se_tropic_mlkem.c:25:17:mlkem_derive_kek	2
+../Core/Src/se_tropic_mlkem.c:85:17:mlkem_make_key_from_seed.part.0	4
+../Core/Src/se_tropic_mlkem.c:62:10:se_tropic_mlkem_seed_occupied	5
+../Core/Src/se_tropic_mlkem.c:195:10:se_tropic_mlkem_pub_read	7
+../Core/Src/se_tropic_mlkem.c:246:10:se_tropic_kem_init_probe	5
+../Core/Src/se_tropic_mlkem.c:303:10:se_tropic_kem_pub_dump	2
+../Core/Src/se_tropic_mlkem.c:319:10:se_tropic_kem_store	7
+../Core/Src/se_tropic_mlkem.c:348:10:se_tropic_otp_command	10
+../Core/Src/se_tropic_mlkem.c:443:10:se_tropic_mlkem_decapsulate	4
+../Core/Src/se_tropic_mlkem.c:456:6:se_tropic_mlkem_key_close	2
+../Core/Src/se_tropic_mlkem.c:135:10:se_tropic_mlkem_provision	13
+../Core/Src/se_tropic_mlkem.c:272:10:se_tropic_kem_init_confirm	6
+../Core/Src/se_tropic_mlkem.c:391:10:se_tropic_mlkem_key_open	13
+../Core/Src/se_tropic_mlkem.c:218:10:se_tropic_mlkem_pub_recover	6

@@ -1,80 +1,118 @@
 /**
  * @file    se_tls_nsc_callable.c
  * @brief   NSC veneers: USB pipe, wall clock, TLS service for NonSecure
+ *
+ * Every NonSecure-supplied pointer is validated with cmse_check_address_range
+ * (SAU/IDAU non-secure + MPU access) before use. Callers must use the
+ * returned sanitized pointer, never the raw NS argument.
  */
 #include "se_tls_nsc.h"
 #include "se_usb_tls.h"
-#include "se_tls_json_client.h"
+#include "se_tls_client.h"
 #include "se_time.h"
-#include "main.h"
+#include "se_tropic.h"
+#include "se_tropic_mlkem.h"
+#include "se_tropic_pin.h"
+#include "wolfssl/wolfcrypt/memory.h"
 #include <arm_cmse.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
-static int ns_ok_ptr(const void *p, uint32_t len)
+/**
+ * NS input buffer: must be entirely NonSecure and readable.
+ * @return sanitized pointer, or NULL on failure. len==0 always succeeds (NULL ok).
+ */
+static void *ns_sanitize_in(const void *p, uint32_t len)
 {
+    uintptr_t base;
+
     if (len == 0U) {
-        return 1;
+        return (void *)p; /* empty: no access; keep original (may be NULL) */
     }
     if (p == NULL) {
-        return 0;
+        return NULL;
     }
-    return cmse_check_address_range((void *)p, (size_t)len, CMSE_NONSECURE) != NULL;
+    base = (uintptr_t)p;
+    if (base + (uintptr_t)len < base) {
+        return NULL; /* length overflow */
+    }
+    return cmse_check_address_range((void *)p, (size_t)len,
+                                    CMSE_NONSECURE | CMSE_MPU_READ);
 }
 
-static int ns_ok_out_ptr(const void *p, uint32_t len)
+/** NS output buffer: must be entirely NonSecure and writable. */
+static void *ns_sanitize_out(void *p, uint32_t len)
 {
-    if (p == NULL) {
-        return 0;
+    uintptr_t base;
+
+    if (p == NULL || len == 0U) {
+        return NULL;
     }
-    return cmse_check_address_range((void *)p, (size_t)len, CMSE_NONSECURE) != NULL;
+    base = (uintptr_t)p;
+    if (base + (uintptr_t)len < base) {
+        return NULL;
+    }
+    return cmse_check_address_range(p, (size_t)len,
+                                    CMSE_NONSECURE | CMSE_MPU_READWRITE);
 }
 
 uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
 {
     if (len > SECURE_USB_PKT_MAX) {
-        se_tls_json_abort();
+        se_tls_abort();
         return SECURE_USB_ERR;
     }
-    if (len > 0U && !ns_ok_ptr(buf, len)) {
-        return SECURE_USB_ERR;
-    }
-    if (len > 0U && se_usb_tls_rx_push(buf, len) < 0) {
-        se_tls_json_abort();
-        return SECURE_USB_ERR;
+    if (len > 0U) {
+        const uint8_t *ns_buf = (const uint8_t *)ns_sanitize_in(buf, len);
+
+        if (ns_buf == NULL) {
+            return SECURE_USB_ERR;
+        }
+        if (se_usb_tls_rx_push(ns_buf, len) < 0) {
+            se_tls_abort();
+            return SECURE_USB_ERR;
+        }
     }
     return SECURE_USB_OK;
 }
 
 uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t *out_len)
 {
+    uint8_t *ns_buf;
+    uint32_t *ns_out_len = NULL;
     uint32_t got = 0U;
     int st;
 
     if (max > SECURE_USB_PKT_MAX) {
         max = SECURE_USB_PKT_MAX;
     }
-    if (buf == NULL || max == 0U) {
+    if (max == 0U) {
         return SECURE_USB_ERR;
     }
-    if (!ns_ok_out_ptr(buf, max)) {
+    ns_buf = (uint8_t *)ns_sanitize_out(buf, max);
+    if (ns_buf == NULL) {
         return SECURE_USB_ERR;
     }
-    if (out_len != NULL && !ns_ok_out_ptr(out_len, sizeof(uint32_t))) {
-        return SECURE_USB_ERR;
+    if (out_len != NULL) {
+        ns_out_len = (uint32_t *)ns_sanitize_out(out_len, (uint32_t)sizeof(uint32_t));
+        if (ns_out_len == NULL) {
+            return SECURE_USB_ERR;
+        }
     }
 
-    st = se_usb_tls_tx_pop(buf, max, &got);
+    st = se_usb_tls_tx_pop(ns_buf, max, &got);
     if (st < 0) {
         return SECURE_USB_LINK_DOWN;
     }
     if (st > 0) {
-        if (out_len != NULL) {
-            *out_len = 0U;
+        if (ns_out_len != NULL) {
+            *ns_out_len = 0U;
         }
         return SECURE_USB_BUSY;
     }
-    if (out_len != NULL) {
-        *out_len = got;
+    if (ns_out_len != NULL) {
+        *ns_out_len = got;
     }
     return SECURE_USB_OK;
 }
@@ -86,7 +124,7 @@ uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event)
         se_usb_tls_set_active(1U);
         break;
     case SECURE_USB_EVT_DEACTIVATE:
-        se_tls_json_reset_quiet();
+        se_tls_reset_quiet();
         se_usb_tls_set_active(0U);
         break;
     case SECURE_USB_EVT_DTR_ON:
@@ -104,18 +142,48 @@ uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event)
 uint32_t CSME_NSE_API SECURE_UsbService_nsc_call(void)
 {
     se_usb_tls_service_once();
-    if (se_time_is_synced() == 0) {
+    if (se_tls_session_active() == 0) {
         return SECURE_USB_IDLE;
     }
     return SECURE_USB_OK;
 }
 
-uint32_t CSME_NSE_API SECURE_SetUnixTime_nsc_call(uint32_t unix_utc)
+uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
 {
-    if (se_time_set_unix(unix_utc) != 0) {
+    int rc;
+
+    if ((mode != SECURE_TLS_MODE_PROVISION) && (mode != SECURE_TLS_MODE_ENCRYPT) &&
+        (mode != SECURE_TLS_MODE_DECRYPT)) {
         return SECURE_USB_ERR;
     }
-    se_usb_debug_printf("time synced unix=%lu", (unsigned long)unix_utc);
+
+    rc = se_time_set_unix(unix_utc);
+    if (rc < 0) {
+        return SECURE_USB_ERR;
+    }
+    if (rc > 0) {
+        se_usb_debug_printf("TIME behind floor, using unix=%lu",
+                            (unsigned long)se_time_unix_now());
+    } else {
+        se_usb_debug_printf("time synced unix=%lu", (unsigned long)unix_utc);
+    }
+
+    return (se_tls_arm(mode) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
+}
+
+uint32_t CSME_NSE_API SECURE_SetUnixTime_nsc_call(uint32_t unix_utc)
+{
+    int rc = se_time_set_unix(unix_utc);
+
+    if (rc < 0) {
+        return SECURE_USB_ERR;
+    }
+    if (rc > 0) {
+        se_usb_debug_printf("TIME behind floor, using unix=%lu",
+                            (unsigned long)se_time_unix_now());
+    } else {
+        se_usb_debug_printf("time synced unix=%lu", (unsigned long)unix_utc);
+    }
     return SECURE_USB_OK;
 }
 
@@ -126,16 +194,105 @@ uint32_t CSME_NSE_API SECURE_GetUnixTime_nsc_call(void)
 
 uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len)
 {
+    const uint8_t *ns_msg;
     char tmp[160];
 
     if (len == 0U || len >= sizeof(tmp)) {
         return SECURE_USB_ERR;
     }
-    if (!ns_ok_ptr(msg, len)) {
+    ns_msg = (const uint8_t *)ns_sanitize_in(msg, len);
+    if (ns_msg == NULL) {
         return SECURE_USB_ERR;
     }
-    (void)memcpy(tmp, msg, len);
+    (void)memcpy(tmp, ns_msg, len);
     tmp[len] = '\0';
     se_usb_debug_printf("%s", tmp);
     return SECURE_USB_OK;
+}
+
+uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void)
+{
+    return se_tropic_ping();
+}
+
+uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void)
+{
+    return se_tropic_info();
+}
+
+uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64)
+{
+    uint8_t *ns_out;
+
+    ns_out = (uint8_t *)ns_sanitize_out(out_xy64, 64U);
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    return se_tropic_pub_read(ns_out);
+}
+
+uint32_t CSME_NSE_API SECURE_TropicKeygen_nsc_call(const uint8_t *pin, uint32_t pin_len)
+{
+    const uint8_t *ns_pin;
+    uint8_t local[SE_TROPIC_PIN_SIZE_MAX];
+    uint32_t st;
+
+    if (pin_len == 0U) {
+        return se_tropic_keygen(NULL, 0U);
+    }
+    if (pin_len < SE_TROPIC_PIN_SIZE_MIN || pin_len > SE_TROPIC_PIN_SIZE_MAX) {
+        return SECURE_TROPIC_ERR;
+    }
+    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
+    if (ns_pin == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    (void)memcpy(local, ns_pin, pin_len);
+    st = se_tropic_keygen(local, (uint8_t)pin_len);
+    wc_ForceZero(local, sizeof(local));
+    return st;
+}
+
+uint32_t CSME_NSE_API SECURE_TropicSign_nsc_call(const uint8_t *hash32, uint8_t *rs64_out)
+{
+    const uint8_t *ns_hash;
+    uint8_t *ns_rs;
+
+    ns_hash = (const uint8_t *)ns_sanitize_in(hash32, 32U);
+    ns_rs = (uint8_t *)ns_sanitize_out(rs64_out, 64U);
+    if (ns_hash == NULL || ns_rs == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    return se_tropic_sign_hash(ns_hash, ns_rs);
+}
+
+uint32_t CSME_NSE_API SECURE_TropicKemInit_nsc_call(const uint8_t *pin, uint32_t pin_len,
+                                                    uint32_t confirm)
+{
+    const uint8_t *ns_pin;
+
+    if (pin_len < SE_TROPIC_PIN_SIZE_MIN || pin_len > SE_TROPIC_PIN_SIZE_MAX) {
+        return SECURE_TROPIC_ERR;
+    }
+    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
+    if (ns_pin == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    if (confirm != 0U) {
+        return se_tropic_kem_init_confirm(ns_pin, (uint8_t)pin_len, NULL, 0U);
+    }
+    return se_tropic_kem_init_probe();
+}
+
+uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void)
+{
+    return se_tropic_kem_pub_dump();
+}
+
+uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot)
+{
+    if (slot > 255U) {
+        return SECURE_TROPIC_ERR;
+    }
+    return se_create_pairing_key_to_tropic((uint8_t)slot);
 }

@@ -43,11 +43,27 @@
 									<listOptionValue builtIn="false" value="USE_HAL_DRIVER"/>
 									<listOptionValue builtIn="false" value="STM32U535xx"/>
 									<listOptionValue builtIn="false" value="WOLFSSL_USER_SETTINGS"/>
+									<listOptionValue builtIn="false" value="LT_USE_WOLFCRYPT=1"/>
+									<listOptionValue builtIn="false" value="LT_HELPERS=1"/>
+									<listOptionValue builtIn="false" value="LT_SILICON_REV_ACAB=1"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_DEBUG=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_INFO=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_WARN=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_ERROR=0"/>
+									<listOptionValue builtIn="false" value="LT_CRC_ERR_RETRY_ATTEMPTS=3"/>
+									<listOptionValue builtIn="false" value="LT_L1_READ_MAX_TRIES=50"/>
+									<listOptionValue builtIn="false" value="LT_L1_READ_RETRY_DELAY_MS=25"/>
+									<listOptionValue builtIn="false" value="LT_L1_SPI_TIMEOUT_MS=70"/>
+									<listOptionValue builtIn="false" value="LT_L1_INT_TIMEOUT_MS=200"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.424814208" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" valueType="includePath">
 									<listOptionValue builtIn="false" value="../wolfSSL"/>
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../../Secure_nsclib"/>
+									<listOptionValue builtIn="false" value="../../libtropic/include"/>
+									<listOptionValue builtIn="false" value="../../libtropic/src"/>
+									<listOptionValue builtIn="false" value="../../libtropic/cal/wolfcrypt"/>
+									<listOptionValue builtIn="false" value="../../libtropic/hal/stm32/stm32u5xx"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/"/>
 									<listOptionValue builtIn="false" value="../../Drivers/STM32U5xx_HAL_Driver/Inc"/>
 									<listOptionValue builtIn="false" value="../../Drivers/CMSIS/Device/ST/STM32U5xx/Include"/>
@@ -80,8 +96,8 @@
 					</folderInfo>
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="wolfSSL"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="wolfSSL"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
 					</sourceEntries>
 				</configuration>
@@ -126,11 +142,27 @@
 									<listOptionValue builtIn="false" value="USE_HAL_DRIVER"/>
 									<listOptionValue builtIn="false" value="STM32U535xx"/>
 									<listOptionValue builtIn="false" value="WOLFSSL_USER_SETTINGS"/>
+									<listOptionValue builtIn="false" value="LT_USE_WOLFCRYPT=1"/>
+									<listOptionValue builtIn="false" value="LT_HELPERS=1"/>
+									<listOptionValue builtIn="false" value="LT_SILICON_REV_ACAB=1"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_DEBUG=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_INFO=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_WARN=0"/>
+									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_ERROR=0"/>
+									<listOptionValue builtIn="false" value="LT_CRC_ERR_RETRY_ATTEMPTS=3"/>
+									<listOptionValue builtIn="false" value="LT_L1_READ_MAX_TRIES=50"/>
+									<listOptionValue builtIn="false" value="LT_L1_READ_RETRY_DELAY_MS=25"/>
+									<listOptionValue builtIn="false" value="LT_L1_SPI_TIMEOUT_MS=70"/>
+									<listOptionValue builtIn="false" value="LT_L1_INT_TIMEOUT_MS=200"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths.1512563912" name="Include paths (-I)" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.option.includepaths" valueType="includePath">
 									<listOptionValue builtIn="false" value="../wolfSSL"/>
 									<listOptionValue builtIn="false" value="../Core/Inc"/>
 									<listOptionValue builtIn="false" value="../../Secure_nsclib"/>
+									<listOptionValue builtIn="false" value="../../libtropic/include"/>
+									<listOptionValue builtIn="false" value="../../libtropic/src"/>
+									<listOptionValue builtIn="false" value="../../libtropic/cal/wolfcrypt"/>
+									<listOptionValue builtIn="false" value="../../libtropic/hal/stm32/stm32u5xx"/>
 									<listOptionValue builtIn="false" value="../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/"/>
 									<listOptionValue builtIn="false" value="../../Drivers/STM32U5xx_HAL_Driver/Inc"/>
 									<listOptionValue builtIn="false" value="../../Drivers/CMSIS/Device/ST/STM32U5xx/Include"/>
@@ -163,8 +195,8 @@
 					</folderInfo>
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="wolfSSL"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="wolfSSL"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
 					</sourceEntries>
 				</configuration>

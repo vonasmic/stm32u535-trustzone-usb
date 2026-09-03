@@ -1,0 +1,183 @@
+/**
+ * @file    se_tropic_session.c
+ * @brief   TROPIC01 session binding and streamed LV uplink
+ */
+#include "se_tropic_session.h"
+#include "se_tropic.h"
+#include "se_tropic_mlkem.h"
+#include "se_tropic_rmem.h"
+#include "se_nv.h"
+#include "se_tropic_port.h"
+#include "se_usb_tls.h"
+#include "secure_lv.h"
+#include "se_le.h"
+#include "fw_creds.h"
+#include "wolfssl/wolfcrypt/sha256.h"
+#include "wolfssl/wolfcrypt/wc_port.h"
+#include <stdio.h>
+#include <string.h>
+
+#define SE_TROPIC_ECC_PUB_LEN     64u
+#define SE_TROPIC_SESSION_SIG_LEN 64u
+#define SE_TROPIC_CLIENT_HASH_LEN 32u
+
+/* 1184-byte ML-KEM PK is too large for the TLS task stack. */
+static uint8_t s_uplink_kem_pk[SE_TROPIC_MLKEM_PK_LEN];
+
+/**
+ * Bind this TLS session to the device identity.
+ * to_sign = SHA256(SHA256(mldsa_spki || ecc_pub) || exporter)
+ */
+static int session_sign(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
+                        uint8_t ecc_pub[SE_TROPIC_ECC_PUB_LEN],
+                        uint8_t client_hash[SE_TROPIC_CLIENT_HASH_LEN],
+                        uint8_t sig[SE_TROPIC_SESSION_SIG_LEN])
+{
+    uint8_t to_sign[WC_SHA256_DIGEST_SIZE];
+    Sha256 sha;
+    int rc = -1;
+
+    if (se_tropic_pub_read(ecc_pub) != SE_TROPIC_OK) {
+        se_usb_debug_printf("session: TROPIC pub read failed");
+        return -1;
+    }
+
+    if (wc_InitSha256(&sha) != 0) {
+        return -1;
+    }
+    if ((wc_Sha256Update(&sha, fw_client_spki, fw_client_spki_len) == 0) &&
+        (wc_Sha256Update(&sha, ecc_pub, SE_TROPIC_ECC_PUB_LEN) == 0) &&
+        (wc_Sha256Final(&sha, client_hash) == 0)) {
+        rc = 0;
+    }
+    wc_Sha256Free(&sha);
+    if (rc != 0) {
+        return -1;
+    }
+
+    rc = -1;
+    if (wc_InitSha256(&sha) != 0) {
+        return -1;
+    }
+    if ((wc_Sha256Update(&sha, client_hash, SE_TROPIC_CLIENT_HASH_LEN) == 0) &&
+        (wc_Sha256Update(&sha, exporter, SE_TROPIC_EXPORTER_LEN) == 0) &&
+        (wc_Sha256Final(&sha, to_sign) == 0)) {
+        rc = 0;
+    }
+    wc_Sha256Free(&sha);
+    wc_ForceZero(exporter, SE_TROPIC_EXPORTER_LEN);
+    if (rc != 0) {
+        return -1;
+    }
+
+    if (se_tropic_sign_hash(to_sign, sig) != SE_TROPIC_OK) {
+        se_usb_debug_printf("session: TROPIC sign failed");
+        wc_ForceZero(to_sign, sizeof(to_sign));
+        return -1;
+    }
+    wc_ForceZero(to_sign, sizeof(to_sign));
+    return 0;
+}
+
+int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
+                             secure_stream_write_fn write, void *ctx)
+{
+    uint8_t ecc_pub[SE_TROPIC_ECC_PUB_LEN];
+    uint8_t client_hash[SE_TROPIC_CLIENT_HASH_LEN];
+    uint8_t sig[SE_TROPIC_SESSION_SIG_LEN];
+    uint8_t slot_size_le[2];
+    uint8_t pad_count_le[2];
+    uint8_t pending_fill[SE_NV_FILL_ID_LEN];
+    const uint8_t version = (uint8_t)SECURE_LV_UPLINK_VERSION;
+    uint16_t slot_size;
+    uint16_t pad_count = SE_TROPIC_PAD_COUNT;
+    uint16_t kem_pk_len = 0U;
+    uint16_t count;
+    unsigned int i;
+    int rc = -1;
+    lt_ret_t ret;
+
+    if ((exporter == NULL) || (write == NULL)) {
+        return -1;
+    }
+
+    if (session_sign(exporter, ecc_pub, client_hash, sig) != 0) {
+        return -1;
+    }
+
+    if (se_tropic_mlkem_pub_read(s_uplink_kem_pk, sizeof(s_uplink_kem_pk), &kem_pk_len) !=
+        SE_TROPIC_OK) {
+        se_usb_debug_printf("session: ML-KEM pk not available");
+        return -1;
+    }
+
+    ret = se_tropic_port_nv_random(pending_fill, sizeof(pending_fill));
+    if (ret != LT_OK) {
+        se_usb_debug_printf("session: pending fill_id RNG failed");
+        return -1;
+    }
+    se_nv_pending_fill_set(pending_fill);
+
+    slot_size = se_tropic_get_rmem_slot_max_size(se_tropic_handle());
+    se_put_u16le(slot_size_le, slot_size);
+    se_put_u16le(pad_count_le, pad_count);
+
+    count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * fw_peer_count));
+
+    if ((write(&version, 1U, ctx) == 0) &&
+        (secure_lv_write_u16(count, write, ctx) == 0) &&
+        (secure_lv_write_item(sig, SE_TROPIC_SESSION_SIG_LEN, write, ctx) == 0) &&
+        (secure_lv_write_item(ecc_pub, SE_TROPIC_ECC_PUB_LEN, write, ctx) == 0) &&
+        (secure_lv_write_item(client_hash, SE_TROPIC_CLIENT_HASH_LEN, write, ctx) == 0) &&
+        (secure_lv_write_item(slot_size_le, (uint16_t)sizeof(slot_size_le), write, ctx) == 0) &&
+        (secure_lv_write_item(pad_count_le, (uint16_t)sizeof(pad_count_le), write, ctx) == 0) &&
+        (secure_lv_write_item(pending_fill, SE_NV_FILL_ID_LEN, write, ctx) == 0) &&
+        (secure_lv_write_item(s_uplink_kem_pk, kem_pk_len, write, ctx) == 0)) {
+        rc = 0;
+    }
+
+    for (i = 0U; (rc == 0) && (i < fw_peer_count); i++) {
+        if (secure_lv_write_item(fw_peers[i].hash, 32U, write, ctx) != 0) {
+            rc = -1;
+            break;
+        }
+        if (secure_lv_write_item((const uint8_t *)fw_peers[i].name,
+                                 (uint16_t)fw_peers[i].name_len, write, ctx) != 0) {
+            rc = -1;
+        }
+    }
+
+    wc_ForceZero(sig, sizeof(sig));
+    wc_ForceZero(client_hash, sizeof(client_hash));
+    wc_ForceZero(pending_fill, sizeof(pending_fill));
+    wc_ForceZero(s_uplink_kem_pk, sizeof(s_uplink_kem_pk));
+    return rc;
+}
+
+uint32_t se_tropic_cert_dump(void)
+{
+    char line[96];
+    unsigned int i;
+    unsigned int pos = 0U;
+
+    if (fw_tropic_cert_der_len == 0U) {
+        se_usb_debug_printf("TROPIC cert not embedded (run make_tropic_cert.py)");
+        return 1U;
+    }
+
+    se_usb_debug_printf("TROPIC cert der (%u bytes):", fw_tropic_cert_der_len);
+    for (i = 0U; i < fw_tropic_cert_der_len; i++) {
+        if (pos + 3U >= sizeof(line)) {
+            line[pos] = '\0';
+            se_usb_debug_printf("%s", line);
+            pos = 0U;
+        }
+        pos += (unsigned int)snprintf(line + pos, sizeof(line) - pos, "%02x",
+                                      fw_tropic_cert_der[i]);
+    }
+    if (pos > 0U) {
+        line[pos] = '\0';
+        se_usb_debug_printf("%s", line);
+    }
+    return 0U;
+}

@@ -28,6 +28,8 @@ Core/Src/system_stm32u5xx_s.o: ../Core/Src/system_stm32u5xx_s.c \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
  ../../Drivers/CMSIS/Device/ST/STM32U5xx/Include/partition_stm32u5xx.h \
  ../Core/Inc/partition_stm32u535xx.h
@@ -60,6 +62,8 @@ Core/Src/system_stm32u5xx_s.o: ../Core/Src/system_stm32u5xx_s.c \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
 ../../Drivers/CMSIS/Device/ST/STM32U5xx/Include/partition_stm32u5xx.h:
 ../Core/Inc/partition_stm32u535xx.h:

@@ -141,6 +141,16 @@
 			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_rtc_ex.c</locationURI>
 		</link>
 		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_spi.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32U5xx_HAL_Driver/stm32u5xx_hal_spi_ex.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Drivers/STM32U5xx_HAL_Driver/Src/stm32u5xx_hal_spi_ex.c</locationURI>
+		</link>
+		<link>
 			<name>wolfBoot/wolfPKCS11/crypto.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/wolfboot-2.9.0/lib/wolfPKCS11/src/crypto.c</locationURI>

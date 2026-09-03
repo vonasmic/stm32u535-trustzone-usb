@@ -3,7 +3,8 @@
  * @brief   Secure-side USB byte rings for the TLS client
  *
  * Opaque CDC pipe for TLS records only. Host command parsing and TLS arming
- * are done in NonSecure; Secure starts the client only after time is synced.
+ * are done in NonSecure; Secure starts the client after
+ * PROVISION / ENCRYPT / DECRYPT <unix>.
  */
 #ifndef SE_USB_TLS_H
 #define SE_USB_TLS_H

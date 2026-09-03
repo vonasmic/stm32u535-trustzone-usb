@@ -1,5 +1,5 @@
 Core/Src/se_usb_tls.o: ../Core/Src/se_usb_tls.c ../Core/Inc/se_usb_tls.h \
- ../Core/Inc/se_tls_json_client.h ../Core/Inc/se_time.h \
+ ../Core/Inc/se_tls_client.h ../Core/Inc/se_time.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/ssl.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h \
  ../wolfSSL/user_settings.h \
@@ -33,6 +33,8 @@ Core/Src/se_usb_tls.o: ../Core/Src/se_usb_tls.c ../Core/Inc/se_usb_tls.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/version.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/error-ssl.h \
@@ -49,7 +51,7 @@ Core/Src/se_usb_tls.o: ../Core/Src/se_usb_tls.c ../Core/Inc/se_usb_tls.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/callbacks.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfio.h
 ../Core/Inc/se_usb_tls.h:
-../Core/Inc/se_tls_json_client.h:
+../Core/Inc/se_tls_client.h:
 ../Core/Inc/se_time.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/ssl.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h:
@@ -84,6 +86,8 @@ Core/Src/se_usb_tls.o: ../Core/Src/se_usb_tls.c ../Core/Inc/se_usb_tls.h \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/version.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/error-ssl.h:

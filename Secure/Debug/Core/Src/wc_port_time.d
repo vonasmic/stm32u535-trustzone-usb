@@ -28,8 +28,16 @@ Core/Src/wc_port_time.o: ../Core/Src/wc_port_time.c ../Core/Inc/main.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
- ../Core/Inc/se_time.h
+ ../Core/Inc/se_time.h ../Core/Inc/se_nv.h \
+ ../../libtropic/include/libtropic.h \
+ ../../libtropic/include/libtropic_common.h \
+ ../../libtropic/include/libtropic_macros.h \
+ ../../libtropic/include/tropic01_application_co.h \
+ ../../libtropic/include/bits.h \
+ ../../libtropic/include/tropic01_bootloader_co.h
 ../Core/Inc/main.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h:
 ../Core/Inc/stm32u5xx_hal_conf.h:
@@ -60,5 +68,14 @@ Core/Src/wc_port_time.o: ../Core/Src/wc_port_time.c ../Core/Inc/main.h \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
 ../Core/Inc/se_time.h:
+../Core/Inc/se_nv.h:
+../../libtropic/include/libtropic.h:
+../../libtropic/include/libtropic_common.h:
+../../libtropic/include/libtropic_macros.h:
+../../libtropic/include/tropic01_application_co.h:
+../../libtropic/include/bits.h:
+../../libtropic/include/tropic01_bootloader_co.h:

@@ -1,0 +1,6 @@
+../Core/Src/secure_tls_cmd.c:134:12:lv_write_u16	16	static
+../Core/Src/secure_tls_cmd.c:25:6:secure_otp_req_discard	8	static
+../Core/Src/secure_tls_cmd.c:63:10:secure_otp_req_ingest	40	static
+../Core/Src/secure_tls_cmd.c:118:16:secure_otp_req_pin	0	static
+../Core/Src/secure_tls_cmd.c:126:16:secure_otp_req_msg	0	static
+../Core/Src/secure_tls_cmd.c:143:5:secure_otp_uplink	56	static

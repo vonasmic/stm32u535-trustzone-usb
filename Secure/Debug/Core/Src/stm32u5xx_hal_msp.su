@@ -3,3 +3,5 @@
 ../Core/Src/stm32u5xx_hal_msp.c:119:6:HAL_RNG_MspDeInit	0	static
 ../Core/Src/stm32u5xx_hal_msp.c:141:6:HAL_RTC_MspInit	200	static
 ../Core/Src/stm32u5xx_hal_msp.c:177:6:HAL_RTC_MspDeInit	0	static
+../Core/Src/stm32u5xx_hal_msp.c:201:6:HAL_SPI_MspInit	224	static
+../Core/Src/stm32u5xx_hal_msp.c:250:6:HAL_SPI_MspDeInit	0	static

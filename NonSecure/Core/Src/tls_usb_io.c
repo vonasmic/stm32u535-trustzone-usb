@@ -2,12 +2,15 @@
  * @file    tls_usb_io.c
  * @brief   NonSecure CDC: parse host commands, arm TLS, pump Secure pipe
  *
- * TIME=<unix> is parsed here. On success NonSecure sets Secure time via NSC
- * and arms TLS. Only then are RX bytes forwarded and UsbService polled.
- * Host disconnect / DTR off / TLS exit (IDLE) returns to command mode.
+ * Host commands live in s_host_cmds / s_tropic_cmds (HELP lists those tables).
+ * PROVISION / ENCRYPT / DECRYPT <unix> set Secure time and arm TLS with a mode
+ * enum. Only then are RX bytes forwarded and UsbService polled. Host disconnect
+ * / DTR off / TLS exit (IDLE) returns to command mode.
  */
 #include "tls_usb_io.h"
 #include "se_tls_nsc.h"
+#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -17,7 +20,9 @@ static uint8_t s_active;
 static uint8_t s_tls_armed;
 static uint8_t s_wait_time_logged;
 
-static char s_cmd_line[48];
+#define TLS_CMD_MAX 96
+
+static char s_cmd_line[TLS_CMD_MAX + 1];
 static uint8_t s_cmd_len;
 
 /* USBX write/read_run keep a pointer into the caller's buffer until NEXT.
@@ -48,30 +53,412 @@ static void tls_usb_xfer_idle(void)
     s_tx_in_flight = 0U;
 }
 
-static void handle_host_command_line(char *line)
+static char *trim_line(char *line)
 {
-    char *p = line;
-    unsigned long unix_utc;
-    char *end = NULL;
+    char *end;
 
-    while (*p == ' ' || *p == '\t') {
-        p++;
+    while (*line == ' ' || *line == '\t') {
+        line++;
     }
-    if (strncmp(p, "TIME=", 5) != 0 && strncmp(p, "TIME ", 5) != 0) {
+    end = line + strlen(line);
+    while (end > line && (end[-1] == ' ' || end[-1] == '\t')) {
+        end--;
+    }
+    *end = '\0';
+    return line;
+}
+
+static int parse_hex_nibbles(const char *hex, uint32_t hex_len, uint8_t *out, uint32_t out_len)
+{
+    uint32_t i;
+
+    if (hex == NULL || out == NULL || (hex_len & 1U) != 0U || (hex_len / 2U) != out_len) {
+        return -1;
+    }
+    for (i = 0U; i < out_len; i++) {
+        unsigned long byte;
+        char tmp[3];
+
+        if (!isxdigit((unsigned char)hex[i * 2U]) ||
+            !isxdigit((unsigned char)hex[i * 2U + 1U])) {
+            return -1;
+        }
+        tmp[0] = hex[i * 2U];
+        tmp[1] = hex[i * 2U + 1U];
+        tmp[2] = '\0';
+        byte = strtoul(tmp, NULL, 16);
+        out[i] = (uint8_t)byte;
+    }
+    return 0;
+}
+
+typedef void (*host_cmd_fn)(char *args);
+
+typedef struct {
+    const char *name;   /* token matched at start of line */
+    const char *usage;  /* listed by HELP; NULL = alias, not listed */
+    host_cmd_fn handler;
+} host_cmd_t;
+
+static void cmd_help(char *args);
+static void cmd_provision(char *args);
+static void cmd_encrypt(char *args);
+static void cmd_decrypt(char *args);
+static void cmd_tropic(char *args);
+static void cmd_tropic_ping(char *args);
+static void cmd_tropic_info(char *args);
+static void cmd_tropic_pub(char *args);
+static void cmd_tropic_keygen(char *args);
+static void cmd_tropic_sign(char *args);
+static void cmd_tropic_kem(char *args);
+static void cmd_tropic_kem_init(char *args);
+static void cmd_tropic_kem_pub(char *args);
+static void cmd_tropic_pairing(char *args);
+static int parse_pin_digits(const char *dec, uint8_t *out, uint32_t *out_len);
+
+static const host_cmd_t s_kem_cmds[] = {
+    { "INIT",  "TROPIC KEM INIT <pin> [CONFIRM]", cmd_tropic_kem_init },
+    { "PUB",   "TROPIC KEM PUB",                      cmd_tropic_kem_pub },
+};
+
+static const host_cmd_t s_tropic_cmds[] = {
+    { "PING",   "TROPIC PING",                         cmd_tropic_ping },
+    { "INFO",   "TROPIC INFO",                         cmd_tropic_info },
+    { "PUB",    "TROPIC PUB",                          cmd_tropic_pub },
+    { "KEYGEN", "TROPIC KEYGEN [<pin>]",               cmd_tropic_keygen },
+    { "SIGN",   "TROPIC SIGN <64-hex>",                cmd_tropic_sign },
+    { "KEM",    NULL,                                  cmd_tropic_kem },
+    { "PAIRING", "TROPIC PAIRING <1-3> [y]",            cmd_tropic_pairing },
+};
+
+/* Add/remove rows here; HELP walks the same tables used for dispatch. */
+static const host_cmd_t s_host_cmds[] = {
+    { "HELP",      "HELP",                         cmd_help },
+    { "?",         NULL,                           cmd_help },
+    { "PROVISION", "PROVISION <unix>",             cmd_provision },
+    { "ENCRYPT",   "ENCRYPT <unix>",               cmd_encrypt },
+    { "DECRYPT",   "DECRYPT <unix>",               cmd_decrypt },
+    { "TROPIC",    NULL,                           cmd_tropic },
+};
+
+static int cmd_match(const char *line, const char *name, char **args_out)
+{
+    size_t n = strlen(name);
+    char c;
+
+    if (strncmp(line, name, n) != 0) {
+        return 0;
+    }
+    c = line[n];
+    if (c != '\0' && c != ' ' && c != '\t' && c != '=') {
+        return 0;
+    }
+    *args_out = (char *)(line + n);
+    while (**args_out == ' ' || **args_out == '\t' || **args_out == '=') {
+        (*args_out)++;
+    }
+    return 1;
+}
+
+static const host_cmd_t *cmd_lookup(const host_cmd_t *table, size_t count,
+                                    char *line, char **args_out)
+{
+    size_t i;
+
+    for (i = 0U; i < count; i++) {
+        if (cmd_match(line, table[i].name, args_out) != 0) {
+            return &table[i];
+        }
+    }
+    return NULL;
+}
+
+static void cmd_list_usage(const host_cmd_t *table, size_t count)
+{
+    size_t i;
+
+    for (i = 0U; i < count; i++) {
+        if (table[i].usage != NULL) {
+            ns_log(table[i].usage);
+        }
+    }
+}
+
+static void tropic_log_status(uint32_t st)
+{
+    if (st == SECURE_TROPIC_OK) {
         return;
     }
-    p += 5;
+    if (st == SECURE_TROPIC_SLOT_OCC) {
+        ns_log("TROPIC slot occupied");
+        return;
+    }
+    if (st == SECURE_TROPIC_NOT_READY) {
+        ns_log("TROPIC not ready");
+        return;
+    }
+    if (st == SECURE_TROPIC_TAMPERED) {
+        ns_log("DEVICE_TAMPERED");
+        return;
+    }
+    ns_log("TROPIC command failed");
+}
+
+static void cmd_help(char *args)
+{
+    (void)args;
+    ns_log("commands:");
+    cmd_list_usage(s_host_cmds, sizeof(s_host_cmds) / sizeof(s_host_cmds[0]));
+    cmd_list_usage(s_tropic_cmds, sizeof(s_tropic_cmds) / sizeof(s_tropic_cmds[0]));
+    cmd_list_usage(s_kem_cmds, sizeof(s_kem_cmds) / sizeof(s_kem_cmds[0]));
+}
+
+static int parse_unix_arg(char *args, uint32_t *out)
+{
+    char *p = trim_line(args);
+    char *end = NULL;
+    unsigned long unix_utc;
+
     unix_utc = strtoul(p, &end, 10);
     if (end == p || unix_utc == 0UL) {
-        ns_log("bad TIME command");
+        return -1;
+    }
+    p = trim_line(end);
+    if (*p != '\0') {
+        return -1;
+    }
+    *out = (uint32_t)unix_utc;
+    return 0;
+}
+
+static void cmd_tls_start(uint32_t mode, char *args)
+{
+    uint32_t unix_utc;
+
+    if (parse_unix_arg(args, &unix_utc) != 0) {
+        ns_log("bad unix time");
         return;
     }
-    if (SECURE_SetUnixTime_nsc_call((uint32_t)unix_utc) != SECURE_USB_OK) {
-        ns_log("TIME set failed");
+    if (SECURE_TlsStart_nsc_call(mode, unix_utc) != SECURE_USB_OK) {
+        ns_log("TLS start failed");
         return;
     }
     s_tls_armed = 1U;
     s_wait_time_logged = 0U;
+}
+
+static void cmd_provision(char *args)
+{
+    cmd_tls_start(SECURE_TLS_MODE_PROVISION, args);
+}
+
+static void cmd_encrypt(char *args)
+{
+    cmd_tls_start(SECURE_TLS_MODE_ENCRYPT, args);
+}
+
+static void cmd_decrypt(char *args)
+{
+    cmd_tls_start(SECURE_TLS_MODE_DECRYPT, args);
+}
+
+static void cmd_tropic_ping(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicPing_nsc_call());
+}
+
+static void cmd_tropic_info(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicInfo_nsc_call());
+}
+
+static void cmd_tropic_pub(char *args)
+{
+    uint8_t xy64[64];
+
+    (void)args;
+    tropic_log_status(SECURE_TropicPub_nsc_call(xy64));
+}
+
+static void cmd_tropic_keygen(char *args)
+{
+    char *p = trim_line(args);
+    uint8_t pin[8];
+    uint32_t pin_len = 0U;
+
+    if (*p == '\0') {
+        tropic_log_status(SECURE_TropicKeygen_nsc_call(NULL, 0U));
+        return;
+    }
+    if (parse_pin_digits(p, pin, &pin_len) != 0) {
+        ns_log("bad TROPIC KEYGEN pin");
+        return;
+    }
+    p = trim_line(p + pin_len);
+    if (*p != '\0') {
+        ns_log("bad TROPIC KEYGEN");
+        return;
+    }
+    tropic_log_status(SECURE_TropicKeygen_nsc_call(pin, pin_len));
+}
+
+static void cmd_tropic_sign(char *args)
+{
+    uint8_t hash32[32];
+    uint8_t rs64[64];
+    char *p = trim_line(args);
+
+    if (strlen(p) != 64U || parse_hex_nibbles(p, 64U, hash32, 32U) != 0) {
+        ns_log("bad TROPIC SIGN hash");
+        return;
+    }
+    tropic_log_status(SECURE_TropicSign_nsc_call(hash32, rs64));
+}
+
+/* KEM INIT: 4–8 decimal digits 0-9; each digit becomes one PIN byte. */
+static int parse_pin_digits(const char *dec, uint8_t *out, uint32_t *out_len)
+{
+    size_t n;
+    size_t i;
+
+    if (dec == NULL || out == NULL || out_len == NULL) {
+        return -1;
+    }
+    n = strlen(dec);
+    if (n < 4U || n > 8U) {
+        return -1;
+    }
+    for (i = 0U; i < n; i++) {
+        if (dec[i] < '0' || dec[i] > '9') {
+            return -1;
+        }
+        out[i] = (uint8_t)(dec[i] - '0');
+    }
+    *out_len = (uint32_t)n;
+    return 0;
+}
+
+static void cmd_tropic_kem(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_kem_cmds, sizeof(s_kem_cmds) / sizeof(s_kem_cmds[0]), p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown TROPIC KEM command");
+        return;
+    }
+    cmd->handler(sub_args);
+}
+
+static void cmd_tropic_kem_init(char *args)
+{
+    char *p = trim_line(args);
+    char *tail;
+    uint8_t pin[8];
+    uint32_t pin_len = 0U;
+    uint32_t do_confirm = 0U;
+
+    tail = p + strcspn(p, " \t");
+    if (*tail != '\0') {
+        *tail++ = '\0';
+        tail = trim_line(tail);
+        if (strcmp(tail, "CONFIRM") == 0) {
+            do_confirm = 1U;
+        } else {
+            ns_log("bad TROPIC KEM INIT (expected CONFIRM)");
+            return;
+        }
+    }
+    if (parse_pin_digits(p, pin, &pin_len) != 0) {
+        ns_log("bad TROPIC KEM INIT pin");
+        return;
+    }
+    tropic_log_status(SECURE_TropicKemInit_nsc_call(pin, pin_len, do_confirm));
+}
+
+static void cmd_tropic_kem_pub(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicKemPub_nsc_call());
+}
+
+static void pairing_warn(unsigned long slot)
+{
+    char line[96];
+
+    (void)snprintf(line, sizeof(line),
+                   "WARNING: PAIRING writes a new X25519 access key to pairing slot %lu", slot);
+    ns_log(line);
+    ns_log("WARNING: factory SH0 (pairing slot 0) will be INVALIDATED");
+    ns_log("WARNING: irreversible on real silicon; resend with y to continue");
+    (void)snprintf(line, sizeof(line), "TROPIC PAIRING %lu y", slot);
+    ns_log(line);
+}
+
+static void cmd_tropic_pairing(char *args)
+{
+    char *p = trim_line(args);
+    char *end = NULL;
+    unsigned long slot;
+    uint32_t do_confirm = 0U;
+
+    slot = strtoul(p, &end, 10);
+    if (end == p) {
+        ns_log("bad TROPIC PAIRING slot");
+        return;
+    }
+    p = trim_line(end);
+    if (*p != '\0') {
+        if ((p[0] == 'y' || p[0] == 'Y') && p[1] == '\0') {
+            do_confirm = 1U;
+        } else {
+            ns_log("bad TROPIC PAIRING (expected y)");
+            return;
+        }
+    }
+    if ((slot < 1UL) || (slot > 3UL)) {
+        ns_log("TROPIC PAIRING slot must be 1-3");
+        return;
+    }
+    if (do_confirm == 0U) {
+        pairing_warn(slot);
+        return;
+    }
+    tropic_log_status(SECURE_TropicPairing_nsc_call((uint32_t)slot));
+}
+
+static void cmd_tropic(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_tropic_cmds, sizeof(s_tropic_cmds) / sizeof(s_tropic_cmds[0]),
+                     p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown TROPIC command");
+        return;
+    }
+    cmd->handler(sub_args);
+}
+
+static void handle_host_command_line(char *line)
+{
+    char *p = trim_line(line);
+    char *args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_host_cmds, sizeof(s_host_cmds) / sizeof(s_host_cmds[0]),
+                     p, &args);
+    if (cmd == NULL) {
+        ns_log("unknown command");
+        return;
+    }
+    cmd->handler(args);
 }
 
 static void process_pre_tls_byte(uint8_t b)
@@ -87,7 +474,7 @@ static void process_pre_tls_byte(uint8_t b)
         s_cmd_len = 0U;
         return;
     }
-    if (s_cmd_len + 1U < sizeof(s_cmd_line)) {
+    if (s_cmd_len < TLS_CMD_MAX) {
         s_cmd_line[s_cmd_len++] = (char)b;
     } else {
         s_cmd_len = 0U;
@@ -259,7 +646,7 @@ void tls_usb_poll(void)
     } while (status == UX_STATE_NEXT && actual > 0U);
 
     if ((s_dtr != 0U) && (s_tls_armed == 0U) && (s_wait_time_logged == 0U)) {
-        ns_log("waiting TIME=<unix>");
+        ns_log("waiting PROVISION|ENCRYPT|DECRYPT <unix>");
         s_wait_time_logged = 1U;
     }
 
@@ -273,3 +660,5 @@ void tls_usb_poll(void)
 
     tls_usb_drain_tx();
 }
+
+#include "se_ns_usbx_sources.inc"

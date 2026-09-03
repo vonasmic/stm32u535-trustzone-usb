@@ -28,6 +28,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h \
  ../wolfSSL/user_settings.h \
@@ -47,7 +49,13 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/pkcs12.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/callbacks.h \
  ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfio.h \
- ../Core/Inc/se_usb_tls.h ../Core/Inc/se_tls_json_client.h
+ ../Core/Inc/se_usb_tls.h ../Core/Inc/se_tls_client.h \
+ ../Core/Inc/se_tropic.h ../../libtropic/include/libtropic.h \
+ ../../libtropic/include/libtropic_common.h \
+ ../../libtropic/include/libtropic_macros.h \
+ ../../libtropic/include/tropic01_application_co.h \
+ ../../libtropic/include/bits.h \
+ ../../libtropic/include/tropic01_bootloader_co.h ../Core/Inc/se_time.h
 ../Core/Inc/main.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h:
 ../Core/Inc/stm32u5xx_hal_conf.h:
@@ -78,6 +86,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h:
 ../wolfSSL/user_settings.h:
@@ -98,4 +108,12 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/callbacks.h:
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfio.h:
 ../Core/Inc/se_usb_tls.h:
-../Core/Inc/se_tls_json_client.h:
+../Core/Inc/se_tls_client.h:
+../Core/Inc/se_tropic.h:
+../../libtropic/include/libtropic.h:
+../../libtropic/include/libtropic_common.h:
+../../libtropic/include/libtropic_macros.h:
+../../libtropic/include/tropic01_application_co.h:
+../../libtropic/include/bits.h:
+../../libtropic/include/tropic01_bootloader_co.h:
+../Core/Inc/se_time.h:

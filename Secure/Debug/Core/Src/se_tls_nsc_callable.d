@@ -1,7 +1,21 @@
 Core/Src/se_tls_nsc_callable.o: ../Core/Src/se_tls_nsc_callable.c \
  ../../Secure_nsclib/se_tls_nsc.h ../../Secure_nsclib/se_nsc_api.h \
- ../Core/Inc/se_usb_tls.h ../Core/Inc/se_tls_json_client.h \
- ../Core/Inc/main.h \
+ ../Core/Inc/se_usb_tls.h ../Core/Inc/se_tls_client.h \
+ ../Core/Inc/se_time.h ../Core/Inc/se_tropic.h \
+ ../../libtropic/include/libtropic.h \
+ ../../libtropic/include/libtropic_common.h \
+ ../../libtropic/include/libtropic_macros.h \
+ ../../libtropic/include/tropic01_application_co.h \
+ ../../libtropic/include/bits.h \
+ ../../libtropic/include/tropic01_bootloader_co.h \
+ ../Core/Inc/se_tropic_mlkem.h ../Core/Inc/se_tropic_rmem.h \
+ ../Core/Inc/se_nv.h ../Core/Inc/se_tropic_pin.h \
+ ../Core/Inc/se_tropic_rmem.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/memory.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/types.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h \
+ ../wolfSSL/user_settings.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/visibility.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h \
  ../Core/Inc/stm32u5xx_hal_conf.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rcc.h \
@@ -31,12 +45,33 @@ Core/Src/se_tls_nsc_callable.o: ../Core/Src/se_tls_nsc_callable.c \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h \
  ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h \
- ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
+ ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/wc_port.h \
+ ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/oid_sum.h
 ../../Secure_nsclib/se_tls_nsc.h:
 ../../Secure_nsclib/se_nsc_api.h:
 ../Core/Inc/se_usb_tls.h:
-../Core/Inc/se_tls_json_client.h:
-../Core/Inc/main.h:
+../Core/Inc/se_tls_client.h:
+../Core/Inc/se_time.h:
+../Core/Inc/se_tropic.h:
+../../libtropic/include/libtropic.h:
+../../libtropic/include/libtropic_common.h:
+../../libtropic/include/libtropic_macros.h:
+../../libtropic/include/tropic01_application_co.h:
+../../libtropic/include/bits.h:
+../../libtropic/include/tropic01_bootloader_co.h:
+../Core/Inc/se_tropic_mlkem.h:
+../Core/Inc/se_tropic_rmem.h:
+../Core/Inc/se_nv.h:
+../Core/Inc/se_tropic_pin.h:
+../Core/Inc/se_tropic_rmem.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/memory.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/types.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/settings.h:
+../wolfSSL/user_settings.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/visibility.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h:
 ../Core/Inc/stm32u5xx_hal_conf.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rcc.h:
@@ -66,4 +101,8 @@ Core/Src/se_tls_nsc_callable.o: ../Core/Src/se_tls_nsc_callable.c \
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rng_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rtc_ex.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi.h:
+../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/wc_port.h:
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfssl/wolfcrypt/oid_sum.h:

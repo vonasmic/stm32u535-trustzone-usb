@@ -155,5 +155,5 @@ void USB_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+#include "se_ns_hal_sources.inc"
 /* USER CODE END 1 */

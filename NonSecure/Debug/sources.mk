@@ -24,10 +24,5 @@ C_DEPS :=
 SUBDIRS := \
 Core/Src \
 Core/Startup \
-Drivers/STM32U5xx_HAL_Driver \
-Middlewares/ST/usbx/Core\ System \
-Middlewares/ST/usbx/UX\ Device\ Class\ CDC\ ACM \
-Middlewares/ST/usbx/UX\ Device\ Controllers \
-Middlewares/ST/usbx/UX\ Device\ CoreStack \
 USBX/App \
 

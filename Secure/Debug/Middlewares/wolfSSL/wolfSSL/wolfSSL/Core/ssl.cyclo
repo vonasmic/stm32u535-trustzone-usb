@@ -3,8 +3,8 @@
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_api_cert.c:456:25:ModeToVerifyOptions	3
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:194:13:DoCertManagerFree	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:1885:12:wolfSSL_read_internal	3
-../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:131:12:DataToDerBuffer	6
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/wolfcrypt/src/misc.c:591:31:ForceZero	5
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:131:12:DataToDerBuffer.isra	5
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:85:23:wolfSSL_CertManagerNew_ex	3
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:180:23:wolfSSL_CertManagerNew	1
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:247:6:wolfSSL_CertManagerFree	3
@@ -13,7 +13,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/s
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:490:5:wolfSSL_CertManagerUnloadTypeCerts	3
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:526:5:wolfSSL_CertManagerUnloadIntermediateCerts	1
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:732:6:wolfSSL_CertManagerSetVerify	2
-../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:770:5:CM_VerifyBuffer_ex	7
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:770:5:CM_VerifyBuffer_ex	6
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:901:5:wolfSSL_CertManagerVerifyBuffer	5
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:1725:5:wolfSSL_CertManagerEnableCRL	1
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:1807:5:wolfSSL_CertManagerDisableCRL	2
@@ -133,7 +133,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/s
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:2958:5:wolfSSL_SetMinVersion	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:2978:5:wolfSSL_GetVersion	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:3017:5:wolfSSL_SetVersion	4
-../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:2393:5:ProcessBuffer	138
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:2393:5:ProcessBuffer	132
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:3768:5:wolfSSL_use_certificate_ASN1	3
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:3980:5:wolfSSL_CTX_load_verify_buffer_ex	8
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_load.c:4035:5:wolfSSL_CTX_load_verify_buffer	1
@@ -149,6 +149,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/s
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:3597:6:wolfSSL_load_error_strings	1
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:3952:5:wolfSSL_CTX_set_cipher_list	3
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:3987:5:wolfSSL_set_cipher_list	4
+C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:4053:5:wolfSSL_export_keying_material	21
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:4238:21:wolfSSLv23_client_method_ex	2
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:4234:21:wolfSSLv23_client_method	1
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:4269:9:wolfSSL_connect	2
@@ -161,7 +162,7 @@ C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/s
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:5338:5:wolfSSL_Cleanup	10
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:3140:5:wolfSSL_Init	8
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:544:14:wolfSSL_CTX_new_ex	7
-../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:591:5:wolfSSL_CertManagerLoadCABufferType	10
+../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:591:5:wolfSSL_CertManagerLoadCABufferType	9
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:699:5:wolfSSL_CertManagerLoadCABuffer_ex	1
 ../../Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl_certman.c:719:5:wolfSSL_CertManagerLoadCABuffer	1
 C:/tmp/SE_firmware/Middlewares/Third_Party/wolfSSL_wolfSSL_wolfSSL/wolfssl/src/ssl.c:650:14:wolfSSL_CTX_new	1

@@ -22,6 +22,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "secure_nsc.h"
+#include <arm_cmse.h>
 /** @addtogroup STM32U5xx_HAL_Examples
 
   * @{
@@ -50,20 +51,33 @@ void *pSecureErrorCallback = NULL;   /* Pointer to secure error callback in Non-
   */
     CMSE_NS_ENTRY void SECURE_RegisterCallback(SECURE_CallbackIDTypeDef CallbackId, void *func)
     {
-      if(func != NULL)
+      void *ns_func;
+
+      if (func == NULL) {
+        return;
+      }
+
+      /* Reject Secure / invalid addresses; require readable NS code. */
+      ns_func = cmse_check_address_range(func, sizeof(void *),
+                                         CMSE_NONSECURE | CMSE_MPU_READ);
+      if (ns_func == NULL) {
+        return;
+      }
+
+      /* Clear the address LSB for a NonSecure function pointer (SG/BLXNS safe). */
+      ns_func = cmse_nsfptr_create(ns_func);
+
+      switch (CallbackId)
       {
-        switch(CallbackId)
-        {
-          case SECURE_FAULT_CB_ID:           /* SecureFault Interrupt occurred */
-          pSecureFaultCallback = func;
+        case SECURE_FAULT_CB_ID:           /* SecureFault Interrupt occurred */
+          pSecureFaultCallback = ns_func;
           break;
-          case GTZC_ERROR_CB_ID:             /* GTZC Interrupt occurred */
-          pSecureErrorCallback = func;
+        case GTZC_ERROR_CB_ID:             /* GTZC Interrupt occurred */
+          pSecureErrorCallback = ns_func;
           break;
-          default:
+        default:
           /* unknown */
           break;
-        }
       }
     }
 

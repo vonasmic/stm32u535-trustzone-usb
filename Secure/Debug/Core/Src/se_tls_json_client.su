@@ -1,5 +1,0 @@
-../Core/Src/se_tls_json_client.c:40:13:tls_json_wipe_ssl	8	static
-../Core/Src/se_tls_json_client.c:139:6:se_tls_json_init	0	static
-../Core/Src/se_tls_json_client.c:146:6:se_tls_json_reset_quiet	8	static
-../Core/Src/se_tls_json_client.c:156:6:se_tls_json_abort	8	static
-../Core/Src/se_tls_json_client.c:182:6:se_tls_json_service_once	552	static
