@@ -54,7 +54,7 @@ extern "C" {
 #define WOLF_CONF_SHA3            1
 #define WOLF_CONF_PSK             0
 #define WOLF_CONF_PWDBASED        0
-#define WOLF_CONF_KEEP_PEER_CERT  0
+#define WOLF_CONF_KEEP_PEER_CERT  1
 #define WOLF_CONF_BASE64_ENCODE   0
 #define WOLF_CONF_OPENSSL_EXTRA   0
 #define WOLF_CONF_TEST            0

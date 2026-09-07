@@ -1,3 +1,0 @@
-../Core/Src/se_tropic_pin.c:54:17:pin_kdf_in.constprop	128	static
-../Core/Src/se_tropic_pin.c:78:10:se_tropic_pin_setup	712	static
-../Core/Src/se_tropic_pin.c:172:10:se_tropic_pin_check	784	static

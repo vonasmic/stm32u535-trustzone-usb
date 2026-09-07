@@ -86,6 +86,8 @@ extern "C" {
 #define SE_TROPIC_RMEM_SLOT_MAX      475u
 #define SE_TROPIC_RMEM_PLAIN_MAX     (SE_TROPIC_RMEM_SLOT_MAX - SE_TROPIC_RMEM_OVERHEAD)
 #define SE_TROPIC_RMEM_BLOB_MAX      SE_TROPIC_RMEM_SLOT_MAX
+/** Generic storage-blob plaintext (MCU NV v4 is larger than one R-MEM slot). */
+#define SE_TROPIC_STORAGE_PLAIN_MAX  1024u
 
 /**
  * One SAE encapsulation covers the whole QKD fill: slots 0..2 hold the 1088 B

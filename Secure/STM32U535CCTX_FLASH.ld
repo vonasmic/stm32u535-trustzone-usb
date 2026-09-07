@@ -147,6 +147,16 @@ SECTIONS
     . = ALIGN(4);
   } >FLASH_NSC
 
+  /* After veneers. Arrays are compiled into .fw_creds (not .rodata*) so the
+   * wildcard above cannot steal them. NS cannot read this page. */
+  .fw_creds (READONLY) :
+  {
+    . = ALIGN(4);
+    *(.fw_creds)
+    *(.fw_creds.*)
+    . = ALIGN(4);
+  } >FLASH_NSC
+
   /* Uninitialized data section into "RAM" Ram type memory */
   .bss :
   {

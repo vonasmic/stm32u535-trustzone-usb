@@ -1,8 +1,0 @@
-../Core/Src/wc_port_time.c:23:17:se_time_floor_now	3
-../Core/Src/wc_port_time.c:45:6:se_time_boot_restore	5
-../Core/Src/wc_port_time.c:66:5:se_time_is_synced	1
-../Core/Src/wc_port_time.c:71:6:se_time_clear_synced	2
-../Core/Src/wc_port_time.c:83:5:se_time_set_unix	4
-../Core/Src/wc_port_time.c:109:10:se_time_unix_now	2
-../Core/Src/wc_port_time.c:117:8:XTIME	2
-../Core/Src/wc_port_time.c:126:12:XGMTIME	5

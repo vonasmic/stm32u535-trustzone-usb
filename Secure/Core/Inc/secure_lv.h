@@ -47,8 +47,8 @@ extern "C" {
  * Uplink v3 items, in order: session signature (64 B), TROPIC01 P-256 public
  * key (64 B), client hash (32 B), R-MEM slot size (u16 LE), pad slot count
  * (u16 LE), pending fill_id (32 B), ML-KEM-768 public key (1184 B), then
- * alternating peer hash (32 B) / peer name.
- * count = SECURE_LV_UPLINK_FIXED_ITEMS + 2 * num_peers.
+ * alternating peer hash (32 B) / peer name from MCU NV (PEER ADD).
+ * count = SECURE_LV_UPLINK_FIXED_ITEMS + 2 * se_nv_peer_count().
  *
  * Downlink v2 items: kem_ct (1088 B), decrypt_half (1 B, 0 or 1), then pad
  * images (logical index = item index - 2).

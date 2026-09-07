@@ -1,2 +1,0 @@
-../Core/Src/se_tls_nsc_stub.c:7:9:SECURE_GetUnixTime	1
-../Core/Src/se_tls_nsc_stub.c:12:10:SECURE_QkdIngest	1

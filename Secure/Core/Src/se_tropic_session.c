@@ -94,6 +94,7 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     uint16_t kem_pk_len = 0U;
     uint16_t count;
     unsigned int i;
+    uint8_t peer_n;
     int rc = -1;
     lt_ret_t ret;
 
@@ -122,7 +123,13 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     se_put_u16le(slot_size_le, slot_size);
     se_put_u16le(pad_count_le, pad_count);
 
-    count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * fw_peer_count));
+    peer_n = 0U;
+    ret = se_nv_peer_count(&peer_n);
+    if (ret != LT_OK) {
+        se_usb_debug_printf("session: peer list NV failed");
+        return -1;
+    }
+    count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * (unsigned int)peer_n));
 
     if ((write(&version, 1U, ctx) == 0) &&
         (secure_lv_write_u16(count, write, ctx) == 0) &&
@@ -136,13 +143,21 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
         rc = 0;
     }
 
-    for (i = 0U; (rc == 0) && (i < fw_peer_count); i++) {
-        if (secure_lv_write_item(fw_peers[i].hash, 32U, write, ctx) != 0) {
+    for (i = 0U; (rc == 0) && (i < (unsigned int)peer_n); i++) {
+        uint8_t name[SE_NV_PEER_NAME_MAX];
+        uint8_t hash32[SE_NV_PEER_HASH_LEN];
+        uint8_t name_len = SE_NV_PEER_NAME_MAX;
+
+        ret = se_nv_peer_get((uint8_t)i, name, &name_len, hash32);
+        if (ret != LT_OK) {
             rc = -1;
             break;
         }
-        if (secure_lv_write_item((const uint8_t *)fw_peers[i].name,
-                                 (uint16_t)fw_peers[i].name_len, write, ctx) != 0) {
+        if (secure_lv_write_item(hash32, SE_NV_PEER_HASH_LEN, write, ctx) != 0) {
+            rc = -1;
+            break;
+        }
+        if (secure_lv_write_item(name, (uint16_t)name_len, write, ctx) != 0) {
             rc = -1;
         }
     }

@@ -121,7 +121,7 @@ lt_ret_t se_tropic_encrypt_storage_blob(const uint8_t key[SE_TROPIC_RMEM_AES_KEY
 
     if ((key == NULL) || (plain == NULL) || (nonce == NULL) || (blob == NULL) || (blob_len == NULL) ||
         ((binding == NULL) && (binding_len != 0U)) || (plain_len == 0u) ||
-        (plain_len > SE_TROPIC_RMEM_PLAIN_MAX)) {
+        (plain_len > SE_TROPIC_STORAGE_PLAIN_MAX)) {
         return LT_PARAM_ERR;
     }
     if (*blob_len < (uint16_t)(SE_TROPIC_RMEM_OVERHEAD + plain_len)) {
@@ -173,7 +173,7 @@ lt_ret_t se_tropic_decrypt_storage_blob(const uint8_t key[SE_TROPIC_RMEM_AES_KEY
     }
 
     ct_len = (uint16_t)(blob_len - SE_TROPIC_RMEM_OVERHEAD);
-    if ((ct_len == 0u) || (ct_len > plain_max) || (ct_len > SE_TROPIC_RMEM_PLAIN_MAX)) {
+    if ((ct_len == 0u) || (ct_len > plain_max) || (ct_len > SE_TROPIC_STORAGE_PLAIN_MAX)) {
         return LT_PARAM_ERR;
     }
 

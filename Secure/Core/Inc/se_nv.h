@@ -1,6 +1,6 @@
 /**
  * @file    se_nv.h
- * @brief   MCU-only sealed NV: fill_id, dual OTP cursors, TIME floor, pairing key
+ * @brief   MCU-only sealed NV: fill_id, dual OTP cursors, TIME floor, pairing, peers
  *
  * Tropic R-MEM / mcounter are not the source of truth under a broken ECC L3
  * session. This record lives in Secure flash (device) or process RAM (host model).
@@ -17,6 +17,9 @@ extern "C" {
 
 #define SE_NV_FILL_ID_LEN 32u
 #define SE_NV_PAIRING_KEY_LEN 32u
+#define SE_NV_PEER_MAX 8u
+#define SE_NV_PEER_NAME_MAX 16u
+#define SE_NV_PEER_HASH_LEN 32u
 
 #define SE_NV_FLAG_FILL    0x00000001u
 #define SE_NV_FLAG_TIME    0x00000002u
@@ -28,12 +31,21 @@ extern "C" {
  * SE_TROPIC_TAMPERED at the host-command boundary.
  */
 #define SE_TROPIC_LT_TAMPERED ((lt_ret_t)200)
+#define SE_NV_PEER_EXISTS     ((lt_ret_t)201)
+#define SE_NV_PEER_NOT_FOUND  ((lt_ret_t)202)
+#define SE_NV_PEER_FULL       ((lt_ret_t)203)
 
 /** Which QKD half-cursor to read or advance. */
 typedef enum {
     SE_NV_OTP_ENCRYPT = 0,
     SE_NV_OTP_DECRYPT = 1
 } se_nv_otp_dir_t;
+
+typedef struct {
+    uint8_t name_len; /* 0 = empty slot */
+    uint8_t name[SE_NV_PEER_NAME_MAX];
+    uint8_t hash[SE_NV_PEER_HASH_LEN];
+} se_nv_peer_t;
 
 typedef struct {
     uint8_t fill_id[SE_NV_FILL_ID_LEN];
@@ -46,6 +58,8 @@ typedef struct {
     uint8_t pairing_slot;
     uint8_t pairing_priv[SE_NV_PAIRING_KEY_LEN];
     uint8_t pairing_pub[SE_NV_PAIRING_KEY_LEN];
+    uint8_t peer_count; /* 0..SE_NV_PEER_MAX; occupied slots are compact 0..count-1 */
+    se_nv_peer_t peers[SE_NV_PEER_MAX];
 } se_nv_state_t;
 
 /** Load sealed record. Empty/erased page => flags 0, LT_OK. Bad MAC => TAMPERED. */
@@ -94,6 +108,26 @@ lt_ret_t se_nv_set_pairing(uint8_t slot, const uint8_t priv[SE_NV_PAIRING_KEY_LE
 /** Copy committed pairing key; LT_FAIL when SE_NV_FLAG_PAIRING is unset. */
 lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
                            uint8_t pub[SE_NV_PAIRING_KEY_LEN]);
+
+/**
+ * Append a nickname+hash peer. Nickname is unique (case-sensitive).
+ * @return LT_OK, SE_NV_PEER_EXISTS, SE_NV_PEER_FULL, LT_PARAM_ERR, or tamper
+ */
+lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
+                        const uint8_t hash32[SE_NV_PEER_HASH_LEN]);
+
+/** Remove by nickname. @return LT_OK, SE_NV_PEER_NOT_FOUND, or tamper */
+lt_ret_t se_nv_peer_remove(const uint8_t *name, uint8_t name_len);
+
+/** Occupied peer count (0..8). */
+lt_ret_t se_nv_peer_count(uint8_t *count);
+
+/**
+ * Copy occupied slot @p index (0 .. count-1).
+ * @p name_len in: capacity of @p name; out: actual length.
+ */
+lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
+                        uint8_t hash32[SE_NV_PEER_HASH_LEN]);
 
 /**
  * Read TIME floor if present.

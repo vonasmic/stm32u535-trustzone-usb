@@ -1,3 +1,0 @@
-../Core/Src/se_tropic_session.c:36:12:lv_write_item	3
-../Core/Src/se_tropic_session.c:103:5:se_tropic_session_uplink	26
-../Core/Src/se_tropic_session.c:180:10:se_tropic_cert_dump	1

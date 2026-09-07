@@ -13,6 +13,7 @@
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
 #include "se_tropic_pin.h"
+#include "se_nv.h"
 #include "wolfssl/wolfcrypt/memory.h"
 #include <arm_cmse.h>
 #include <stddef.h>
@@ -295,4 +296,105 @@ uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot)
         return SECURE_TROPIC_ERR;
     }
     return se_create_pairing_key_to_tropic((uint8_t)slot);
+}
+
+static uint32_t peer_lt_to_nsc(lt_ret_t ret)
+{
+    if (ret == LT_OK) {
+        return SECURE_PEER_OK;
+    }
+    if (ret == SE_NV_PEER_EXISTS) {
+        return SECURE_PEER_EXISTS;
+    }
+    if (ret == SE_NV_PEER_NOT_FOUND) {
+        return SECURE_PEER_NOT_FOUND;
+    }
+    if (ret == SE_NV_PEER_FULL) {
+        return SECURE_PEER_FULL;
+    }
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return SECURE_TROPIC_TAMPERED;
+    }
+    return SECURE_PEER_ERR;
+}
+
+uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const uint8_t *name, uint32_t name_len,
+                                              const uint8_t *hash32)
+{
+    const uint8_t *ns_name;
+    const uint8_t *ns_hash;
+
+    if ((name_len < 1U) || (name_len > SECURE_PEER_NAME_MAX)) {
+        return SECURE_PEER_ERR;
+    }
+    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
+    ns_hash = (const uint8_t *)ns_sanitize_in(hash32, 32U);
+    if ((ns_name == NULL) || (ns_hash == NULL)) {
+        return SECURE_PEER_ERR;
+    }
+    return peer_lt_to_nsc(se_nv_peer_add(ns_name, (uint8_t)name_len, ns_hash));
+}
+
+uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len)
+{
+    const uint8_t *ns_name;
+
+    if ((name_len < 1U) || (name_len > SECURE_PEER_NAME_MAX)) {
+        return SECURE_PEER_ERR;
+    }
+    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
+    if (ns_name == NULL) {
+        return SECURE_PEER_ERR;
+    }
+    return peer_lt_to_nsc(se_nv_peer_remove(ns_name, (uint8_t)name_len));
+}
+
+uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
+{
+    uint8_t n = 0U;
+    lt_ret_t ret = se_nv_peer_count(&n);
+
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return SECURE_TROPIC_TAMPERED;
+    }
+    if (ret != LT_OK) {
+        return 0x80u;
+    }
+    return (uint32_t)n;
+}
+
+uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
+                                              uint32_t *name_len_inout, uint8_t *hash32_out)
+{
+    uint8_t *ns_name;
+    uint32_t *ns_nlen;
+    uint8_t *ns_hash;
+    uint8_t nlen;
+    uint32_t cap;
+
+    if (index > 255U) {
+        return SECURE_PEER_ERR;
+    }
+    ns_nlen = (uint32_t *)ns_sanitize_out(name_len_inout, (uint32_t)sizeof(uint32_t));
+    if (ns_nlen == NULL) {
+        return SECURE_PEER_ERR;
+    }
+    cap = *ns_nlen;
+    if ((cap < 1U) || (cap > SECURE_PEER_NAME_MAX)) {
+        return SECURE_PEER_ERR;
+    }
+    ns_name = (uint8_t *)ns_sanitize_out(name_out, cap);
+    ns_hash = (uint8_t *)ns_sanitize_out(hash32_out, 32U);
+    if ((ns_name == NULL) || (ns_hash == NULL)) {
+        return SECURE_PEER_ERR;
+    }
+    nlen = (uint8_t)cap;
+    {
+        lt_ret_t ret = se_nv_peer_get((uint8_t)index, ns_name, &nlen, ns_hash);
+
+        if (ret == LT_OK) {
+            *ns_nlen = (uint32_t)nlen;
+        }
+        return peer_lt_to_nsc(ret);
+    }
 }

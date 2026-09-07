@@ -85,9 +85,11 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 ## MCU NV (not duplicated in flash)
 
-One AES-256-GCM blob, **142** bytes (`29 + 113` plaintext), AAD `"SE_nv_v3"`. Erase-then-write on Secure flash **page 22** (`0x0C02C000`). Host model: 256-byte RAM page.
+One AES-256-GCM blob, **535** bytes (`29 + 506` plaintext), AAD `"SE_nv_v4"`. Erase-then-write on Secure flash **page 22** (`0x0C02C000`). Host model: 1024-byte RAM page.
 
-Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`. Bad MAC or wrong length → `DEVICE_TAMPERED`. Empty/erased page is OK (flags 0).
+Load tries v4 first. If that MAC/length fails, it tries v3 (`29 + 113` plaintext, AAD `"SE_nv_v3"`), copies fill/OTP/TIME/pairing, and sets `peer_count = 0`. The next store writes v4 (migrates lab devices that already have fill/pairing). Empty/erased page is still flags 0. Any other MAC/length error → `DEVICE_TAMPERED`.
+
+Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
 
 | Field | Size | Meaning |
 | --- | --- | --- |
@@ -98,6 +100,8 @@ Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`. Bad MA
 | `flags` | u32 | `FILL`, `TIME`, `PAIRING`, `OTP` |
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |
 | `pairing_priv` / `pairing_pub` | 32 B × 2 | X25519 host key (**priv lives here**, not only on Tropic) |
+| `peer_count` | 1 B | Occupied peers, 0–8 |
+| 8 × `{name_len, name[16], hash[32]}` | 49 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
 

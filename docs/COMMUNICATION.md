@@ -114,7 +114,7 @@ Unknown `version` is a hard error (`SECURE_QKD_WRONG_VERSION` on downlink). Upli
 
 Built in [se_tropic_session.c](../Secure/Core/Src/se_tropic_session.c).
 
-`count = 7 + 2 × fw_peer_count` (currently one peer “Alice” → **9** items).
+`count = 7 + 2 × NV peer_count` (`se_nv_peer_count()`, from `PEER ADD`). An empty list is valid → **7** items.
 
 
 | Index | Item                    | Size         | Notes                                           |
@@ -126,7 +126,7 @@ Built in [se_tropic_session.c](../Secure/Core/Src/se_tropic_session.c).
 | 4     | Pad slot count          | 2 B          | u16 LE = **507**                                |
 | 5     | Pending `fill_id`       | 32 B         | RNG; committed when `kem_ct` is written         |
 | 6     | ML-KEM-768 public key   | **1184 B**   | Encapsulate from **this item**, not from a file |
-| 7+    | Per peer: hash, name    | 32 B + UTF-8 | From `fw_peers[]` in `fw_creds.h`               |
+| 7+    | Per peer: hash, name    | 32 B + UTF-8 | MCU NV (`PEER ADD`); hash is SHA256 of the peer SPKI |
 
 
 Signature digest:

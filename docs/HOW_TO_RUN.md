@@ -122,8 +122,11 @@ That writes a new X25519 host key to pairing slot 1–3, stores the private half
 Need a live Java SAE TLS server. Then:
 
 ```text
+PEER ADD <name> <64-hex>
 PROVISION <unix>
 ```
+
+`PEER ADD` is optional. With an empty NV peer list the uplink has 7 items (no peer pairs). `<64-hex>` is SHA256 of the peer SPKI (64 hex digits), the same hash SAE already receives as uplink items 7+. Cap 8 nicknames; see [COMMANDS.md](COMMANDS.md).
 
 `<unix>` is decimal Unix UTC seconds, non-zero. Secure also requires it in `[2024-01-01, 2038-01-01]`. If it is behind the stored TIME floor, firmware keeps the floor. PIN is **not** a console argument; it arrives on TLS after mTLS.
 

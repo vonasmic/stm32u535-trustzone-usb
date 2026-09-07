@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 # Kill leftovers without killing this script
-for p in model_server model_runner test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls brick_lab se_host; do
+for p in model_server model_runner test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab se_host; do
   pkill -x "$p" 2>/dev/null || true
 done
 sleep 1
 
 cd /mnt/c/tmp/SE_firmware/host/tropic_model/build
-make -j$(nproc) test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls brick_lab se_host
+make -j$(nproc) test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab se_host
 EC_BUILD=$?
 if [ "$EC_BUILD" -ne 0 ]; then
   echo "BUILD FAIL"
@@ -55,7 +55,7 @@ run_one() {
 }
 
 FAIL=0
-for t in test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls brick_lab; do
+for t in test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab; do
   run_one "$t" || FAIL=1
 done
 

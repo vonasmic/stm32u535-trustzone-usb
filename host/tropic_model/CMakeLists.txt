@@ -62,6 +62,7 @@ target_compile_definitions(wolfssl PUBLIC
     WOLFSSL_NO_ML_DSA_65
     WOLFSSL_NO_ML_DSA_87
     HAVE_KEYING_MATERIAL
+    KEEP_PEER_CERT
 )
 
 add_subdirectory("${PATH_LIBTROPIC}/cal/wolfcrypt" "wolfcrypt_cal")
@@ -145,6 +146,7 @@ add_model_test(test_f_mlkem   test_f_mlkem.c)
 add_model_test(test_g_ingest  test_g_ingest.c)
 add_model_test(test_h_pairing test_h_pairing.c)
 add_model_test(test_i_post_tls test_i_post_tls.c)
+add_model_test(test_j_peers   test_j_peers.c)
 add_model_test(brick_lab      brick_lab.c)
 
 # Integration runner against a live JAVA_TLS_TEST Node (not a default CTest).

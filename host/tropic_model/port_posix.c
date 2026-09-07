@@ -111,7 +111,7 @@ void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id)
     se_tropic_log("TROPIC chip_id ok");
 }
 
-#define SE_NV_HOST_PAGE 256u
+#define SE_NV_HOST_PAGE 1024u
 static uint8_t s_nv_page[SE_NV_HOST_PAGE];
 static uint8_t s_nv_inited;
 

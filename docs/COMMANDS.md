@@ -46,6 +46,9 @@ There is **no** `TIME=` command. `SECURE_SetUnixTime_nsc_call` exists on the NSC
 | `PROVISION <unix>` | yes | yes | decimal Unix UTC, ≠ 0 | Arm TLS mode **1**. Verify SAE application CA (`fw_root_ca_der`). After handshake: signed uplink v3, then QKD downlink v2 into R-MEM. |
 | `ENCRYPT <unix>` | yes | yes | same | Arm TLS mode **2**. Verify client CA (`fw_client_ca_der`) and pin the peer to `fw_user_spki` (home-PC user cert). Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots. |
 | `DECRYPT <unix>` | yes | yes | same | Arm TLS mode **3**. Same CA + user-key pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots). |
+| `PEER ADD <name> <64-hex>` | yes | yes | nickname + 32-byte hash | Append a provision-uplink peer in sealed MCU NV |
+| `PEER REMOVE <name>` | yes | yes | nickname | Delete that NV slot |
+| `PEER LIST` | yes | yes | — | Print each NV peer, or `PEER list empty` |
 | `TROPIC …` | yes | yes | subcommand | Dispatch to the TROPIC table |
 | `QUIT` | no | yes | — | Exit `se_host` |
 | `EXIT` | no | alias | — | Same as QUIT |
@@ -59,6 +62,26 @@ There is **no** `TIME=` command. `SECURE_SetUnixTime_nsc_call` exists on the NSC
 On USB, success sets `s_tls_armed`: further RX is opaque TLS until `SECURE_USB_IDLE`, error, disconnect, DTR off, or RX overflow. Host runs one blocking session then returns to the prompt.
 
 TLS arm failure: `TLS start failed`.
+
+---
+
+## `PEER` commands
+
+Runtime nickname + `SHA256(peer SPKI)` list in sealed MCU NV. Provision uplink items 7+ are this table (hash then name per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
+
+USB line max is **96** chars, so these fit.
+
+| Syntax | Success | Errors |
+| --- | --- | --- |
+| `PEER ADD <name> <64-hex>` | `PEER ADD ok` | `bad PEER ADD`, `PEER nickname exists`, `PEER list full` |
+| `PEER REMOVE <name>` | `PEER REMOVE ok` | `bad PEER REMOVE`, `PEER not found` |
+| `PEER LIST` | one line per peer: `<name> <64-hex-lowercase>`, or `PEER list empty` | `DEVICE_TAMPERED` / `PEER command failed` |
+
+- `<name>`: 1–16 bytes, no spaces/tabs, printable ASCII `[A-Za-z0-9_.-]`
+- `<64-hex>`: exactly 64 hex digits (same shape as `TROPIC SIGN`)
+- Unknown subcommand: `unknown PEER command`
+
+Host `se_host` calls `se_nv_peer_*` directly. USB goes through `SECURE_Peer*_nsc_call`.
 
 ---
 
@@ -107,7 +130,20 @@ Mapped in NonSecure / `se_host` from NSC codes (`SECURE_TROPIC_*` in [se_tls_nsc
 | `TAMPERED` (5) | `DEVICE_TAMPERED` |
 | other | `TROPIC command failed` |
 
-Parser errors (examples): `bad unix time`, `bad TROPIC KEYGEN`, `bad TROPIC KEYGEN pin`, `bad TROPIC KEM INIT pin`, `bad TROPIC KEM INIT (expected CONFIRM)`, `bad TROPIC PAIRING slot`.
+Parser errors (examples): `bad unix time`, `bad PEER ADD`, `bad PEER REMOVE`, `bad TROPIC KEYGEN`, `bad TROPIC KEYGEN pin`, `bad TROPIC KEM INIT pin`, `bad TROPIC KEM INIT (expected CONFIRM)`, `bad TROPIC PAIRING slot`.
+
+### PEER status strings
+
+Mapped from `SECURE_PEER_*` (USB) / `se_nv_peer_*` (host). These codes do **not** reuse TROPIC slot values:
+
+| Code | Console |
+| --- | --- |
+| `OK` (0) | `PEER ADD ok` / `PEER REMOVE ok` |
+| `EXISTS` (6) | `PEER nickname exists` |
+| `NOT_FOUND` (7) | `PEER not found` |
+| `FULL` (8) | `PEER list full` |
+| `TAMPERED` (5) | `DEVICE_TAMPERED` |
+| other | `PEER command failed` |
 
 Secure detail lines (USB debug, before the first TLS record): `TROPIC session ok (pairing slot N)`, `TROPIC factory SH0 invalidated`, …
 
@@ -120,6 +156,9 @@ HELP
 PROVISION <unix>
 ENCRYPT <unix>
 DECRYPT <unix>
+PEER ADD <name> <64-hex>
+PEER REMOVE <name>
+PEER LIST
 TROPIC PING
 TROPIC INFO
 TROPIC PUB
@@ -141,6 +180,7 @@ Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.
 | Console | NSC |
 | --- | --- |
 | `PROVISION` / `ENCRYPT` / `DECRYPT` | `SECURE_TlsStart_nsc_call(mode, unix)` |
+| `PEER ADD` / `REMOVE` / `LIST` | `SECURE_PeerAdd_nsc_call` / `SECURE_PeerRemove_nsc_call` / `SECURE_PeerGet_nsc_call` |
 | `TROPIC PING` … `PAIRING` | `SECURE_Tropic*_nsc_call` |
 | Armed USB RX/TX | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call` |
 | Debug log | `SECURE_UsbLog_nsc_call` |

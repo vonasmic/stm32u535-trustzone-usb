@@ -1,3 +1,6 @@
 build/
+build_*/
 _deps/
+run_logs/
+run_logs_manual/
 *.whl

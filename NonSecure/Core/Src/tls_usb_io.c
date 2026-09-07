@@ -114,11 +114,21 @@ static void cmd_tropic_kem(char *args);
 static void cmd_tropic_kem_init(char *args);
 static void cmd_tropic_kem_pub(char *args);
 static void cmd_tropic_pairing(char *args);
+static void cmd_peer(char *args);
+static void cmd_peer_add(char *args);
+static void cmd_peer_remove(char *args);
+static void cmd_peer_list(char *args);
 static int parse_pin_digits(const char *dec, uint8_t *out, uint32_t *out_len);
 
 static const host_cmd_t s_kem_cmds[] = {
     { "INIT",  "TROPIC KEM INIT <pin> [CONFIRM]", cmd_tropic_kem_init },
     { "PUB",   "TROPIC KEM PUB",                      cmd_tropic_kem_pub },
+};
+
+static const host_cmd_t s_peer_cmds[] = {
+    { "ADD",    "PEER ADD <name> <64-hex>", cmd_peer_add },
+    { "REMOVE", "PEER REMOVE <name>",       cmd_peer_remove },
+    { "LIST",   "PEER LIST",                cmd_peer_list },
 };
 
 static const host_cmd_t s_tropic_cmds[] = {
@@ -138,6 +148,7 @@ static const host_cmd_t s_host_cmds[] = {
     { "PROVISION", "PROVISION <unix>",             cmd_provision },
     { "ENCRYPT",   "ENCRYPT <unix>",               cmd_encrypt },
     { "DECRYPT",   "DECRYPT <unix>",               cmd_decrypt },
+    { "PEER",      NULL,                           cmd_peer },
     { "TROPIC",    NULL,                           cmd_tropic },
 };
 
@@ -209,6 +220,7 @@ static void cmd_help(char *args)
     (void)args;
     ns_log("commands:");
     cmd_list_usage(s_host_cmds, sizeof(s_host_cmds) / sizeof(s_host_cmds[0]));
+    cmd_list_usage(s_peer_cmds, sizeof(s_peer_cmds) / sizeof(s_peer_cmds[0]));
     cmd_list_usage(s_tropic_cmds, sizeof(s_tropic_cmds) / sizeof(s_tropic_cmds[0]));
     cmd_list_usage(s_kem_cmds, sizeof(s_kem_cmds) / sizeof(s_kem_cmds[0]));
 }
@@ -429,6 +441,153 @@ static void cmd_tropic_pairing(char *args)
         return;
     }
     tropic_log_status(SECURE_TropicPairing_nsc_call((uint32_t)slot));
+}
+
+static int peer_name_char_ok(unsigned char c)
+{
+    return ((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z')) ||
+           ((c >= '0') && (c <= '9')) || (c == '_') || (c == '.') || (c == '-');
+}
+
+static int parse_peer_name(const char *name, uint32_t *out_len)
+{
+    size_t n;
+    size_t i;
+
+    if ((name == NULL) || (out_len == NULL)) {
+        return -1;
+    }
+    n = strlen(name);
+    if ((n < 1U) || (n > SECURE_PEER_NAME_MAX)) {
+        return -1;
+    }
+    for (i = 0U; i < n; i++) {
+        if (peer_name_char_ok((unsigned char)name[i]) == 0) {
+            return -1;
+        }
+    }
+    *out_len = (uint32_t)n;
+    return 0;
+}
+
+static void hex_lower(char *dst, const uint8_t *src, uint32_t src_len)
+{
+    static const char *const digits = "0123456789abcdef";
+    uint32_t i;
+
+    for (i = 0U; i < src_len; i++) {
+        dst[i * 2U] = digits[(src[i] >> 4) & 0x0fu];
+        dst[(i * 2U) + 1U] = digits[src[i] & 0x0fu];
+    }
+    dst[src_len * 2U] = '\0';
+}
+
+static void peer_log_status(uint32_t st, const char *ok_msg)
+{
+    if (st == SECURE_PEER_OK) {
+        ns_log(ok_msg);
+        return;
+    }
+    if (st == SECURE_PEER_EXISTS) {
+        ns_log("PEER nickname exists");
+        return;
+    }
+    if (st == SECURE_PEER_NOT_FOUND) {
+        ns_log("PEER not found");
+        return;
+    }
+    if (st == SECURE_PEER_FULL) {
+        ns_log("PEER list full");
+        return;
+    }
+    if (st == SECURE_TROPIC_TAMPERED) {
+        ns_log("DEVICE_TAMPERED");
+        return;
+    }
+    ns_log("PEER command failed");
+}
+
+static void cmd_peer_add(char *args)
+{
+    char *p = trim_line(args);
+    char *hash_tok;
+    uint8_t hash32[32];
+    uint32_t name_len = 0U;
+
+    hash_tok = p + strcspn(p, " \t");
+    if (*hash_tok == '\0') {
+        ns_log("bad PEER ADD");
+        return;
+    }
+    *hash_tok++ = '\0';
+    hash_tok = trim_line(hash_tok);
+    if ((parse_peer_name(p, &name_len) != 0) || (strlen(hash_tok) != 64U) ||
+        (parse_hex_nibbles(hash_tok, 64U, hash32, 32U) != 0)) {
+        ns_log("bad PEER ADD");
+        return;
+    }
+    peer_log_status(SECURE_PeerAdd_nsc_call((const uint8_t *)p, name_len, hash32),
+                    "PEER ADD ok");
+}
+
+static void cmd_peer_remove(char *args)
+{
+    char *p = trim_line(args);
+    uint32_t name_len = 0U;
+
+    if ((parse_peer_name(p, &name_len) != 0) || (p[name_len] != '\0')) {
+        ns_log("bad PEER REMOVE");
+        return;
+    }
+    peer_log_status(SECURE_PeerRemove_nsc_call((const uint8_t *)p, name_len),
+                    "PEER REMOVE ok");
+}
+
+static void cmd_peer_list(char *args)
+{
+    uint8_t name[SECURE_PEER_NAME_MAX];
+    uint8_t hash32[32];
+    char hex[65];
+    char line[SECURE_PEER_NAME_MAX + 1U + 64U + 1U];
+    uint32_t i;
+    uint32_t printed = 0U;
+
+    (void)args;
+    for (i = 0U; i < SECURE_PEER_MAX; i++) {
+        uint32_t nlen = SECURE_PEER_NAME_MAX;
+        uint32_t st;
+
+        (void)memset(name, 0, sizeof(name));
+        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash32);
+        if (st == SECURE_PEER_NOT_FOUND) {
+            break;
+        }
+        if (st != SECURE_PEER_OK) {
+            peer_log_status(st, "");
+            return;
+        }
+        hex_lower(hex, hash32, 32U);
+        (void)snprintf(line, sizeof(line), "%.*s %s", (int)nlen, (const char *)name, hex);
+        ns_log(line);
+        printed++;
+    }
+    if (printed == 0U) {
+        ns_log("PEER list empty");
+    }
+}
+
+static void cmd_peer(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_peer_cmds, sizeof(s_peer_cmds) / sizeof(s_peer_cmds[0]), p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown PEER command");
+        return;
+    }
+    cmd->handler(sub_args);
 }
 
 static void cmd_tropic(char *args)

@@ -81,6 +81,31 @@ uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
 /** Write pairing key to TROPIC slot 1–3 and invalidate factory SH0. */
 uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot);
 
+/**
+ * PEER NV commands. OK/ERR match Tropic; EXISTS/NOT_FOUND/FULL are PEER-only
+ * (do not reuse SLOT_OCC / NOT_READY / TAMPERED).
+ */
+#define SECURE_PEER_OK        0u
+#define SECURE_PEER_ERR       1u
+#define SECURE_PEER_EXISTS    6u
+#define SECURE_PEER_NOT_FOUND 7u
+#define SECURE_PEER_FULL      8u
+
+#define SECURE_PEER_NAME_MAX 16u
+#define SECURE_PEER_MAX      8u
+
+uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const uint8_t *name, uint32_t name_len,
+                                              const uint8_t *hash32);
+uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len);
+/** Occupied count 0..8 on success; >8 means load/store failed (see TAMPERED). */
+uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
+/**
+ * One occupied slot. @p name_len_inout in: buffer size; out: actual name length.
+ * NSC payload stays within SECURE_USB_PKT_MAX.
+ */
+uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
+                                              uint32_t *name_len_inout, uint8_t *hash32_out);
+
 #ifdef __cplusplus
 }
 #endif

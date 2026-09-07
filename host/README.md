@@ -6,7 +6,7 @@ Two things live in `host/tropic_model/`:
 
 | Binary | What it is | How you run it |
 | --- | --- | --- |
-| `test_a_session` … `test_i_post_tls`, `brick_lab` | Unit gates A–I (+ brick lab). Default CTest suite. | `ctest` or `./run_all.sh` |
+| `test_a_session` … `test_j_peers`, `brick_lab` | Unit gates A–J (+ brick lab). Default CTest suite. | `ctest` or `./run_all.sh` |
 | `se_host` | Interactive SE process: firmware-style console + TLS 1.3 client to a live Java SAE. **Not** a CTest. | Start `model_server`, start Java, then `./se_host` |
 
 Restarting the model restores a fresh chip. A real TROPIC01 does not.
@@ -60,7 +60,7 @@ bash ../check_firmware_nm.sh /path/to/SE_firmware_Secure.elf
 
 ---
 
-## 3. Run the model tests (A–I)
+## 3. Run the model tests (A–J)
 
 Each test gets a **fresh** `model_server` on `127.0.0.1:28992` (`libtropic/scripts/tropic01_model/model_cfg.yml`). Run them serial:
 
@@ -89,6 +89,7 @@ bash ../run_all.sh
 | G | `test_g_ingest` | QKD ingest / pad store |
 | H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key |
 | I | `test_i_post_tls` | Encrypt TLS body / OTP reply with slot IDs |
+| J | `test_j_peers` | PEER NV add/remove/list, v3→v4 migrate, uplink item count `7+2n` |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
 
 Do **not** run `TROPIC KEYGEN`, `TROPIC PAIRING … y`, PIN setup, or R-MEM writes on physical silicon until A–E and H are green.
@@ -147,6 +148,9 @@ TROPIC PAIRING <1-3> [y]
 PROVISION <unix>
 ENCRYPT <unix>
 DECRYPT <unix>
+PEER ADD <name> <64-hex>
+PEER REMOVE <name>
+PEER LIST
 QUIT
 ```
 
@@ -156,6 +160,7 @@ Typical bring-up (same order as silicon), then one TLS session per arm:
 TROPIC KEYGEN
 TROPIC KEM INIT 9876
 TROPIC KEM INIT 9876 CONFIRM
+PEER ADD Alice <64-hex-of-SHA256-peer-SPKI>
 PROVISION 1756380000
 ENCRYPT 1756380000
 DECRYPT 1756380000
@@ -194,14 +199,14 @@ Host-only (do not exist on silicon):
 | Transport | SPI1 (`se_tropic_port_stm32.c`) | TCP `127.0.0.1:28992` (`port_posix.c`) |
 | Device AEAD key | HKDF from `secure_dwk` | Fixed 32-byte test key |
 | ML-KEM pub | `fw_mlkem_pk` in `fw_creds.h` | RAM `host_fw_mlkem_pk[]` (empty until filled) |
-| NV page | Secure flash page 22 | 256-byte RAM |
+| NV page | Secure flash page 22 | 1024-byte RAM |
 | Time | `se_time_set_unix()` + SysTick | Process clock; unix arg logged only |
 | TLS I/O | `se_tls_client.c` over USB/NSC | `se_host_tls.c` over blocking TCP |
 | Console | NonSecure USB CDC | `se_host_main.c` stdin |
 | SH0 | eng-sample unless `SE_TROPIC_SH0_PROD` | Forced prod0 (`host_libtropic_config.h`) |
 | PIN rounds | silicon default | 4 (`SE_TROPIC_PIN_ROUNDS`) |
 
-Still consumed from firmware headers: `fw_client_cert_der`, `fw_root_ca_der`, `fw_client_spki`, `fw_peers[]`, and the wrapped ML-DSA key (`secure_dwk`).
+Still consumed from firmware headers: `fw_client_cert_der`, `fw_root_ca_der`, `fw_client_spki`, and the wrapped ML-DSA key (`secure_dwk`). Provision uplink peers are runtime NV (`PEER ADD` / `REMOVE` / `LIST`), not `fw_creds.h`.
 
 ---
 
@@ -214,12 +219,12 @@ host/
     CMakeLists.txt        Shared runtime + tests + se_host
     download_deps.sh      Fetch wolfSSL / ed25519 into _deps/
     run_with_model.sh     CTest helper: model_server + one exe
-    run_all.sh            Lab: rebuild + A–I + brick (hardcoded checkout path)
+    run_all.sh            Lab: rebuild + A–J + brick (hardcoded checkout path)
     port_posix.c          Platform hooks (TCP, RAM NV, test AEAD key)
     host_fw_mlkem.c       RAM stand-in for fw_mlkem_pk
     se_host_main.c        Console
     se_host_tls.c         POSIX TLS client (mirrors se_tls_client.c)
-    test_a_session.c …    Groups A–I
+    test_a_session.c …    Groups A–J
     brick_lab.c           Irreversible config writes (model only)
     sae_qkd.c             SAE-side pad seal helper for tests
 ```

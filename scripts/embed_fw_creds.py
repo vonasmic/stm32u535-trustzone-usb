@@ -3,7 +3,7 @@
 
 Usage:
   embed_fw_creds.py <certs_dir> <out_s_creds_header> <out_s_wrap_header>
-                    [--peer NAME=PATH]... [--tropic-cert DER] [--mlkem-pk BIN]
+                    [--tropic-cert DER] [--mlkem-pk BIN]
                     [--drop-provisioned]
 
 Expects (CertGenerator layout under <certs_dir>):
@@ -12,7 +12,6 @@ Expects (CertGenerator layout under <certs_dir>):
   ca/root-ca.pem                   SAE application CA (PROVISION peer verify)
   ca/client_ca.pem                 client CA (ENCRYPT / DECRYPT peer verify)
   user/user-cert.pem               home-PC user leaf (ENCRYPT / DECRYPT peer pin)
-  Alice.pem                        (default peer; override with --peer)
 
 The user private key is not embedded. ENCRYPT/DECRYPT accept only a TLS peer
 whose SPKI matches fw_user_spki from user-cert.pem.
@@ -26,7 +25,8 @@ Emits into fw_creds.h:
                        client_hash, never sent (SAE reads it from the mTLS cert)
   fw_tropic_cert_der   unused for now (identity key lives on TROPIC01; len 0)
   fw_mlkem_pk          1184 B ML-KEM-768 public key from TROPIC KEM PUB; flash-only
-  fw_peers[]           per peer: SHA256(peer_spki) + nickname, two LV items on the wire
+
+Provision uplink peers are runtime NV (PEER ADD / REMOVE / LIST), not embedded.
 
 The Tropic certificate and ML-KEM public key arrive on later provisioning passes.
 When their flags are omitted, whatever an existing fw_creds.h already holds is
@@ -154,26 +154,21 @@ def aes_gcm_encrypt(key: bytes, nonce: bytes, plaintext: bytes) -> tuple[bytes, 
     return ct[:-16], ct[-16:]
 
 
-def c_array(name: str, data: bytes) -> str:
+def c_array(name: str, data: bytes, section: str | None = None) -> str:
     """A zero-length array is illegal in C, so empty data emits a 1-byte dummy."""
     body = data if data else b"\x00"
     lines = []
     for i in range(0, len(body), 12):
         chunk = body[i:i + 12]
         lines.append("    " + ", ".join(f"0x{b:02x}" for b in chunk) + ",")
+    attr = ""
+    if section:
+        attr = f' __attribute__((section("{section}"), aligned(4)))'
     return (
-        f"static const unsigned char {name}[] = {{\n"
+        f"static const unsigned char {name}[]{attr} = {{\n"
         + "\n".join(lines)
         + "\n};\n"
         f"static const unsigned int {name}_len = {len(data)}u;\n"
-    )
-
-
-def c_string(name: str, text: str) -> str:
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return (
-        f'static const char {name}[] = "{escaped}";\n'
-        f"static const unsigned int {name}_len = {len(text.encode('utf-8'))}u;\n"
     )
 
 
@@ -183,7 +178,7 @@ def parse_existing_array(header: Path, name: str) -> bytes | None:
         return None
     text = header.read_text(encoding="utf-8")
     match = re.search(
-        rf"static const unsigned char {name}\[\] = \{{(.*?)\}};\s*"
+        rf"static const unsigned char {name}\[\][^=]*= \{{(.*?)\}};\s*"
         rf"static const unsigned int {name}_len = (\d+)u;",
         text,
         re.DOTALL,
@@ -197,53 +192,11 @@ def parse_existing_array(header: Path, name: str) -> bytes | None:
     return data[:declared]
 
 
-def load_peers(certs: Path, overrides: list[str]) -> list[tuple[str, bytes]]:
-    specs: list[tuple[str, Path]] = []
-    if overrides:
-        for item in overrides:
-            if "=" not in item:
-                raise SystemExit(f"--peer expects NAME=PATH, got {item!r}")
-            name, path = item.split("=", 1)
-            specs.append((name, Path(path)))
-    else:
-        specs.append(("Alice", certs / "Alice.pem"))
-
-    peers = []
-    for name, path in specs:
-        if not path.is_file():
-            raise SystemExit(f"missing peer certificate: {path}")
-        peers.append((name, hashlib.sha256(spki_der_from_cert(path)).digest()))
-    return peers
-
-
-def peer_table(peers: list[tuple[str, bytes]]) -> str:
-    parts = []
-    for i, (name, digest) in enumerate(peers):
-        parts.append(c_array(f"fw_peer_{i}_hash", digest))
-        parts.append(c_string(f"fw_peer_{i}_name", name))
-    rows = "\n".join(
-        f"    {{ fw_peer_{i}_hash, fw_peer_{i}_name, fw_peer_{i}_name_len }},"
-        for i in range(len(peers))
-    )
-    parts.append(
-        "typedef struct {\n"
-        "    const unsigned char *hash;   /* SHA256(peer_spki), 32 bytes */\n"
-        "    const char *name;            /* UTF-8 nickname */\n"
-        "    unsigned int name_len;\n"
-        "} fw_peer_t;\n\n"
-        f"static const fw_peer_t fw_peers[] = {{\n{rows}\n}};\n"
-        f"static const unsigned int fw_peer_count = {len(peers)}u;\n"
-    )
-    return "\n".join(parts)
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="Embed firmware credentials")
     ap.add_argument("certs_dir")
     ap.add_argument("out_creds_header")
     ap.add_argument("out_wrap_header")
-    ap.add_argument("--peer", action="append", default=[], metavar="NAME=PATH",
-                    help="peer certificate (repeatable); defaults to Alice.pem")
     ap.add_argument("--tropic-cert", metavar="DER",
                     help="optional TROPIC01 P-256 certificate DER (unused for now)")
     ap.add_argument("--mlkem-pk", metavar="BIN",
@@ -275,7 +228,6 @@ def main() -> int:
     client_key_der = key_der(client_key)
     client_spki = spki_der_from_cert(client_cert)
     user_spki = spki_der_from_cert(user_cert)
-    peers = load_peers(certs, args.peer)
 
     if args.tropic_cert:
         tropic_cert = Path(args.tropic_cert).read_bytes()
@@ -311,18 +263,17 @@ def main() -> int:
 #ifndef FW_CREDS_H
 #define FW_CREDS_H
 
-{c_array("fw_client_cert_der", client_cert_der)}
+{c_array("fw_client_cert_der", client_cert_der, ".fw_creds")}
 {c_array("fw_root_ca_der", root_ca_der)}
 {c_array("fw_client_ca_der", client_ca_der)}
 /* Raw home-PC user public-key bits: ENCRYPT/DECRYPT pin the TLS peer to this. */
-{c_array("fw_user_spki", user_spki)}
+{c_array("fw_user_spki", user_spki, ".fw_creds")}
 /* Raw ML-DSA subject public key bits: hashed into client_hash, never sent. */
-{c_array("fw_client_spki", client_spki)}
+{c_array("fw_client_spki", client_spki, ".fw_creds")}
 /* TROPIC01 P-256 certificate; unused for now (key generated on chip). */
 {c_array("fw_tropic_cert_der", tropic_cert)}
 /* ML-KEM-768 public key (TROPIC KEM PUB); len 0 until provisioned. */
 {c_array("fw_mlkem_pk", mlkem_pk)}
-{peer_table(peers)}
 #endif /* FW_CREDS_H */
 """
 
@@ -345,8 +296,7 @@ def main() -> int:
     print(f"  client cert {len(client_cert_der)} B, SAE CA {len(root_ca_der)} B, "
           f"client CA {len(client_ca_der)} B, user SPKI {len(user_spki)} B, "
           f"client SPKI {len(client_spki)} B")
-    print(f"  tropic cert {len(tropic_cert)} B, ML-KEM pk {len(mlkem_pk)} B, "
-          f"{len(peers)} peer(s): {', '.join(n for n, _ in peers)}")
+    print(        f"  tropic cert {len(tropic_cert)} B, ML-KEM pk {len(mlkem_pk)} B")
     print(f"wrote {out_wrap} (wrapped key {len(blob)} bytes, secure_dwk "
           f"{'reused' if reused_dwk else 'NEW — sealed R-MEM blobs are now unreadable'})")
     return 0

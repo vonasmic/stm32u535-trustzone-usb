@@ -1,0 +1,25 @@
+# STM32CubeIDE
+**/Debug/
+**/Release/
+
+# Python
+**/__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Host TROPIC01 model + tests (CMake out-of-tree)
+host/tropic_model/build/
+host/tropic_model/build_*/
+host/tropic_model/_deps/
+host/tropic_model/run_logs/
+host/tropic_model/run_logs_manual/
+**/run_logs/
+
+# Downloaded / generated
+*.whl
+.model_config_save.yaml
+docs_build/
+.codechecker/
