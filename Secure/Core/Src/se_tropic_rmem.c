@@ -13,7 +13,7 @@
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-static const uint8_t k_slot_label[] = "SE_tropic_qkd_slot_v2";
+static const uint8_t k_slot_label[] = "SE_tropic_qkd_slot_v3";
 #define SLOT_LABEL_LEN (sizeof(k_slot_label) - 1u)
 
 static uint8_t s_kem_ct[SE_TROPIC_KEM_CT_LEN];
@@ -228,7 +228,7 @@ lt_ret_t se_tropic_get_pad_encryption_key(const uint8_t ss[SE_TROPIC_MLKEM_SS_LE
     (void)memcpy(info + SLOT_LABEL_LEN, fill_id, SE_NV_FILL_ID_LEN);
     write_storage_slot_binding(slot_index, info + SLOT_LABEL_LEN + SE_NV_FILL_ID_LEN);
 
-    ret = wc_HKDF(WC_SHA256, ss, SE_TROPIC_MLKEM_SS_LEN, NULL, 0, info, (word32)sizeof(info), key,
+    ret = wc_HKDF(WC_SHA384, ss, SE_TROPIC_MLKEM_SS_LEN, NULL, 0, info, (word32)sizeof(info), key,
                   SE_TROPIC_RMEM_AES_KEY_LEN);
     wc_ForceZero(info, sizeof(info));
     return (ret == 0) ? LT_OK : LT_CRYPTO_ERR;

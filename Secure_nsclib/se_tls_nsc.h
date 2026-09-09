@@ -3,8 +3,9 @@
  * @brief   Non-secure callable USB byte pipe + time for Secure TLS
  *
  * NonSecure owns command parsing and when TLS may run. PROVISION / ENCRYPT /
- * DECRYPT each carry a Unix timestamp (clock + arm). PIN is only on the TLS
- * channel. Secure owns TLS crypto and the wall clock used by wolfSSL.
+ * DECRYPT / MANAGE each carry a Unix timestamp (clock + arm). PIN-gated and
+ * identity-changing commands after first-wins OWNER SET run on MANAGE TLS
+ * as unsigned application data (no USB challenge). ENCRYPT/DECRYPT stay mTLS.
  */
 #ifndef SE_TLS_NSC_H
 #define SE_TLS_NSC_H
@@ -43,16 +44,22 @@ uint32_t CSME_NSE_API SECURE_GetUnixTime_nsc_call(void);
 /**
  * Post-handshake TLS role, chosen by NonSecure USB commands (not on the wire).
  * Timestamp is applied as the wall clock, then the session is armed.
- * PROVISION verifies the SAE application CA. ENCRYPT / DECRYPT verify the
- * client CA; PIN + payload arrive over TLS (not on USB).
+ * PROVISION verifies the SAE application CA from FLASH_CREDS. ENCRYPT / DECRYPT
+ * are mTLS and pin the peer leaf SPKI to the enrolled owner key. MANAGE pins
+ * the same owner but presents no device client cert. One unsigned command
+ * follows the MANAGE handshake.
  */
 #define SECURE_TLS_MODE_PROVISION 1u
 #define SECURE_TLS_MODE_ENCRYPT   2u
 #define SECURE_TLS_MODE_DECRYPT   3u
+#define SECURE_TLS_MODE_MANAGE    4u
 
 uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc);
 
-/** Queue a DEBUG status line on the CDC TX ring (ASCII, no TLS). */
+/** First-wins USB OWNER SET: wait for an unsigned binary blob. */
+uint32_t CSME_NSE_API SECURE_OwnerBegin_nsc_call(void);
+
+/** Queue a framed DEBUG:<text>:DEBUG status line on the CDC TX ring (ASCII, no TLS). */
 uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len);
 
 /** TROPIC01 host commands Status codes match SE_TROPIC_* in Secure. */
@@ -66,6 +73,7 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len);
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64);
+uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(void);
 /**
  * Empty slot: generate. Occupied: PIN required, then erase+generate.
  * @param pin     unused on first generate; required to replace an occupied slot
@@ -82,21 +90,37 @@ uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot);
 
 /**
- * PEER NV commands. OK/ERR match Tropic; EXISTS/NOT_FOUND/FULL are PEER-only
- * (do not reuse SLOT_OCC / NOT_READY / TAMPERED).
+ * PEER NV commands. ADD/REMOVE require a Tropic PIN. OK/ERR match Tropic;
+ * EXISTS/NOT_FOUND/FULL/PIN_FAIL are PEER-only (do not reuse SLOT_OCC /
+ * NOT_READY / TAMPERED).
  */
 #define SECURE_PEER_OK        0u
 #define SECURE_PEER_ERR       1u
 #define SECURE_PEER_EXISTS    6u
 #define SECURE_PEER_NOT_FOUND 7u
 #define SECURE_PEER_FULL      8u
+#define SECURE_PEER_PIN_FAIL  9u
 
 #define SECURE_PEER_NAME_MAX 16u
 #define SECURE_PEER_MAX      8u
+/** SHA-384 of the peer SPKI (mirrors SE_NV_PEER_HASH_LEN). */
+#define SECURE_PEER_HASH_LEN 48u
 
-uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const uint8_t *name, uint32_t name_len,
-                                              const uint8_t *hash32);
-uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len);
+/**
+ * NSC entries may only pass arguments in r0–r3. Five scalars would put
+ * pin_len on the stack, which GCC rejects for cmse_nonsecure_entry.
+ */
+typedef struct {
+    const uint8_t *name;
+    uint32_t name_len;
+    const uint8_t *hash48;
+    const uint8_t *pin;
+    uint32_t pin_len;
+} SECURE_PeerAddArgs;
+
+uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const SECURE_PeerAddArgs *args);
+uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len,
+                                                 const uint8_t *pin, uint32_t pin_len);
 /** Occupied count 0..8 on success; >8 means load/store failed (see TAMPERED). */
 uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
 /**
@@ -104,7 +128,7 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
  * NSC payload stays within SECURE_USB_PKT_MAX.
  */
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash32_out);
+                                              uint32_t *name_len_inout, uint8_t *hash48_out);
 
 #ifdef __cplusplus
 }

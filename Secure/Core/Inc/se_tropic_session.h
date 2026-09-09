@@ -2,10 +2,11 @@
  * @file    se_tropic_session.h
  * @brief   TROPIC01 session binding and LV uplink for the TLS client
  *
- * After handshake, the TLS client derives an exporter and hands it here. This
- * module signs SHA256(client_hash || exporter) with the TROPIC01 P-256 key and
- * streams the LV uplink (see secure_lv.h). A MitM that terminates TLS gets a
- * different exporter, so a forwarded uplink fails verification.
+ * After handshake, the TLS client derives RFC 9266 tls-exporter
+ * (label EXPORTER-Channel-Binding) and hands it here. This module signs
+ * SHA384(client_hash || exporter) with the TROPIC01 P-256 key and streams the
+ * LV uplink (see secure_lv.h). A MitM that terminates TLS gets a different
+ * exporter, so a forwarded uplink fails verification.
  */
 #ifndef SE_TROPIC_SESSION_H
 #define SE_TROPIC_SESSION_H
@@ -13,13 +14,20 @@
 #include <stdint.h>
 #include "secure_stream.h"
 
-/* Both sides derive this independently from their own TLS session. */
-#define SE_TROPIC_EXPORTER_LABEL     "EXPORTER-tropic-binding"
-#define SE_TROPIC_EXPORTER_LABEL_LEN 23u
+/* RFC 9266 tls-exporter: both sides derive this independently from TLS. */
+#define SE_TROPIC_EXPORTER_LABEL     "EXPORTER-Channel-Binding"
+#define SE_TROPIC_EXPORTER_LABEL_LEN 24u
 #define SE_TROPIC_EXPORTER_LEN       32u
+#define SE_TROPIC_CLIENT_HASH_LEN    48u
 
 /**
- * Sign the session binding and stream the v3 uplink through @p write.
+ * Print SHA384(device_cert_spki || tropic_p256_pub), the same 48-byte client_hash
+ * sent as provision uplink item 2.
+ */
+uint32_t se_tropic_client_hash_dump(void);
+
+/**
+ * Sign the session binding and stream the v4 uplink through @p write.
  * @p write receives the same @p ctx on each call.
  * @p exporter is wiped after it is hashed into the signed digest.
  * @return 0 on success, -1 on failure.

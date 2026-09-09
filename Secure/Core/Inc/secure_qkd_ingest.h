@@ -45,8 +45,10 @@ extern "C" {
      ((uint32_t)SE_TROPIC_PAD_COUNT * (uint32_t)SE_TROPIC_RMEM_SLOT_MAX))
 
 void secure_qkd_discard(void);
+/** Non-zero when the full downlink envelope has been parsed (before FINISH). */
+uint8_t secure_qkd_ready_to_finish(void);
 uint32_t secure_qkd_ingest(const uint8_t *chunk, uint32_t len, uint32_t flags,
-                           uint32_t *countOut);
+                           uint32_t *bytesOut);
 
 #ifdef __cplusplus
 }

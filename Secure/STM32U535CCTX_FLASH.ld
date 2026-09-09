@@ -47,8 +47,9 @@ MEMORY
 {
   RAM	(xrw)	 : ORIGIN = 0x30000000,	LENGTH = 192K     /* Memory is divided. Actual start is 0x30000000 and actual length is 256K */
   SRAM4	(xrw)    : ORIGIN = 0x38000000,	LENGTH = 16K
-  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 176K    /* pages 0-21, 8KB pages */
-  FLASH_NV	(r)	 : ORIGIN = 0x0C02C000,	LENGTH = 8K      /* page 22, MCU anti-rollback NV */
+  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 168K    /* pages 0-20, 8KB pages */
+  FLASH_CREDS	(r)	 : ORIGIN = 0x0C02A000,	LENGTH = 8K      /* page 21, SAE CA + device cert */
+  FLASH_NV	(r)	 : ORIGIN = 0x0C02C000,	LENGTH = 8K      /* page 22, dwk + sealed v6 NV */
   FLASH_NSC	(rx) : ORIGIN = 0x0C02E000,	LENGTH = 8K      /* page 23, Secure+NSC */
 }
 
@@ -75,6 +76,21 @@ SECTIONS
 
     _etext = .;        /* define a global symbols at end of code */
   } >FLASH
+
+  /* SG veneers first on page 23, then string literals. Must appear before
+   * FLASH .rodata so *(.rodata*) does not claim .rodata.str1.*. Veneers are
+   * a few hundred bytes of 8 KB; the leftover absorbs ~2.5 KB FLASH overflow. */
+  .gnu.sgstubs :
+  {
+    . = ALIGN(4);
+    KEEP(*(.gnu.sgstubs*))   /* Secure Gateway stubs — NSC entry points */
+    . = ALIGN(4);
+  } >FLASH_NSC
+
+  .rodata_str (READONLY) :
+  {
+    *(.rodata.str1.*)
+  } >FLASH_NSC
 
   /* Constant data into "FLASH" Rom type memory */
   .rodata :
@@ -140,22 +156,12 @@ SECTIONS
     . = ALIGN(8);
   } >FLASH_NV
 
-  .gnu.sgstubs :
+  .se_creds (NOLOAD) :
   {
-    . = ALIGN(4);
-    KEEP(*(.gnu.sgstubs*))   /* Secure Gateway stubs — NSC entry points */
-    . = ALIGN(4);
-  } >FLASH_NSC
-
-  /* After veneers. Arrays are compiled into .fw_creds (not .rodata*) so the
-   * wildcard above cannot steal them. NS cannot read this page. */
-  .fw_creds (READONLY) :
-  {
-    . = ALIGN(4);
-    *(.fw_creds)
-    *(.fw_creds.*)
-    . = ALIGN(4);
-  } >FLASH_NSC
+    . = ALIGN(8);
+    KEEP(*(.se_creds*))
+    . = ALIGN(8);
+  } >FLASH_CREDS
 
   /* Uninitialized data section into "RAM" Ram type memory */
   .bss :

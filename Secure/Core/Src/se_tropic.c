@@ -162,6 +162,14 @@ uint32_t se_tropic_is_session_active(void)
     return s_session_active;
 }
 
+lt_handle_t *se_tropic_handle(void)
+{
+    if (s_session_active == 0U) {
+        return NULL;
+    }
+    return &s_lt;
+}
+
 uint32_t se_tropic_ping(void)
 {
     uint8_t recv[TROPIC_PING_MSG_LEN];
@@ -296,7 +304,7 @@ uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len)
     if (se_tropic_slot_occupied() != 0U) {
         if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) ||
             (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-            se_tropic_log("TROPIC slot occupied; send KEYGEN <pin> to replace");
+            se_tropic_log("TROPIC slot occupied; use MANAGE TLS");
             return SE_TROPIC_SLOT_OCC;
         }
         h = se_tropic_handle();
@@ -450,10 +458,24 @@ uint32_t se_tropic_pairing_pub_read(uint8_t out32[32])
     return SE_TROPIC_OK;
 }
 
-lt_handle_t *se_tropic_handle(void)
+uint32_t se_tropic_user_wipe(void)
 {
-    if (s_session_active == 0U) {
-        return NULL;
+    uint16_t slot;
+    lt_ret_t ret;
+
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
+        return SE_TROPIC_ERR;
     }
-    return &s_lt;
+    for (slot = 0U; slot <= (uint16_t)TR01_R_MEM_DATA_SLOT_MAX; slot++) {
+        (void)lt_r_mem_data_erase(&s_lt, slot);
+    }
+    if (se_tropic_slot_occupied() != 0U) {
+        ret = lt_ecc_key_erase(&s_lt, SE_TROPIC_ECC_SLOT);
+        if (ret != LT_OK) {
+            se_tropic_log("TROPIC wipe ECC erase fail %s", lt_ret_verbose(ret));
+            return SE_TROPIC_ERR;
+        }
+    }
+    se_tropic_log("TROPIC user R-MEM + ECC wiped (pairing kept)");
+    return SE_TROPIC_OK;
 }

@@ -170,6 +170,24 @@ int se_usb_tls_rx_push(const uint8_t *data, uint32_t len)
     return rx_write(data, len);
 }
 
+uint32_t se_usb_tls_rx_count(void)
+{
+    return s_rx.count;
+}
+
+int se_usb_tls_rx_take(uint8_t *out, uint32_t max)
+{
+    if (out == NULL || max == 0U) {
+        return 0;
+    }
+    return rx_read(out, (int)max);
+}
+
+uint8_t se_usb_tls_rx_overflow(void)
+{
+    return s_rx.overflow;
+}
+
 int se_usb_tls_tx_pop(uint8_t *out, uint32_t max, uint32_t *out_len)
 {
     if (s_active == 0U) {
@@ -180,27 +198,39 @@ int se_usb_tls_tx_pop(uint8_t *out, uint32_t max, uint32_t *out_len)
 
 void se_usb_debug_printf(const char *fmt, ...)
 {
+    /* "DEBUG: " + body + ":DEBUG" + CRLF */
+    static const char prefix[] = SE_USB_DEBUG_PREFIX " ";
+    enum {
+        PREFIX_LEN = (int)(SE_USB_DEBUG_PREFIX_LEN + 1U),
+        SUFFIX_LEN = (int)SE_USB_DEBUG_SUFFIX_LEN,
+        CRLF_LEN = 2
+    };
     char buf[192];
     va_list ap;
     int body;
     int total;
+    uint32_t room;
 
     /* Never interleave ASCII with TLS records on the same CDC pipe. */
     if ((s_active == 0U) || (fmt == NULL) || (s_tls_wire != 0U)) {
         return;
     }
 
-    (void)memcpy(buf, "DEBUG: ", 7);
+    room = (uint32_t)sizeof(buf) - (uint32_t)PREFIX_LEN - (uint32_t)SUFFIX_LEN
+           - (uint32_t)CRLF_LEN;
+    (void)memcpy(buf, prefix, (size_t)PREFIX_LEN);
     va_start(ap, fmt);
-    body = vsnprintf(buf + 7, sizeof(buf) - 9U, fmt, ap);
+    body = vsnprintf(buf + PREFIX_LEN, (size_t)room, fmt, ap);
     va_end(ap);
     if (body < 0) {
         return;
     }
-    if ((uint32_t)body >= (sizeof(buf) - 9U)) {
-        body = (int)(sizeof(buf) - 10U);
+    if ((uint32_t)body >= room) {
+        body = (int)(room - 1U);
     }
-    total = 7 + body;
+    total = PREFIX_LEN + body;
+    (void)memcpy(buf + total, SE_USB_DEBUG_SUFFIX, (size_t)SUFFIX_LEN);
+    total += SUFFIX_LEN;
     buf[total++] = '\r';
     buf[total++] = '\n';
 
@@ -246,8 +276,9 @@ int se_tls_embed_send(WOLFSSL *ssl, char *buf, int sz, void *ctx)
     }
 
     /*
-     * Wait until host has drained DEBUG lines so ClientHello is not glued
-     * to "DEBUG: ..." in one USB/TCP read (BouncyCastle record_overflow).
+     * Finish the current DEBUG frame in the TX ring first so :DEBUG is on
+     * the wire before ClientHello. Host still splits on the closer if CDC
+     * glues them into one USB read.
      */
     if ((s_tls_wire == 0U) && (s_tx.count > 0U)) {
         return WOLFSSL_CBIO_ERR_WANT_WRITE;

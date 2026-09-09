@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """Shared helpers for driving the SE_firmware USB CDC console.
 
-The device answers host commands with "DEBUG: " prefixed ASCII lines. Values
-longer than one line (public keys, signatures) are printed as a marker line
-followed by hex-only continuation lines.
+The device answers host commands with framed ASCII lines
+``DEBUG:<text>:DEBUG``. Values longer than one line (public keys, signatures)
+are printed as a marker line followed by hex-only continuation lines.
 """
 from __future__ import annotations
 
 import re
 import time
 
-DEBUG_PREFIX = "DEBUG: "
+DEBUG_PREFIX = "DEBUG:"
+DEBUG_SUFFIX = ":DEBUG"
 HEX_LINE = re.compile(r"^[0-9a-fA-F]+$")
 
 PUB_MARKER = "TROPIC P-256 pub:"
@@ -60,7 +61,9 @@ def read_lines(ser, seconds: float) -> list[str]:
             if not text:
                 continue
             if text.startswith(DEBUG_PREFIX):
-                text = text[len(DEBUG_PREFIX):]
+                text = text[len(DEBUG_PREFIX):].strip()
+            if text.endswith(DEBUG_SUFFIX):
+                text = text[: -len(DEBUG_SUFFIX)].strip()
             out.append(text)
     return out
 

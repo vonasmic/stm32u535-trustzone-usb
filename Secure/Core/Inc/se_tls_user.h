@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 /**
- * After mTLS: extract the peer leaf SPKI and compare to embedded fw_user_spki.
+ * After mTLS: extract the peer leaf SPKI and compare to the enrolled owner key.
  * @return 0 on match
  */
 int se_tls_user_pin_peer(WOLFSSL *ssl);

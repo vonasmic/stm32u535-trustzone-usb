@@ -6,6 +6,7 @@
 #include "host_fw_mlkem.h"
 #include "libtropic.h"
 #include "libtropic_user_config.h"
+#include "se_creds.h"
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_tropic.h"
@@ -73,6 +74,12 @@ static lt_ret_t write_v3_blob(uint32_t time_floor)
     }
     return se_tropic_port_nv_raw_write(blob, blob_len);
 }
+
+/** Minimal Certificate DER so uplink client_hash can walk a device-cert SPKI. */
+static const uint8_t k_dummy_cert[] = {
+    0x30, 0x18, 0x30, 0x16, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
+    0x30, 0x09, 0x30, 0x00, 0x03, 0x05, 0x00, 0xaa, 0xbb, 0xcc, 0xdd
+};
 
 static uint16_t uplink_count(void)
 {
@@ -186,10 +193,10 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "count after v3");
     TEST_ASSERT_EQ(count, 0U, "v3 migrates with empty peers");
     ret = se_nv_peer_add(alice, 5U, hash_a);
-    TEST_ASSERT_EQ(ret, LT_OK, "add after v3 (store v4)");
+    TEST_ASSERT_EQ(ret, LT_OK, "add after v3 (store v5)");
     ret = se_nv_get_time_floor(&floor, &present);
-    TEST_ASSERT_EQ(ret, LT_OK, "time after v4 store");
-    TEST_ASSERT_EQ(present, 1, "time kept on v4 store");
+    TEST_ASSERT_EQ(ret, LT_OK, "time after v5 store");
+    TEST_ASSERT_EQ(present, 1, "time kept on v5 store");
     TEST_ASSERT_EQ(floor, 1700000000U, "time value kept");
     ret = se_nv_peer_remove(alice, 5U);
     TEST_ASSERT_EQ(ret, LT_OK, "cleanup migrated Alice");
@@ -203,6 +210,8 @@ int main(void)
         st = se_tropic_keygen(NULL, 0U);
     }
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "keygen");
+    TEST_ASSERT_EQ(se_creds_set_device_cert(k_dummy_cert, (uint16_t)sizeof(k_dummy_cert)), LT_OK,
+                   "dummy device cert");
     (void)memset(host_fw_mlkem_pk, 0x5A, sizeof(host_fw_mlkem_pk));
     host_fw_mlkem_pk_len = SE_TROPIC_MLKEM_PK_LEN;
 

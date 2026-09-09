@@ -13,6 +13,8 @@ endif()
 
 file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../libtropic" PATH_LIBTROPIC)
 file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../Secure/Core" PATH_SECURE_CORE)
+file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../NonSecure/Core" PATH_NONSECURE_CORE)
+file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../Secure_nsclib" PATH_NSCLIB)
 file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_deps" PATH_DEPS)
 
 if(NOT EXISTS "${PATH_DEPS}/wolfssl")
@@ -85,6 +87,11 @@ set(SE_TROPIC_RUNTIME
     ${PATH_SECURE_CORE}/Src/se_tropic_mlkem.c
     ${PATH_SECURE_CORE}/Src/se_tropic_session.c
     ${PATH_SECURE_CORE}/Src/se_nv.c
+    ${PATH_SECURE_CORE}/Src/se_creds.c
+    ${PATH_SECURE_CORE}/Src/se_owner.c
+    ${PATH_SECURE_CORE}/Src/se_auth.c
+    ${PATH_SECURE_CORE}/Src/se_manage.c
+    ${PATH_SECURE_CORE}/Src/secure_wrap.c
     ${PATH_SECURE_CORE}/Src/se_cert_spki.c
     ${PATH_SECURE_CORE}/Src/se_tls_user.c
     ${PATH_SECURE_CORE}/Src/secure_qkd_ingest.c
@@ -124,7 +131,7 @@ target_link_libraries(se_tropic_host PUBLIC tropic)
 enable_testing()
 
 function(add_model_test name src)
-    add_executable(${name} ${src})
+    add_executable(${name} ${src} host_usb_debug_stub.c)
     target_link_libraries(${name} PRIVATE se_tropic_host)
     add_test(NAME ${name}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/run_with_model.sh"
@@ -147,14 +154,26 @@ add_model_test(test_g_ingest  test_g_ingest.c)
 add_model_test(test_h_pairing test_h_pairing.c)
 add_model_test(test_i_post_tls test_i_post_tls.c)
 add_model_test(test_j_peers   test_j_peers.c)
+add_model_test(test_k_owner   test_k_owner.c)
 add_model_test(brick_lab      brick_lab.c)
 
-# Integration runner against a live JAVA_TLS_TEST Node (not a default CTest).
+# Device process: firmware USB/TLS over a PTY (not a CTest).
 add_executable(se_host
     se_host_main.c
-    se_host_tls.c
+    host_cdc/host_pty_cdc.c
     ${PATH_SECURE_CORE}/Src/secure_client_key.c
-    ${PATH_SECURE_CORE}/Src/secure_wrap.c
+    ${PATH_SECURE_CORE}/Src/se_usb_tls.c
+    ${PATH_SECURE_CORE}/Src/se_tls_client.c
+    ${PATH_SECURE_CORE}/Src/se_tls_nsc_callable.c
+    ${PATH_SECURE_CORE}/Src/wc_port_time.c
+    ${PATH_NONSECURE_CORE}/Src/tls_usb_io.c
+)
+target_compile_definitions(se_host PRIVATE SE_HOST_MODEL)
+target_include_directories(se_host BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/host_cdc
+    ${PATH_NONSECURE_CORE}/Inc
+    ${PATH_NSCLIB}
 )
 target_link_libraries(se_host PRIVATE se_tropic_host)
 

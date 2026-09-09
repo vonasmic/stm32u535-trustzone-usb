@@ -4,9 +4,11 @@
  *
  * Starts after NonSecure arms a mode with a Unix timestamp. abort/reset clears
  * sync so the next command must include a fresh timestamp. PROVISION verifies
- * the SAE application CA, then sends the session uplink and ingest pads.
- * ENCRYPT / DECRYPT verify the client CA, then wait for PIN + payload over TLS
- * and reply with OTP.
+ * the SAE application CA from FLASH_CREDS, then sends the session uplink and
+ * ingest pads. ENCRYPT / DECRYPT are mTLS and pin the peer to the enrolled
+ * owner key, then wait for PIN + payload over TLS and reply with OTP. MANAGE
+ * pins the same owner without a device client cert and streams one unsigned
+ * command.
  */
 #ifndef SE_TLS_CLIENT_H
 #define SE_TLS_CLIENT_H
@@ -20,7 +22,7 @@ void se_tls_reset_quiet(void);
 void se_tls_service_once(void);
 
 /**
- * Arm the next TLS session (PROVISION / ENCRYPT / DECRYPT).
+ * Arm the next TLS session (PROVISION / ENCRYPT / DECRYPT / MANAGE).
  * @return 0 on success, -1 if already running, time not synced, or bad mode
  */
 int se_tls_arm(uint32_t mode);

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate fw_creds.h (Secure TLS) and wrapped_client_key.h (Secure).
+"""Host helper: PEM→DER, SPKI extract, and AES-GCM wrap for OWNER/CREDS payloads.
+
+Not a CubeIDE/firmware compile step. Silicon enrolls at runtime
+(OWNER SET, CREDS SAE, CREDS DEVICE). This script still packs certs from
+the CertGenerator tree for tests and USB ingest.
 
 Usage:
   embed_fw_creds.py <certs_dir> <out_s_creds_header> <out_s_wrap_header>
@@ -7,35 +11,10 @@ Usage:
                     [--drop-provisioned]
 
 Expects (CertGenerator layout under <certs_dir>):
-  client/client-cert.pem
+  client/client-cert.pem           (or --client-dir client2 → client2/client-cert.pem)
   client/client-key.pem
-  ca/root-ca.pem                   SAE application CA (PROVISION peer verify)
-  ca/client_ca.pem                 client CA (ENCRYPT / DECRYPT peer verify)
-  user/user-cert.pem               home-PC user leaf (ENCRYPT / DECRYPT peer pin)
-
-The user private key is not embedded. ENCRYPT/DECRYPT accept only a TLS peer
-whose SPKI matches fw_user_spki from user-cert.pem.
-
-Emits into fw_creds.h:
-  fw_client_cert_der   mTLS client certificate (ML-DSA), on the wire in the handshake
-  fw_root_ca_der       SAE application CA (PROVISION)
-  fw_client_ca_der     client CA (ENCRYPT / DECRYPT)
-  fw_user_spki         raw home-PC user public-key bits; ENCRYPT/DECRYPT pin
-  fw_client_spki       raw ML-DSA subject public key bits; flash-only input to
-                       client_hash, never sent (SAE reads it from the mTLS cert)
-  fw_tropic_cert_der   unused for now (identity key lives on TROPIC01; len 0)
-  fw_mlkem_pk          1184 B ML-KEM-768 public key from TROPIC KEM PUB; flash-only
-
-Provision uplink peers are runtime NV (PEER ADD / REMOVE / LIST), not embedded.
-
-The Tropic certificate and ML-KEM public key arrive on later provisioning passes.
-When their flags are omitted, whatever an existing fw_creds.h already holds is
-carried forward, so routine credential regeneration does not silently drop them.
-Pass --drop-provisioned to clear both instead.
-
-secure_dwk is likewise reused from an existing wrap header, because it also keys
-the R-MEM seal: rotating it would orphan the PIN NVM and the KEK-wrapped ML-KEM
-seed already living on the chip. Pass --new-dwk to rotate it deliberately.
+  ca/root-ca.pem                   SAE application CA (PROVISION)
+  user/user-cert.pem               home-PC user leaf = owner key (ENCRYPT/DECRYPT pin)
 """
 from __future__ import annotations
 
@@ -53,7 +32,7 @@ WRAP_VERSION = 2
 DWK_LEN = 32
 NONCE_LEN = 12
 TAG_LEN = 16
-HKDF_INFO = b"SE_firmware_wrap_v1"
+HKDF_INFO = b"SE_firmware_wrap_v2"
 MLKEM768_PK_LEN = 1184
 
 
@@ -197,6 +176,8 @@ def main() -> int:
     ap.add_argument("certs_dir")
     ap.add_argument("out_creds_header")
     ap.add_argument("out_wrap_header")
+    ap.add_argument("--client-dir", metavar="DIR", default="client",
+                    help="device leaf folder under certs_dir (default: client)")
     ap.add_argument("--tropic-cert", metavar="DER",
                     help="optional TROPIC01 P-256 certificate DER (unused for now)")
     ap.add_argument("--mlkem-pk", metavar="BIN",
@@ -207,12 +188,17 @@ def main() -> int:
                     help="rotate secure_dwk; makes every sealed R-MEM blob unreadable")
     args = ap.parse_args()
 
+    if "/" in args.client_dir or "\\" in args.client_dir or args.client_dir in ("", ".", ".."):
+        print("invalid --client-dir (use a folder name such as client or client2)", file=sys.stderr)
+        return 1
+
     certs = Path(args.certs_dir)
     out_creds = Path(args.out_creds_header)
     out_wrap = Path(args.out_wrap_header)
 
-    client_cert = certs / "client" / "client-cert.pem"
-    client_key = certs / "client" / "client-key.pem"
+    client_dir = certs / args.client_dir
+    client_cert = client_dir / "client-cert.pem"
+    client_key = client_dir / "client-key.pem"
     root_ca = certs / "ca" / "root-ca.pem"
     client_ca = certs / "ca" / "client_ca.pem"
     user_cert = certs / "user" / "user-cert.pem"

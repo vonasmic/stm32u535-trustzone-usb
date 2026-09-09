@@ -19,12 +19,18 @@ extern "C" {
 #define SE_NV_PAIRING_KEY_LEN 32u
 #define SE_NV_PEER_MAX 8u
 #define SE_NV_PEER_NAME_MAX 16u
-#define SE_NV_PEER_HASH_LEN 32u
+/** SHA-384 of the peer SPKI. */
+#define SE_NV_PEER_HASH_LEN 48u
 
 #define SE_NV_FLAG_FILL    0x00000001u
 #define SE_NV_FLAG_TIME    0x00000002u
 #define SE_NV_FLAG_PAIRING 0x00000004u
 #define SE_NV_FLAG_OTP     0x00000008u
+
+#define SE_NV_OWNER_SPKI_MAX 1312u
+#define SE_NV_PW_HASH_LEN    48u
+#define SE_NV_WRAP_MAX       3072u
+#define SE_NV_MLKEM_MAX      1184u
 
 /**
  * Project-local sentinel (not a libtropic enum value). Mapped to
@@ -114,7 +120,7 @@ lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
  * @return LT_OK, SE_NV_PEER_EXISTS, SE_NV_PEER_FULL, LT_PARAM_ERR, or tamper
  */
 lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
-                        const uint8_t hash32[SE_NV_PEER_HASH_LEN]);
+                        const uint8_t hash48[SE_NV_PEER_HASH_LEN]);
 
 /** Remove by nickname. @return LT_OK, SE_NV_PEER_NOT_FOUND, or tamper */
 lt_ret_t se_nv_peer_remove(const uint8_t *name, uint8_t name_len);
@@ -127,7 +133,7 @@ lt_ret_t se_nv_peer_count(uint8_t *count);
  * @p name_len in: capacity of @p name; out: actual length.
  */
 lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
-                        uint8_t hash32[SE_NV_PEER_HASH_LEN]);
+                        uint8_t hash48[SE_NV_PEER_HASH_LEN]);
 
 /**
  * Read TIME floor if present.
@@ -142,6 +148,21 @@ void se_nv_pending_fill_set(const uint8_t fill_id[SE_NV_FILL_ID_LEN]);
 int se_nv_pending_fill_take(uint8_t fill_id[SE_NV_FILL_ID_LEN]);
 
 void se_nv_pending_fill_clear(void);
+
+int se_nv_has_owner(void);
+int se_nv_has_wrap(void);
+int se_nv_has_mlkem(void);
+lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len);
+lt_ret_t se_nv_set_owner(const uint8_t *spki, uint16_t spki_len,
+                         const uint8_t pw_hash[SE_NV_PW_HASH_LEN]);
+lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN]);
+lt_ret_t se_nv_get_wrap(uint8_t *out, uint16_t *len, uint16_t cap);
+lt_ret_t se_nv_set_wrap(const uint8_t *wrap, uint16_t len);
+lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len);
+lt_ret_t se_nv_set_mlkem_pk(const uint8_t *pk, uint16_t len);
+
+/** Clear fill/OTP/peers/TIME/owner/wrap/mlkem; keep pairing + dwk. */
+lt_ret_t se_nv_clear_except_pairing(void);
 
 #ifdef __cplusplus
 }

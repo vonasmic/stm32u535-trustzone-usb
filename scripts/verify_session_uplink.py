@@ -10,8 +10,8 @@ The device sends the versioned LV envelope from Secure/Core/Inc/secure_lv.h:
 Version 1 items, by position:
   1  session signature, raw R||S                   64 B
   2  TROPIC01 P-256 public key, X||Y               64 B
-  3  client hash                                   32 B
-  4,6,8..  peer hash = SHA256(peer_spki)           32 B
+  3  client hash                                   48 B
+  4,6,8..  peer hash = SHA384(peer_spki)           48 B
   5,7,9..  peer nickname, UTF-8                    variable
 
 Verification order, per the plan:
@@ -20,9 +20,9 @@ Verification order, per the plan:
      length the device used, and pass it in with --exporter.
   3. Extract the ML-DSA subject public key from the mTLS client certificate the
      server already holds. Never take it from the wire.
-  4. Recompute client_hash = SHA256(mldsa_spki || ecc_pub) from that SPKI and
+  4. Recompute client_hash = SHA384(mldsa_spki || ecc_pub) from that SPKI and
      item 2, and compare against item 3. Item 3 is a cross-check, not an input.
-  5. Verify item 1 over SHA256(client_hash || exporter) using item 2.
+  5. Verify item 1 over SHA384(client_hash || exporter) using item 2.
 
 A man-in-the-middle terminates TLS on both sides, so its exporter differs from
 the one the device signed and a forwarded uplink fails at step 5.
@@ -42,12 +42,12 @@ from pathlib import Path
 
 LV_VERSION = 1
 UPLINK_FIXED_ITEMS = 3
-EXPORTER_LABEL = b"EXPORTER-tropic-binding"
+EXPORTER_LABEL = b"EXPORTER-Channel-Binding"
 EXPORTER_LEN = 32
 SIG_LEN = 64
 ECC_PUB_LEN = 64
-CLIENT_HASH_LEN = 32
-PEER_HASH_LEN = 32
+CLIENT_HASH_LEN = 48
+PEER_HASH_LEN = 48
 
 
 class UplinkError(RuntimeError):
@@ -152,8 +152,9 @@ def verify_p256(pub_xy: bytes, digest: bytes, rs: bytes) -> bool:
     der_sig = utils.encode_dss_signature(
         int.from_bytes(rs[:32], "big"), int.from_bytes(rs[32:], "big")
     )
+    # P-256 with SHA-384: the leftmost 256 bits of the digest are what the chip signed.
     try:
-        pub.verify(der_sig, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        pub.verify(der_sig, digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
     except InvalidSignature:
         return False
     return True
@@ -178,16 +179,16 @@ def verify_uplink(data: bytes, exporter: bytes, client_spki: bytes,
         raise UplinkError(f"client hash must be {CLIENT_HASH_LEN} bytes")
 
     # Recomputed from the mTLS identity, never trusted from the wire.
-    expected_hash = hashlib.sha256(client_spki + ecc_pub).digest()
+    expected_hash = hashlib.sha384(client_spki + ecc_pub).digest()
     if expected_hash != client_hash:
         raise UplinkError("client hash does not match the mTLS client certificate")
 
-    to_sign = hashlib.sha256(client_hash + exporter).digest()
+    to_sign = hashlib.sha384(client_hash + exporter).digest()
     if not verify_p256(ecc_pub, to_sign, signature):
         raise UplinkError("session signature does not verify (forwarded or replayed?)")
 
     peers = []
-    registry = {name: hashlib.sha256(spki).digest() for name, spki in (peer_registry or {}).items()}
+    registry = {name: hashlib.sha384(spki).digest() for name, spki in (peer_registry or {}).items()}
     reverse = {digest: name for name, digest in registry.items()}
     for i in range(UPLINK_FIXED_ITEMS, len(items), 2):
         digest, name_bytes = items[i], items[i + 1]
@@ -215,12 +216,12 @@ def verify_uplink(data: bytes, exporter: bytes, client_spki: bytes,
 def build_uplink(sign, ecc_pub: bytes, client_spki: bytes, exporter: bytes,
                  peers: list[tuple[str, bytes]]) -> bytes:
     """Encode what se_tropic_session.c streams, for round-trip testing."""
-    client_hash = hashlib.sha256(client_spki + ecc_pub).digest()
-    signature = sign(hashlib.sha256(client_hash + exporter).digest())
+    client_hash = hashlib.sha384(client_spki + ecc_pub).digest()
+    signature = sign(hashlib.sha384(client_hash + exporter).digest())
 
     items = [signature, ecc_pub, client_hash]
     for name, spki in peers:
-        items.append(hashlib.sha256(spki).digest())
+        items.append(hashlib.sha384(spki).digest())
         items.append(name.encode("utf-8"))
 
     out = bytes([LV_VERSION]) + len(items).to_bytes(2, "little")
@@ -238,7 +239,7 @@ def self_test() -> int:
     ecc_pub = nums.x.to_bytes(32, "big") + nums.y.to_bytes(32, "big")
 
     def sign(digest: bytes) -> bytes:
-        der = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        der = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
         r, s = utils.decode_dss_signature(der)
         return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 

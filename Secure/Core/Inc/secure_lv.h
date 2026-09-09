@@ -34,7 +34,7 @@ extern "C" {
 #define SECURE_LV_DOWNLINK_VERSION 2u
 
 /** Session uplink after TLS; includes R-MEM pad geometry, fill_id, and ML-KEM PK. */
-#define SECURE_LV_UPLINK_VERSION   3u
+#define SECURE_LV_UPLINK_VERSION   4u
 
 /**
  * OTP pad stream (not an LV envelope). ENCRYPT TLS body after PIN is
@@ -44,10 +44,11 @@ extern "C" {
  * DECRYPT reply:
  *   u32 n_pads LE | repeat: u16 chunk_len LE | chunk
  *
- * Uplink v3 items, in order: session signature (64 B), TROPIC01 P-256 public
- * key (64 B), client hash (32 B), R-MEM slot size (u16 LE), pad slot count
+ * Uplink v4 items, in order: session signature (64 B), TROPIC01 P-256 public
+ * key (64 B), client hash (48 B), R-MEM slot size (u16 LE), pad slot count
  * (u16 LE), pending fill_id (32 B), ML-KEM-768 public key (1184 B), then
- * alternating peer hash (32 B) / peer name from MCU NV (PEER ADD).
+ * alternating peer hash (48 B) / peer name from MCU NV (PEER ADD).
+ * v4 widened both hashes from SHA-256 to SHA-384.
  * count = SECURE_LV_UPLINK_FIXED_ITEMS + 2 * se_nv_peer_count().
  *
  * Downlink v2 items: kem_ct (1088 B), decrypt_half (1 B, 0 or 1), then pad

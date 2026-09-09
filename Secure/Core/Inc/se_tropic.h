@@ -33,4 +33,7 @@ uint32_t se_tropic_pairing_pub_read(uint8_t out32[32]);
 uint32_t se_tropic_is_session_active(void);
 lt_handle_t *se_tropic_handle(void);
 
+/** Erase R-MEM 0–511 and ECC slot 0. Pairing slots unchanged. */
+uint32_t se_tropic_user_wipe(void);
+
 #endif /* SE_TROPIC_H */

@@ -196,7 +196,8 @@ int main(void)
     count = 0U;
     st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "FINISH ok");
-    TEST_ASSERT_EQ(count, 5u, "LV item count");
+    TEST_ASSERT_EQ(count, SE_TROPIC_KEM_CT_LEN + 1u + image0_len + image2_len,
+                   "key payload bytes");
 
     TEST_ASSERT(se_nv_have_fill() != 0, "fill committed");
     ret = se_nv_get_fill_id(committed_fill);

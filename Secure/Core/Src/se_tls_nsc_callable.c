@@ -14,8 +14,12 @@
 #include "se_tropic_mlkem.h"
 #include "se_tropic_pin.h"
 #include "se_nv.h"
+#include "se_tropic_session.h"
+#include "se_auth.h"
 #include "wolfssl/wolfcrypt/memory.h"
+#if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U)
 #include <arm_cmse.h>
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -38,8 +42,13 @@ static void *ns_sanitize_in(const void *p, uint32_t len)
     if (base + (uintptr_t)len < base) {
         return NULL; /* length overflow */
     }
+#if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U)
     return cmse_check_address_range((void *)p, (size_t)len,
                                     CMSE_NONSECURE | CMSE_MPU_READ);
+#else
+    (void)base;
+    return (void *)p;
+#endif
 }
 
 /** NS output buffer: must be entirely NonSecure and writable. */
@@ -54,8 +63,13 @@ static void *ns_sanitize_out(void *p, uint32_t len)
     if (base + (uintptr_t)len < base) {
         return NULL;
     }
+#if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U)
     return cmse_check_address_range(p, (size_t)len,
                                     CMSE_NONSECURE | CMSE_MPU_READWRITE);
+#else
+    (void)base;
+    return p;
+#endif
 }
 
 uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
@@ -125,6 +139,7 @@ uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event)
         se_usb_tls_set_active(1U);
         break;
     case SECURE_USB_EVT_DEACTIVATE:
+        se_auth_abort();
         se_tls_reset_quiet();
         se_usb_tls_set_active(0U);
         break;
@@ -132,6 +147,7 @@ uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event)
         se_usb_tls_set_dtr(1U);
         break;
     case SECURE_USB_EVT_DTR_OFF:
+        se_auth_abort();
         se_usb_tls_set_dtr(0U);
         break;
     default:
@@ -142,6 +158,10 @@ uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event)
 
 uint32_t CSME_NSE_API SECURE_UsbService_nsc_call(void)
 {
+    if (se_auth_active() != 0) {
+        se_auth_service();
+        return (se_auth_active() != 0) ? SECURE_USB_OK : SECURE_USB_IDLE;
+    }
     se_usb_tls_service_once();
     if (se_tls_session_active() == 0) {
         return SECURE_USB_IDLE;
@@ -149,12 +169,23 @@ uint32_t CSME_NSE_API SECURE_UsbService_nsc_call(void)
     return SECURE_USB_OK;
 }
 
+uint32_t CSME_NSE_API SECURE_OwnerBegin_nsc_call(void)
+{
+    if (se_tls_session_active() != 0) {
+        return SECURE_USB_ERR;
+    }
+    return (se_auth_begin_owner() == SE_AUTH_OK) ? SECURE_USB_OK : SECURE_USB_ERR;
+}
+
 uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
 {
     int rc;
 
+    if (se_auth_active() != 0) {
+        return SECURE_USB_ERR;
+    }
     if ((mode != SECURE_TLS_MODE_PROVISION) && (mode != SECURE_TLS_MODE_ENCRYPT) &&
-        (mode != SECURE_TLS_MODE_DECRYPT)) {
+        (mode != SECURE_TLS_MODE_DECRYPT) && (mode != SECURE_TLS_MODE_MANAGE)) {
         return SECURE_USB_ERR;
     }
 
@@ -230,6 +261,11 @@ uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64)
         return SECURE_TROPIC_ERR;
     }
     return se_tropic_pub_read(ns_out);
+}
+
+uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(void)
+{
+    return se_tropic_client_hash_dump();
 }
 
 uint32_t CSME_NSE_API SECURE_TropicKeygen_nsc_call(const uint8_t *pin, uint32_t pin_len)
@@ -318,33 +354,91 @@ static uint32_t peer_lt_to_nsc(lt_ret_t ret)
     return SECURE_PEER_ERR;
 }
 
-uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const uint8_t *name, uint32_t name_len,
-                                              const uint8_t *hash32)
+static uint32_t peer_require_pin(const uint8_t *pin, uint32_t pin_len)
 {
-    const uint8_t *ns_name;
-    const uint8_t *ns_hash;
+    uint8_t final_key[TR01_MAC_AND_DESTROY_DATA_SIZE];
+    lt_handle_t *h;
+    lt_ret_t ret;
 
-    if ((name_len < 1U) || (name_len > SECURE_PEER_NAME_MAX)) {
+    if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) ||
+        (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
         return SECURE_PEER_ERR;
     }
-    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
-    ns_hash = (const uint8_t *)ns_sanitize_in(hash32, 32U);
-    if ((ns_name == NULL) || (ns_hash == NULL)) {
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
         return SECURE_PEER_ERR;
     }
-    return peer_lt_to_nsc(se_nv_peer_add(ns_name, (uint8_t)name_len, ns_hash));
+    h = se_tropic_handle();
+    if (h == NULL) {
+        return SECURE_PEER_ERR;
+    }
+    ret = se_tropic_pin_check(h, pin, (uint8_t)pin_len, NULL, 0U, final_key);
+    wc_ForceZero(final_key, sizeof(final_key));
+    if (ret != LT_OK) {
+        return SECURE_PEER_PIN_FAIL;
+    }
+    return SECURE_PEER_OK;
 }
 
-uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len)
+uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const SECURE_PeerAddArgs *args)
+{
+    const SECURE_PeerAddArgs *ns_args;
+    SECURE_PeerAddArgs local;
+    const uint8_t *ns_name;
+    const uint8_t *ns_hash;
+    const uint8_t *ns_pin;
+    uint8_t local_pin[SE_TROPIC_PIN_SIZE_MAX];
+    uint32_t st;
+
+    ns_args = (const SECURE_PeerAddArgs *)ns_sanitize_in(args, (uint32_t)sizeof(*args));
+    if (ns_args == NULL) {
+        return SECURE_PEER_ERR;
+    }
+    (void)memcpy(&local, ns_args, sizeof(local));
+    if ((local.name_len < 1U) || (local.name_len > SECURE_PEER_NAME_MAX)) {
+        return SECURE_PEER_ERR;
+    }
+    if ((local.pin_len < SE_TROPIC_PIN_SIZE_MIN) || (local.pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
+        return SECURE_PEER_ERR;
+    }
+    ns_name = (const uint8_t *)ns_sanitize_in(local.name, local.name_len);
+    ns_hash = (const uint8_t *)ns_sanitize_in(local.hash48, SECURE_PEER_HASH_LEN);
+    ns_pin = (const uint8_t *)ns_sanitize_in(local.pin, local.pin_len);
+    if ((ns_name == NULL) || (ns_hash == NULL) || (ns_pin == NULL)) {
+        return SECURE_PEER_ERR;
+    }
+    (void)memcpy(local_pin, ns_pin, local.pin_len);
+    st = peer_require_pin(local_pin, local.pin_len);
+    wc_ForceZero(local_pin, sizeof(local_pin));
+    if (st != SECURE_PEER_OK) {
+        return st;
+    }
+    return peer_lt_to_nsc(se_nv_peer_add(ns_name, (uint8_t)local.name_len, ns_hash));
+}
+
+uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len,
+                                                 const uint8_t *pin, uint32_t pin_len)
 {
     const uint8_t *ns_name;
+    const uint8_t *ns_pin;
+    uint8_t local_pin[SE_TROPIC_PIN_SIZE_MAX];
+    uint32_t st;
 
     if ((name_len < 1U) || (name_len > SECURE_PEER_NAME_MAX)) {
         return SECURE_PEER_ERR;
     }
-    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
-    if (ns_name == NULL) {
+    if ((pin_len < SE_TROPIC_PIN_SIZE_MIN) || (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
         return SECURE_PEER_ERR;
+    }
+    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
+    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
+    if ((ns_name == NULL) || (ns_pin == NULL)) {
+        return SECURE_PEER_ERR;
+    }
+    (void)memcpy(local_pin, ns_pin, pin_len);
+    st = peer_require_pin(local_pin, pin_len);
+    wc_ForceZero(local_pin, sizeof(local_pin));
+    if (st != SECURE_PEER_OK) {
+        return st;
     }
     return peer_lt_to_nsc(se_nv_peer_remove(ns_name, (uint8_t)name_len));
 }
@@ -364,7 +458,7 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
 }
 
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash32_out)
+                                              uint32_t *name_len_inout, uint8_t *hash48_out)
 {
     uint8_t *ns_name;
     uint32_t *ns_nlen;
@@ -384,7 +478,7 @@ uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
         return SECURE_PEER_ERR;
     }
     ns_name = (uint8_t *)ns_sanitize_out(name_out, cap);
-    ns_hash = (uint8_t *)ns_sanitize_out(hash32_out, 32U);
+    ns_hash = (uint8_t *)ns_sanitize_out(hash48_out, SECURE_PEER_HASH_LEN);
     if ((ns_name == NULL) || (ns_hash == NULL)) {
         return SECURE_PEER_ERR;
     }

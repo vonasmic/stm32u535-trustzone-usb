@@ -8,13 +8,14 @@
 #include "libtropic_wolfcrypt.h"
 #include "libtropic_port_stm32u5xx.h"
 #include "se_usb_tls.h"
+#include "se_nv.h"
 #include "main.h"
-#include "fw_creds.h"
-#include "wrapped_client_key.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include <wolfssl/wolfcrypt/hmac.h>
+#include "se_tropic_mlkem.h"
+#include "wolfssl/wolfcrypt/hmac.h"
+#include "wolfssl/wolfcrypt/wc_port.h"
 
 static lt_dev_stm32u5xx_t s_lt_dev;
 static lt_ctx_wolfcrypt_t s_lt_crypto;
@@ -79,24 +80,47 @@ void se_tropic_log(const char *fmt, ...)
 
 lt_ret_t se_tropic_port_device_aead_key(uint8_t out[32])
 {
+    uint8_t dwk[SE_NV_DWK_LEN];
     int ret;
+    lt_ret_t lret;
 
     if (out == NULL) {
         return LT_PARAM_ERR;
     }
-    ret = wc_HKDF(WC_SHA384, secure_dwk, secure_dwk_len, NULL, 0,
+    lret = se_tropic_port_dwk(dwk);
+    if (lret != LT_OK) {
+        return lret;
+    }
+    ret = wc_HKDF(WC_SHA384, dwk, SE_NV_DWK_LEN, NULL, 0,
                   (const byte *)"SE_tropic_rmem_aes_v1", 21U, out, 32U);
+    wc_ForceZero(dwk, sizeof(dwk));
     return (ret == 0) ? LT_OK : LT_CRYPTO_ERR;
 }
 
+static uint8_t s_mlkem_pk_cache[SE_TROPIC_MLKEM_PK_LEN];
+
 const uint8_t *se_tropic_port_mlkem_pk(void)
 {
-    return fw_mlkem_pk;
+    uint16_t len = 0U;
+
+    (void)memset(s_mlkem_pk_cache, 0, sizeof(s_mlkem_pk_cache));
+    if (se_nv_get_mlkem_pk(s_mlkem_pk_cache, &len) == LT_OK &&
+        len == SE_TROPIC_MLKEM_PK_LEN) {
+        return s_mlkem_pk_cache;
+    }
+    (void)memset(s_mlkem_pk_cache, 0, sizeof(s_mlkem_pk_cache));
+    return s_mlkem_pk_cache;
 }
 
 unsigned int se_tropic_port_mlkem_pk_len(void)
 {
-    return fw_mlkem_pk_len;
+    uint16_t len = 0U;
+
+    if (se_nv_get_mlkem_pk(s_mlkem_pk_cache, &len) != LT_OK) {
+        (void)memset(s_mlkem_pk_cache, 0, sizeof(s_mlkem_pk_cache));
+        return 0U;
+    }
+    return len;
 }
 
 void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id)
@@ -110,69 +134,174 @@ void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id)
 }
 
 /* Page 22: 0x0C02C000 — see STM32U535CCTX_FLASH.ld FLASH_NV */
-#define SE_NV_FLASH_ADDR  0x0C02C000u
-#define SE_NV_FLASH_PAGE  22u
+#define SE_NV_FLASH_ADDR    0x0C02C000u
+#define SE_NV_FLASH_PAGE    22u
+#define SE_CREDS_FLASH_ADDR 0x0C02A000u
+#define SE_CREDS_FLASH_PAGE 21u
 
-lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len)
+static uint8_t s_flash_work[SE_NV_PAGE_SIZE];
+
+static int page_dwk_blank(const uint8_t *p)
 {
-    if ((dst == NULL) || (len == 0U) || (len > FLASH_PAGE_SIZE)) {
-        return LT_PARAM_ERR;
+    uint16_t i;
+
+    for (i = 0U; i < SE_NV_DWK_LEN; i++) {
+        if (p[i] != 0xffu) {
+            return 0;
+        }
     }
-    (void)memcpy(dst, (const void *)SE_NV_FLASH_ADDR, len);
-    return LT_OK;
+    return 1;
 }
 
-lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len)
+static lt_ret_t flash_program_page(uint32_t addr, uint32_t page, const uint8_t *src)
 {
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t page_error = 0U;
-    uint32_t addr;
-    uint16_t off;
+    uint32_t off;
     uint8_t qw[16];
     HAL_StatusTypeDef st;
 
-    if ((src == NULL) || (len == 0U) || (len > FLASH_PAGE_SIZE)) {
+    if (src == NULL) {
         return LT_PARAM_ERR;
     }
-
     if (HAL_FLASH_Unlock() != HAL_OK) {
         return LT_HAL_ERROR;
     }
-
     erase.TypeErase = FLASH_TYPEERASE_PAGES;
     erase.Banks = FLASH_BANK_1;
-    erase.Page = SE_NV_FLASH_PAGE;
+    erase.Page = page;
     erase.NbPages = 1U;
     st = HAL_FLASHEx_Erase(&erase, &page_error);
     if (st != HAL_OK) {
         (void)HAL_FLASH_Lock();
         return LT_HAL_ERROR;
     }
-
-    addr = SE_NV_FLASH_ADDR;
     off = 0U;
-    while (off < len) {
-        uint16_t take = (uint16_t)(len - off);
+    while (off < SE_NV_PAGE_SIZE) {
         uint16_t i;
 
-        (void)memset(qw, 0xff, sizeof(qw));
-        if (take > (uint16_t)sizeof(qw)) {
-            take = (uint16_t)sizeof(qw);
-        }
-        for (i = 0U; i < take; i++) {
+        for (i = 0U; i < 16U; i++) {
             qw[i] = src[off + i];
         }
-        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, addr, (uint32_t)qw);
+        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, addr + off, (uint32_t)qw);
         if (st != HAL_OK) {
             (void)HAL_FLASH_Lock();
             return LT_HAL_ERROR;
         }
-        addr += 16U;
-        off = (uint16_t)(off + take);
+        off += 16U;
     }
-
     (void)HAL_FLASH_Lock();
     return LT_OK;
+}
+
+lt_ret_t se_tropic_port_nv_page_read(uint8_t dst[SE_NV_PAGE_SIZE])
+{
+    if (dst == NULL) {
+        return LT_PARAM_ERR;
+    }
+    (void)memcpy(dst, (const void *)SE_NV_FLASH_ADDR, SE_NV_PAGE_SIZE);
+    return LT_OK;
+}
+
+lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE])
+{
+    return flash_program_page(SE_NV_FLASH_ADDR, SE_NV_FLASH_PAGE, src);
+}
+
+lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE])
+{
+    if (dst == NULL) {
+        return LT_PARAM_ERR;
+    }
+    (void)memcpy(dst, (const void *)SE_CREDS_FLASH_ADDR, SE_CREDS_PAGE_SIZE);
+    return LT_OK;
+}
+
+lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE])
+{
+    return flash_program_page(SE_CREDS_FLASH_ADDR, SE_CREDS_FLASH_PAGE, src);
+}
+
+lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len)
+{
+    lt_ret_t ret;
+
+    if ((dst == NULL) || (len == 0U) || (len > SE_NV_PAGE_SIZE)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_tropic_port_nv_page_read(s_flash_work);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    (void)memcpy(dst, s_flash_work, len);
+    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+    return LT_OK;
+}
+
+lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len)
+{
+    lt_ret_t ret;
+
+    if ((src == NULL) || (len == 0U) || (len > SE_NV_PAGE_SIZE)) {
+        return LT_PARAM_ERR;
+    }
+    (void)memset(s_flash_work, 0xff, sizeof(s_flash_work));
+    (void)memcpy(s_flash_work, src, len);
+    ret = se_tropic_port_nv_page_write(s_flash_work);
+    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+    return ret;
+}
+
+lt_ret_t se_tropic_port_dwk(uint8_t out[SE_NV_DWK_LEN])
+{
+    lt_ret_t ret;
+
+    if (out == NULL) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_tropic_port_nv_page_read(s_flash_work);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (page_dwk_blank(s_flash_work) != 0) {
+        ret = se_tropic_port_nv_random(s_flash_work, SE_NV_DWK_LEN);
+        if (ret != LT_OK) {
+            wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+            return ret;
+        }
+        ret = se_tropic_port_nv_page_write(s_flash_work);
+        if (ret != LT_OK) {
+            wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+            return ret;
+        }
+    }
+    (void)memcpy(out, s_flash_work, SE_NV_DWK_LEN);
+    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+    return LT_OK;
+}
+
+void se_tropic_port_device_id(uint8_t out[SE_DEVICE_ID_LEN])
+{
+    uint32_t w;
+
+    if (out == NULL) {
+        return;
+    }
+    w = HAL_GetUIDw0();
+    out[0] = (uint8_t)w;
+    out[1] = (uint8_t)(w >> 8);
+    out[2] = (uint8_t)(w >> 16);
+    out[3] = (uint8_t)(w >> 24);
+    w = HAL_GetUIDw1();
+    out[4] = (uint8_t)w;
+    out[5] = (uint8_t)(w >> 8);
+    out[6] = (uint8_t)(w >> 16);
+    out[7] = (uint8_t)(w >> 24);
+    w = HAL_GetUIDw2();
+    out[8] = (uint8_t)w;
+    out[9] = (uint8_t)(w >> 8);
+    out[10] = (uint8_t)(w >> 16);
+    out[11] = (uint8_t)(w >> 24);
 }
 
 lt_ret_t se_tropic_port_nv_random(uint8_t *out, uint16_t len)

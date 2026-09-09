@@ -5,11 +5,11 @@ Reference implementation of the checks the SAE application must perform. The
 point of the exercise is that a man-in-the-middle terminating TLS on both sides
 derives a different exporter, so a forwarded uplink cannot verify here.
 
-Uplink v1 items, by position:
+Uplink items, by position:
   1  session signature, raw R||S             64 B
   2  TROPIC01 P-256 public key, X||Y         64 B
-  3  client hash                             32 B
-  4,6,8..  peer hash = SHA256(peer_spki)     32 B
+  3  client hash                             48 B
+  4,6,8..  peer hash = SHA384(peer_spki)     48 B
   5,7,9..  peer name, UTF-8
 
 Usage:
@@ -27,13 +27,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from embed_fw_creds import spki_raw_from_cert_der
-from secure_lv import SECURE_LV_UPLINK_FIXED_ITEMS, LvError, LvVersionError, decode, encode
+from secure_lv import (SECURE_LV_UPLINK_FIXED_ITEMS, SECURE_LV_UPLINK_VERSION, LvError,
+                       LvVersionError, decode, encode)
 
-EXPORTER_LABEL = b"EXPORTER-tropic-binding"
+EXPORTER_LABEL = b"EXPORTER-Channel-Binding"
 EXPORTER_LEN = 32
 SIG_LEN = 64
 ECC_PUB_LEN = 64
-HASH_LEN = 32
+HASH_LEN = 48
 
 
 class UplinkError(ValueError):
@@ -49,8 +50,9 @@ def _verify_p256(pub_xy: bytes, digest: bytes, rs: bytes) -> None:
     der = utils.encode_dss_signature(
         int.from_bytes(rs[:32], "big"), int.from_bytes(rs[32:], "big")
     )
+    # P-256 with SHA-384: the leftmost 256 bits of the digest are what the chip signed.
     try:
-        pub.verify(der, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        pub.verify(der, digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
     except InvalidSignature as exc:
         raise UplinkError("session signature does not verify") from exc
 
@@ -58,7 +60,7 @@ def _verify_p256(pub_xy: bytes, digest: bytes, rs: bytes) -> None:
 def verify_uplink(data: bytes, mldsa_spki: bytes, exporter: bytes,
                   peer_registry: dict[str, bytes] | None = None) -> dict:
     """Return the authenticated identity, or raise. Version errors surface as LvVersionError."""
-    items = decode(data)
+    items = decode(data, expected_version=SECURE_LV_UPLINK_VERSION)
 
     if len(items) < SECURE_LV_UPLINK_FIXED_ITEMS:
         raise UplinkError(f"expected at least {SECURE_LV_UPLINK_FIXED_ITEMS} items, "
@@ -76,13 +78,13 @@ def verify_uplink(data: bytes, mldsa_spki: bytes, exporter: bytes,
         raise UplinkError(f"exporter must be {EXPORTER_LEN} bytes, got {len(exporter)}")
 
     # Recompute rather than trust field 3; the wire copy is only a cross-check.
-    client_hash = hashlib.sha256(mldsa_spki + ecc_pub).digest()
+    client_hash = hashlib.sha384(mldsa_spki + ecc_pub).digest()
     if client_hash_wire != client_hash:
         raise UplinkError("client_hash mismatch: uplink is not bound to this mTLS identity")
 
-    _verify_p256(ecc_pub, hashlib.sha256(client_hash + exporter).digest(), signature)
+    _verify_p256(ecc_pub, hashlib.sha384(client_hash + exporter).digest(), signature)
 
-    registry = {name: hashlib.sha256(spki).digest() for name, spki in (peer_registry or {}).items()}
+    registry = {name: hashlib.sha384(spki).digest() for name, spki in (peer_registry or {}).items()}
     by_hash = {digest: name for name, digest in registry.items()}
 
     peers = []
@@ -109,13 +111,13 @@ def verify_uplink(data: bytes, mldsa_spki: bytes, exporter: bytes,
 def build_uplink(signer, ecc_pub: bytes, mldsa_spki: bytes, exporter: bytes,
                  peers: list[tuple[str, bytes]]) -> bytes:
     """Device-side encoder, mirrored here so the verifier is testable without hardware."""
-    client_hash = hashlib.sha256(mldsa_spki + ecc_pub).digest()
-    signature = signer(hashlib.sha256(client_hash + exporter).digest())
+    client_hash = hashlib.sha384(mldsa_spki + ecc_pub).digest()
+    signature = signer(hashlib.sha384(client_hash + exporter).digest())
     items = [signature, ecc_pub, client_hash]
     for name, spki in peers:
-        items.append(hashlib.sha256(spki).digest())
+        items.append(hashlib.sha384(spki).digest())
         items.append(name.encode("utf-8"))
-    return encode(items)
+    return encode(items, SECURE_LV_UPLINK_VERSION)
 
 
 def selftest() -> int:
@@ -129,7 +131,7 @@ def selftest() -> int:
     ecc_pub = nums.x.to_bytes(32, "big") + nums.y.to_bytes(32, "big")
 
     def signer(digest: bytes) -> bytes:
-        der = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        der = key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
         r, s = utils.decode_dss_signature(der)
         return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
@@ -141,7 +143,7 @@ def selftest() -> int:
     uplink = build_uplink(signer, ecc_pub, mldsa_spki, exporter, [("Alice", alice_spki)])
     result = verify_uplink(uplink, mldsa_spki, exporter, registry)
     assert result["peers"] == [{"name": "Alice",
-                                "hash": hashlib.sha256(alice_spki).digest().hex(),
+                                "hash": hashlib.sha384(alice_spki).digest().hex(),
                                 "known": True}]
     print("ok: genuine uplink verifies")
 
@@ -162,7 +164,7 @@ def selftest() -> int:
         raise AssertionError("wrong mTLS identity accepted")
 
     try:
-        decode(b"\x02" + uplink[1:])
+        decode(b"\x02" + uplink[1:], expected_version=SECURE_LV_UPLINK_VERSION)
     except LvVersionError:
         print("ok: unknown envelope version rejected before parsing items")
     else:

@@ -25,7 +25,7 @@ void se_tropic_port_hw_init(void);
  */
 uint32_t se_tropic_port_attach(lt_handle_t *h);
 
-/** Debug line (USB CDC on firmware, stdout on host). */
+/** Debug line (USB CDC DEBUG on firmware and se_host). */
 void se_tropic_log(const char *fmt, ...);
 
 /** Hex-dump @p data via se_tropic_log (optional @p label line first). */
@@ -39,18 +39,24 @@ void se_tropic_log_hex(const char *label, const uint8_t *data, uint32_t len);
 lt_ret_t se_tropic_port_device_aead_key(uint8_t out[32]);
 
 /**
- * Embedded ML-KEM-768 public key (fw_mlkem_pk on device; host fixture on model).
- * @return pointer valid for the process lifetime; may be empty (len 0).
+ * ML-KEM-768 public key: NV first, then host fixture (model) or empty (silicon).
+ * @return pointer valid until the next NV write; may be empty (len 0).
  */
 const uint8_t *se_tropic_port_mlkem_pk(void);
 
-/** Length of se_tropic_port_mlkem_pk(); 0 when not yet embedded. */
+/** Length of se_tropic_port_mlkem_pk(); 0 when not yet enrolled. */
 unsigned int se_tropic_port_mlkem_pk_len(void);
 
 /**
  * Print chip_id.
  */
 void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id);
+
+#define SE_NV_PAGE_SIZE    8192u
+#define SE_NV_DWK_LEN      32u
+#define SE_NV_BLOB_OFF     32u
+#define SE_CREDS_PAGE_SIZE 8192u
+#define SE_DEVICE_ID_LEN   12u
 
 /**
  * Dedicated MCU NV page (Secure flash on device, RAM on host model).
@@ -62,6 +68,23 @@ lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len);
  * Erase the NV page and program @p len bytes at the start.
  */
 lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len);
+
+/** Read/write the full 8 KB NV page (dwk header + sealed blob). */
+lt_ret_t se_tropic_port_nv_page_read(uint8_t dst[SE_NV_PAGE_SIZE]);
+lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE]);
+
+/** Public cert page (SAE CA + device cert). Secure-only writes. */
+lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE]);
+lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE]);
+
+/**
+ * 32-byte device wrap/seal root. Generate-once when the NV header is erased.
+ * Not AEAD'd with itself. STM32 AEAD HKDF uses this; host AEAD stays a test key.
+ */
+lt_ret_t se_tropic_port_dwk(uint8_t out[SE_NV_DWK_LEN]);
+
+/** MCU unique id (STM32 UID) or a fixed host-model id. */
+void se_tropic_port_device_id(uint8_t out[SE_DEVICE_ID_LEN]);
 
 /** Fill @p len random bytes (HAL RNG on STM32, getentropy/rand on host). */
 lt_ret_t se_tropic_port_nv_random(uint8_t *out, uint16_t len);

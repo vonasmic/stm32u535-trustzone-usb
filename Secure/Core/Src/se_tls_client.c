@@ -23,8 +23,13 @@
 #include "secure_qkd_ingest.h"
 #include "secure_otp.h"
 #include "se_tls_user.h"
-#include "fw_creds.h"
+#include "se_creds.h"
+#include "se_auth.h"
+#include "se_manage.h"
+#include "se_le.h"
 #include "main.h"
+#include <stdio.h>
+#include <string.h>
 #include "wolfssl/ssl.h"
 #include "wolfssl/wolfcrypt/error-crypt.h"
 #include "wolfssl/wolfcrypt/memory.h"
@@ -41,8 +46,11 @@ typedef enum {
     TLS_ST_HANDSHAKE,
     TLS_ST_WRITE_UPLINK,
     TLS_ST_READ_RESP,
+    TLS_ST_WRITE_ACK,
     TLS_ST_READ_OTP,
     TLS_ST_WRITE_OTP,
+    TLS_ST_READ_MANAGE,
+    TLS_ST_WRITE_MANAGE,
     TLS_ST_SHUTDOWN,
     TLS_ST_DONE,
     TLS_ST_ERROR
@@ -59,6 +67,12 @@ static uint8_t s_otp_tx[4u + 4u + SE_TROPIC_RMEM_PLAIN_MAX];
 static uint16_t s_otp_tx_len;
 static uint16_t s_otp_tx_off;
 static uint8_t s_otp_count_written;
+static uint32_t s_qkd_key_bytes;
+static uint8_t s_tls_der[SE_CREDS_DER_MAX];
+static uint32_t s_manage_got;
+static uint8_t s_manage_tx[SE_MANAGE_RSP_MAX];
+static uint16_t s_manage_tx_len;
+static uint16_t s_manage_tx_off;
 
 static void tls_wipe_otp(void)
 {
@@ -77,6 +91,15 @@ static void tls_wipe_mode(void)
     s_mode = 0U;
 }
 
+static void tls_wipe_manage(void)
+{
+    s_manage_got = 0U;
+    wc_ForceZero(s_manage_tx, sizeof(s_manage_tx));
+    s_manage_tx_len = 0U;
+    s_manage_tx_off = 0U;
+    se_manage_buf_wipe();
+}
+
 static void tls_wipe_ssl(void)
 {
     if (s_ssl != NULL) {
@@ -88,6 +111,7 @@ static void tls_wipe_ssl(void)
         s_ctx = NULL;
     }
     wc_ForceZero(s_exporter, sizeof(s_exporter));
+    tls_wipe_manage();
 }
 
 static int tls_setup_groups(WOLFSSL_CTX *ctx, WOLFSSL *ssl)
@@ -130,21 +154,23 @@ static int tls_write_all(const uint8_t *data, uint32_t len, void *ctx)
     return 0;
 }
 
-static int tls_load_verify_ca(WOLFSSL_CTX *ctx, uint32_t mode)
+static int tls_accept_peer_leaf(int preverify, WOLFSSL_X509_STORE_CTX *store)
 {
-    const unsigned char *ca;
-    long ca_len;
+    (void)preverify;
+    (void)store;
+    return 1;
+}
 
-    if (mode == SECURE_TLS_MODE_PROVISION) {
-        ca = fw_root_ca_der;
-        ca_len = (long)fw_root_ca_der_len;
-    } else {
-        ca = fw_client_ca_der;
-        ca_len = (long)fw_client_ca_der_len;
+static int tls_load_provision_ca(WOLFSSL_CTX *ctx)
+{
+    uint16_t ca_len = 0U;
+
+    if (se_creds_get_sae_ca(s_tls_der, &ca_len, (uint16_t)sizeof(s_tls_der)) != LT_OK) {
+        se_usb_debug_printf("TLS setup: no SAE CA");
+        return -1;
     }
-    if ((ca_len <= 0) ||
-        (wolfSSL_CTX_load_verify_buffer(ctx, ca, ca_len, WOLFSSL_FILETYPE_ASN1)
-         != WOLFSSL_SUCCESS)) {
+    if (wolfSSL_CTX_load_verify_buffer(ctx, s_tls_der, (long)ca_len, WOLFSSL_FILETYPE_ASN1) !=
+        WOLFSSL_SUCCESS) {
         se_usb_debug_printf("TLS setup: load CA failed");
         return -1;
     }
@@ -153,10 +179,7 @@ static int tls_load_verify_ca(WOLFSSL_CTX *ctx, uint32_t mode)
 
 static int tls_start(void)
 {
-    if ((s_mode != SECURE_TLS_MODE_PROVISION) && (fw_user_spki_len == 0U)) {
-        se_usb_debug_printf("TLS setup: no user key (embed user-cert.pem)");
-        return -1;
-    }
+    uint16_t cert_len = 0U;
 
     s_ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
     if (s_ctx == NULL) {
@@ -167,21 +190,33 @@ static int tls_start(void)
     wolfSSL_CTX_SetMinVersion(s_ctx, WOLFSSL_TLSV1_3);
     (void)wolfSSL_CTX_set_cipher_list(s_ctx, "TLS13-AES256-GCM-SHA384");
 
-    if (tls_load_verify_ca(s_ctx, s_mode) != 0) {
-        return -1;
+    if (s_mode == SECURE_TLS_MODE_PROVISION) {
+        if (tls_load_provision_ca(s_ctx) != 0) {
+            return -1;
+        }
+        wolfSSL_CTX_set_verify(s_ctx, WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                               NULL);
+    } else {
+        wolfSSL_CTX_set_verify(s_ctx, WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT,
+                               tls_accept_peer_leaf);
     }
-    if (wolfSSL_CTX_use_certificate_buffer(s_ctx, fw_client_cert_der,
-            (long)fw_client_cert_der_len, WOLFSSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS) {
-        se_usb_debug_printf("TLS setup: load client cert failed");
-        return -1;
+    /* MANAGE is owner-pinned TLS without a device client cert (not mTLS). */
+    if (s_mode != SECURE_TLS_MODE_MANAGE) {
+        if (se_creds_get_device_cert(s_tls_der, &cert_len, (uint16_t)sizeof(s_tls_der)) !=
+            LT_OK) {
+            se_usb_debug_printf("TLS setup: no device cert");
+            return -1;
+        }
+        if (wolfSSL_CTX_use_certificate_buffer(s_ctx, s_tls_der, (long)cert_len,
+                                               WOLFSSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS) {
+            se_usb_debug_printf("TLS setup: load client cert failed");
+            return -1;
+        }
+        if (secure_client_key_load(s_ctx) != 0) {
+            se_usb_debug_printf("TLS setup: unwrap/load key failed");
+            return -1;
+        }
     }
-    if (secure_client_key_load(s_ctx) != 0) {
-        se_usb_debug_printf("TLS setup: unwrap/load key failed");
-        return -1;
-    }
-
-    wolfSSL_CTX_set_verify(s_ctx,
-            WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT, NULL);
 
     wolfSSL_CTX_SetIORecv(s_ctx, se_tls_embed_recv);
     wolfSSL_CTX_SetIOSend(s_ctx, (CallbackIOSend)se_tls_embed_send);
@@ -200,8 +235,10 @@ static int tls_start(void)
         return -1;
     }
 
-    /* The exporter refuses to run unless handshake arrays are retained. */
-    wolfSSL_KeepArrays(s_ssl);
+    /* Exporter (provision) refuses unless handshake arrays are retained. */
+    if (s_mode != SECURE_TLS_MODE_MANAGE) {
+        wolfSSL_KeepArrays(s_ssl);
+    }
 
     s_state = TLS_ST_HANDSHAKE;
     se_usb_debug_printf("sending handshake");
@@ -213,11 +250,28 @@ int se_tls_arm(uint32_t mode)
     if ((s_state != TLS_ST_IDLE) || (s_mode != 0U)) {
         return -1;
     }
+    if (se_auth_active() != 0) {
+        return -1;
+    }
     if (se_time_is_synced() == 0) {
         return -1;
     }
     if ((mode != SECURE_TLS_MODE_PROVISION) && (mode != SECURE_TLS_MODE_ENCRYPT) &&
-        (mode != SECURE_TLS_MODE_DECRYPT)) {
+        (mode != SECURE_TLS_MODE_DECRYPT) && (mode != SECURE_TLS_MODE_MANAGE)) {
+        return -1;
+    }
+    if (mode == SECURE_TLS_MODE_PROVISION) {
+        if (se_ready_provision() == 0) {
+            se_usb_debug_printf("TLS refused: not provision-ready");
+            return -1;
+        }
+    } else if (mode == SECURE_TLS_MODE_MANAGE) {
+        if (se_nv_has_owner() == 0) {
+            se_usb_debug_printf("TLS refused: no owner");
+            return -1;
+        }
+    } else if (se_ready_encrypt() == 0) {
+        se_usb_debug_printf("TLS refused: not encrypt-ready");
         return -1;
     }
     s_mode = mode;
@@ -281,7 +335,7 @@ void se_tls_abort(void)
     s_state = TLS_ST_IDLE;
 }
 
-static void tls_qkd_status(uint32_t st, uint32_t count)
+static void tls_qkd_status(uint32_t st, uint32_t key_bytes)
 {
     if (st == SECURE_QKD_WRONG_VERSION) {
         se_usb_debug_printf("downlink schema mismatch (expect v%u)",
@@ -291,8 +345,35 @@ static void tls_qkd_status(uint32_t st, uint32_t count)
     } else if (st != SECURE_QKD_OK) {
         se_usb_debug_printf("downlink parse error %lu", (unsigned long)st);
     } else {
-        se_usb_debug_printf("response done, qkd=%lu", (unsigned long)count);
+        se_usb_debug_printf("response done, qkd=%lu", (unsigned long)key_bytes);
     }
+}
+
+static int tls_qkd_finish_and_ack(void)
+{
+    uint32_t st;
+    uint32_t key_bytes = 0U;
+
+    st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &key_bytes);
+    tls_qkd_status(st, key_bytes);
+    if (st != SECURE_QKD_OK) {
+        return -1;
+    }
+    s_qkd_key_bytes = key_bytes;
+    s_state = TLS_ST_WRITE_ACK;
+    return 0;
+}
+
+static int tls_write_se_ok(uint32_t key_bytes)
+{
+    char line[24];
+    int line_len;
+
+    line_len = snprintf(line, sizeof(line), "SE_OK %lu\n", (unsigned long)key_bytes);
+    if ((line_len <= 0) || ((size_t)line_len >= sizeof(line))) {
+        return -1;
+    }
+    return tls_write_all((const uint8_t *)line, (uint32_t)line_len, s_ssl);
 }
 
 static int tls_otp_flush_reply(void)
@@ -504,17 +585,29 @@ void se_tls_service_once(void)
     case TLS_ST_HANDSHAKE:
         n = wolfSSL_connect(s_ssl);
         if (n == WOLFSSL_SUCCESS) {
-            int exported = wolfSSL_export_keying_material(s_ssl, s_exporter,
-                                                          SE_TROPIC_EXPORTER_LEN,
-                                                          SE_TROPIC_EXPORTER_LABEL,
-                                                          SE_TROPIC_EXPORTER_LABEL_LEN,
-                                                          NULL, 0, 0);
-            /* Drop handshake secrets as soon as the binding value is out. */
-            wolfSSL_FreeArrays(s_ssl);
-            if (exported != WOLFSSL_SUCCESS) {
-                se_usb_debug_printf("TLS exporter failed");
-                se_tls_abort();
+            if (s_mode == SECURE_TLS_MODE_MANAGE) {
+                if (se_tls_user_pin_peer(s_ssl) != 0) {
+                    se_usb_debug_printf("TLS failed: user key mismatch");
+                    se_tls_abort();
+                    break;
+                }
+                se_usb_debug_printf("handshake ok, manage");
+                s_manage_got = 0U;
+                s_state = TLS_ST_READ_MANAGE;
                 break;
+            }
+            {
+                int exported = wolfSSL_export_keying_material(s_ssl, s_exporter,
+                                                              SE_TROPIC_EXPORTER_LEN,
+                                                              SE_TROPIC_EXPORTER_LABEL,
+                                                              SE_TROPIC_EXPORTER_LABEL_LEN,
+                                                              NULL, 0, 0);
+                wolfSSL_FreeArrays(s_ssl);
+                if (exported != WOLFSSL_SUCCESS) {
+                    se_usb_debug_printf("TLS exporter failed");
+                    se_tls_abort();
+                    break;
+                }
             }
             if ((s_mode != SECURE_TLS_MODE_PROVISION) && (se_tls_user_pin_peer(s_ssl) != 0)) {
                 se_usb_debug_printf("TLS failed: user key mismatch");
@@ -561,6 +654,12 @@ void se_tls_service_once(void)
             if (st != SECURE_QKD_OK) {
                 tls_qkd_status(st, 0U);
                 se_tls_abort();
+                break;
+            }
+            if (secure_qkd_ready_to_finish() != 0U) {
+                if (tls_qkd_finish_and_ack() != 0) {
+                    se_tls_abort();
+                }
             }
             break;
         }
@@ -568,15 +667,20 @@ void se_tls_service_once(void)
         if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
             break;
         }
-        {
-            uint32_t count = 0U;
-
-            st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
-            tls_qkd_status(st, count);
-            s_state = TLS_ST_SHUTDOWN;
+        if (tls_qkd_finish_and_ack() != 0) {
+            se_tls_abort();
         }
         break;
     }
+
+    case TLS_ST_WRITE_ACK:
+        if (tls_write_se_ok(s_qkd_key_bytes) != 0) {
+            se_tls_abort();
+            break;
+        }
+        se_usb_debug_printf("SE_OK sent");
+        s_state = TLS_ST_SHUTDOWN;
+        break;
 
     case TLS_ST_READ_OTP: {
         uint8_t chunk[TLS_APP_READ_CHUNK];
@@ -640,6 +744,73 @@ void se_tls_service_once(void)
         }
         break;
     }
+
+    case TLS_ST_READ_MANAGE: {
+        uint8_t chunk[TLS_APP_READ_CHUNK];
+        uint8_t *buf = se_manage_buf();
+        uint32_t cap = se_manage_buf_cap();
+        uint32_t need;
+        uint32_t st;
+        char msg[SE_MANAGE_MSG_MAX];
+        size_t msg_n;
+
+        n = wolfSSL_read(s_ssl, chunk, (int)sizeof(chunk));
+        if (n > 0) {
+            if ((s_manage_got + (uint32_t)n) > cap) {
+                wc_ForceZero(chunk, sizeof(chunk));
+                se_tls_abort();
+                break;
+            }
+            (void)memcpy(buf + s_manage_got, chunk, (size_t)n);
+            s_manage_got += (uint32_t)n;
+            wc_ForceZero(chunk, sizeof(chunk));
+            need = se_manage_req_need(buf, s_manage_got);
+            if (need == 0xffffffffu) {
+                se_tls_abort();
+                break;
+            }
+            if ((need == 0U) || (s_manage_got < need)) {
+                break;
+            }
+            if (s_manage_got != need) {
+                se_tls_abort();
+                break;
+            }
+            msg[0] = '\0';
+            st = se_manage_apply_buf(buf, need, msg, (uint16_t)sizeof(msg));
+            msg_n = strlen(msg);
+            if (msg_n > (size_t)SE_MANAGE_MSG_MAX - 1U) {
+                msg_n = (size_t)SE_MANAGE_MSG_MAX - 1U;
+            }
+            s_manage_tx[0] = (uint8_t)st;
+            se_put_u16le(s_manage_tx + 1U, (uint16_t)msg_n);
+            if (msg_n > 0U) {
+                (void)memcpy(s_manage_tx + 3U, msg, msg_n);
+            }
+            s_manage_tx_len = (uint16_t)(3U + msg_n);
+            s_manage_tx_off = 0U;
+            se_manage_buf_wipe();
+            s_manage_got = 0U;
+            s_state = TLS_ST_WRITE_MANAGE;
+            break;
+        }
+        err = wolfSSL_get_error(s_ssl, n);
+        if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        se_tls_abort();
+        break;
+    }
+
+    case TLS_ST_WRITE_MANAGE:
+        if (tls_write_all(s_manage_tx + s_manage_tx_off,
+                          (uint32_t)s_manage_tx_len - (uint32_t)s_manage_tx_off, s_ssl) != 0) {
+            se_tls_abort();
+            break;
+        }
+        tls_wipe_manage();
+        s_state = TLS_ST_SHUTDOWN;
+        break;
 
     case TLS_ST_SHUTDOWN:
         (void)wolfSSL_shutdown(s_ssl);

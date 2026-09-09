@@ -2,7 +2,7 @@
  * @file    se_nv.c
  * @brief   Sealed MCU NV for fill_id, dual OTP cursors, TIME floor, pairing, peers
  *
- * Blob/plain working buffers live in BSS: v4 plaintext is ~506 B, too large for
+ * Blob/plain working buffers live in BSS: v5 plaintext is ~634 B, too large for
  * the Secure 1 KB stack together with se_nv_state_t.
  */
 #include "se_nv.h"
@@ -20,16 +20,38 @@
 #define SE_NV_PEER_SLOT_LEN (1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN)
 #define SE_NV_PLAIN_LEN (SE_NV_PLAIN_V3_LEN + 1u + (SE_NV_PEER_MAX * SE_NV_PEER_SLOT_LEN))
 #define SE_NV_BLOB_LEN (SE_TROPIC_RMEM_OVERHEAD + SE_NV_PLAIN_LEN)
+#define SE_NV_EXTRA_LEN \
+    (2u + SE_NV_OWNER_SPKI_MAX + SE_NV_PW_HASH_LEN + 2u + SE_NV_WRAP_MAX + 2u + SE_NV_MLKEM_MAX)
+#define SE_NV_PLAIN_V6_LEN (SE_NV_PLAIN_LEN + SE_NV_EXTRA_LEN)
+#define SE_NV_BLOB_V6_LEN (SE_TROPIC_RMEM_OVERHEAD + SE_NV_PLAIN_V6_LEN)
+/* v4 held SHA-256 peer hashes; kept only to recognise and migrate an older page. */
+#define SE_NV_PEER_SLOT_V4_LEN (1u + SE_NV_PEER_NAME_MAX + 32u)
+#define SE_NV_PLAIN_V4_LEN (SE_NV_PLAIN_V3_LEN + 1u + (SE_NV_PEER_MAX * SE_NV_PEER_SLOT_V4_LEN))
+#define SE_NV_BLOB_V4_LEN (SE_TROPIC_RMEM_OVERHEAD + SE_NV_PLAIN_V4_LEN)
 #define SE_NV_BLOB_V3_LEN (SE_TROPIC_RMEM_OVERHEAD + SE_NV_PLAIN_V3_LEN)
-#define SE_NV_BLOB_MAX SE_NV_BLOB_LEN
+#define SE_NV_BLOB_MAX SE_NV_BLOB_V6_LEN
 
+static const uint8_t k_nv_aad_v6[] = "SE_nv_v6";
+static const uint8_t k_nv_aad_v5[] = "SE_nv_v5";
 static const uint8_t k_nv_aad_v4[] = "SE_nv_v4";
 static const uint8_t k_nv_aad_v3[] = "SE_nv_v3";
 
+typedef struct {
+    uint16_t owner_len;
+    uint8_t owner[SE_NV_OWNER_SPKI_MAX];
+    uint8_t pw_hash[SE_NV_PW_HASH_LEN];
+    uint16_t wrap_len;
+    uint8_t wrap[SE_NV_WRAP_MAX];
+    uint16_t mlkem_len;
+    uint8_t mlkem[SE_NV_MLKEM_MAX];
+} se_nv_extra_t;
+
 static uint8_t s_pending_fill[SE_NV_FILL_ID_LEN];
 static uint8_t s_pending_valid;
+static uint8_t s_nv_page[SE_NV_PAGE_SIZE];
 static uint8_t s_nv_blob[SE_NV_BLOB_MAX];
-static uint8_t s_nv_plain[SE_NV_PLAIN_LEN];
+static uint8_t s_nv_plain[SE_NV_PLAIN_V6_LEN];
+static se_nv_extra_t s_extra;
 
 static int otp_dir_ok(se_nv_otp_dir_t dir)
 {
@@ -110,7 +132,64 @@ static void unpack_pairing(const uint8_t *plain, se_nv_state_t *out)
                  SE_NV_PAIRING_KEY_LEN);
 }
 
-static void pack_plain(const se_nv_state_t *in, uint8_t plain[SE_NV_PLAIN_LEN])
+static void extra_clear(void)
+{
+    wc_ForceZero(&s_extra, sizeof(s_extra));
+}
+
+static void pack_extra(uint8_t *plain)
+{
+    uint8_t *p = plain + SE_NV_PLAIN_LEN;
+
+    se_put_u16le(p, s_extra.owner_len);
+    p += 2u;
+    (void)memcpy(p, s_extra.owner, SE_NV_OWNER_SPKI_MAX);
+    p += SE_NV_OWNER_SPKI_MAX;
+    (void)memcpy(p, s_extra.pw_hash, SE_NV_PW_HASH_LEN);
+    p += SE_NV_PW_HASH_LEN;
+    se_put_u16le(p, s_extra.wrap_len);
+    p += 2u;
+    (void)memcpy(p, s_extra.wrap, SE_NV_WRAP_MAX);
+    p += SE_NV_WRAP_MAX;
+    se_put_u16le(p, s_extra.mlkem_len);
+    p += 2u;
+    (void)memcpy(p, s_extra.mlkem, SE_NV_MLKEM_MAX);
+}
+
+static lt_ret_t unpack_extra(const uint8_t *plain)
+{
+    const uint8_t *p = plain + SE_NV_PLAIN_LEN;
+
+    extra_clear();
+    s_extra.owner_len = se_u16le(p);
+    p += 2u;
+    if (s_extra.owner_len > SE_NV_OWNER_SPKI_MAX) {
+        extra_clear();
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    (void)memcpy(s_extra.owner, p, SE_NV_OWNER_SPKI_MAX);
+    p += SE_NV_OWNER_SPKI_MAX;
+    (void)memcpy(s_extra.pw_hash, p, SE_NV_PW_HASH_LEN);
+    p += SE_NV_PW_HASH_LEN;
+    s_extra.wrap_len = se_u16le(p);
+    p += 2u;
+    if (s_extra.wrap_len > SE_NV_WRAP_MAX) {
+        extra_clear();
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    (void)memcpy(s_extra.wrap, p, SE_NV_WRAP_MAX);
+    p += SE_NV_WRAP_MAX;
+    s_extra.mlkem_len = se_u16le(p);
+    p += 2u;
+    if (s_extra.mlkem_len > SE_NV_MLKEM_MAX) {
+        extra_clear();
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    (void)memcpy(s_extra.mlkem, p, SE_NV_MLKEM_MAX);
+    return LT_OK;
+}
+
+static void pack_plain(const se_nv_state_t *in, uint8_t *plain)
 {
     uint8_t *p;
     uint8_t i;
@@ -157,7 +236,8 @@ static lt_ret_t unpack_peers(const uint8_t *plain, se_nv_state_t *out)
     return LT_OK;
 }
 
-static void unpack_plain_v3(const uint8_t *plain, se_nv_state_t *out)
+/** v3 has no peer table and v4's is SHA-256 wide: both migrate with peers dropped. */
+static void unpack_plain_without_peers(const uint8_t *plain, se_nv_state_t *out)
 {
     unpack_core(plain, out);
     unpack_pairing(plain, out);
@@ -165,7 +245,7 @@ static void unpack_plain_v3(const uint8_t *plain, se_nv_state_t *out)
     (void)memset(out->peers, 0, sizeof(out->peers));
 }
 
-static lt_ret_t unpack_plain_v4(const uint8_t *plain, se_nv_state_t *out)
+static lt_ret_t unpack_plain_v5(const uint8_t *plain, se_nv_state_t *out)
 {
     unpack_core(plain, out);
     unpack_pairing(plain, out);
@@ -195,25 +275,57 @@ static void nv_work_wipe(void)
 {
     wc_ForceZero(s_nv_plain, sizeof(s_nv_plain));
     wc_ForceZero(s_nv_blob, sizeof(s_nv_blob));
+    wc_ForceZero(s_nv_page, sizeof(s_nv_page));
+}
+
+static lt_ret_t decrypt_at(const uint8_t *key, const uint8_t *blob, uint16_t blob_len,
+                           const uint8_t *aad, uint16_t aad_len, uint16_t expect_plain,
+                           se_nv_state_t *out, int with_v6_extra)
+{
+    uint16_t plain_len = 0U;
+    lt_ret_t ret;
+
+    ret = se_tropic_decrypt_storage_blob(key, aad, aad_len, blob, blob_len, s_nv_plain,
+                                         (uint16_t)sizeof(s_nv_plain), &plain_len);
+    if ((ret != LT_OK) || (plain_len != expect_plain)) {
+        return LT_FAIL;
+    }
+    if (with_v6_extra != 0) {
+        ret = unpack_plain_v5(s_nv_plain, out);
+        if (ret == LT_OK) {
+            ret = unpack_extra(s_nv_plain);
+        }
+    } else if (expect_plain == SE_NV_PLAIN_LEN) {
+        extra_clear();
+        ret = unpack_plain_v5(s_nv_plain, out);
+    } else {
+        extra_clear();
+        unpack_plain_without_peers(s_nv_plain, out);
+        ret = LT_OK;
+    }
+    return ret;
 }
 
 lt_ret_t se_nv_load(se_nv_state_t *out)
 {
     uint8_t key[SE_TROPIC_RMEM_AES_KEY_LEN];
-    uint16_t plain_len = 0U;
+    const uint8_t *blob;
     lt_ret_t ret;
 
     if (out == NULL) {
         return LT_PARAM_ERR;
     }
     (void)memset(out, 0, sizeof(*out));
+    extra_clear();
 
-    ret = se_tropic_port_nv_raw_read(s_nv_blob, sizeof(s_nv_blob));
+    ret = se_tropic_port_nv_page_read(s_nv_page);
     if (ret != LT_OK) {
         nv_work_wipe();
         return ret;
     }
-    if (page_is_erased(s_nv_blob, sizeof(s_nv_blob)) != 0) {
+    blob = s_nv_page + SE_NV_BLOB_OFF;
+    if (page_is_erased(blob, SE_NV_BLOB_V6_LEN) != 0) {
+        /* Virgin page or generate-once dwk with no sealed payload. */
         nv_work_wipe();
         return LT_OK;
     }
@@ -221,35 +333,47 @@ lt_ret_t se_nv_load(se_nv_state_t *out)
     ret = se_tropic_port_device_aead_key(key);
     if (ret != LT_OK) {
         nv_work_wipe();
+        extra_clear();
         return ret;
     }
 
-    plain_len = 0U;
-    ret = se_tropic_decrypt_storage_blob(key, k_nv_aad_v4, (uint16_t)(sizeof(k_nv_aad_v4) - 1u),
-                                         s_nv_blob, SE_NV_BLOB_LEN, s_nv_plain, sizeof(s_nv_plain),
-                                         &plain_len);
-    if ((ret == LT_OK) && (plain_len == SE_NV_PLAIN_LEN)) {
-        ret = unpack_plain_v4(s_nv_plain, out);
+    ret = decrypt_at(key, blob, SE_NV_BLOB_V6_LEN, k_nv_aad_v6,
+                     (uint16_t)(sizeof(k_nv_aad_v6) - 1u), SE_NV_PLAIN_V6_LEN, out, 1);
+    if (ret == LT_OK) {
         wc_ForceZero(key, sizeof(key));
         nv_work_wipe();
-        if (ret != LT_OK) {
-            (void)memset(out, 0, sizeof(*out));
-            return SE_TROPIC_LT_TAMPERED;
-        }
         return LT_OK;
     }
-
-    plain_len = 0U;
-    ret = se_tropic_decrypt_storage_blob(key, k_nv_aad_v3, (uint16_t)(sizeof(k_nv_aad_v3) - 1u),
-                                         s_nv_blob, SE_NV_BLOB_V3_LEN, s_nv_plain,
-                                         SE_NV_PLAIN_V3_LEN, &plain_len);
-    wc_ForceZero(key, sizeof(key));
-    if ((ret == LT_OK) && (plain_len == SE_NV_PLAIN_V3_LEN)) {
-        unpack_plain_v3(s_nv_plain, out);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        wc_ForceZero(key, sizeof(key));
+        nv_work_wipe();
+        extra_clear();
+        (void)memset(out, 0, sizeof(*out));
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    /* Pre-v6 records sit at offset 0 (no dwk header). */
+    blob = s_nv_page;
+    if (decrypt_at(key, blob, SE_NV_BLOB_LEN, k_nv_aad_v5,
+                   (uint16_t)(sizeof(k_nv_aad_v5) - 1u), SE_NV_PLAIN_LEN, out, 0) == LT_OK) {
+        wc_ForceZero(key, sizeof(key));
         nv_work_wipe();
         return LT_OK;
     }
+    if (decrypt_at(key, blob, SE_NV_BLOB_V4_LEN, k_nv_aad_v4,
+                   (uint16_t)(sizeof(k_nv_aad_v4) - 1u), SE_NV_PLAIN_V4_LEN, out, 0) == LT_OK) {
+        wc_ForceZero(key, sizeof(key));
+        nv_work_wipe();
+        return LT_OK;
+    }
+    if (decrypt_at(key, blob, SE_NV_BLOB_V3_LEN, k_nv_aad_v3,
+                   (uint16_t)(sizeof(k_nv_aad_v3) - 1u), SE_NV_PLAIN_V3_LEN, out, 0) == LT_OK) {
+        wc_ForceZero(key, sizeof(key));
+        nv_work_wipe();
+        return LT_OK;
+    }
+    wc_ForceZero(key, sizeof(key));
     nv_work_wipe();
+    extra_clear();
     (void)memset(out, 0, sizeof(*out));
     return SE_TROPIC_LT_TAMPERED;
 }
@@ -258,36 +382,52 @@ lt_ret_t se_nv_store(const se_nv_state_t *in)
 {
     uint8_t key[SE_TROPIC_RMEM_AES_KEY_LEN];
     uint8_t nonce[SE_TROPIC_RMEM_NONCE_LEN];
-    uint16_t blob_len = sizeof(s_nv_blob);
+    uint8_t dwk[SE_NV_DWK_LEN];
+    uint16_t blob_len = SE_NV_BLOB_V6_LEN;
     lt_ret_t ret;
 
     if (in == NULL) {
         return LT_PARAM_ERR;
     }
 
+    ret = se_tropic_port_dwk(dwk);
+    if (ret != LT_OK) {
+        return ret;
+    }
     ret = se_tropic_port_device_aead_key(key);
     if (ret != LT_OK) {
+        wc_ForceZero(dwk, sizeof(dwk));
         return ret;
     }
     ret = se_tropic_port_nv_random(nonce, sizeof(nonce));
     if (ret != LT_OK) {
         wc_ForceZero(key, sizeof(key));
+        wc_ForceZero(dwk, sizeof(dwk));
         return ret;
     }
 
+    (void)memset(s_nv_plain, 0, sizeof(s_nv_plain));
     pack_plain(in, s_nv_plain);
-    ret = se_tropic_encrypt_storage_blob(key, k_nv_aad_v4, (uint16_t)(sizeof(k_nv_aad_v4) - 1u),
-                                         s_nv_plain, SE_NV_PLAIN_LEN, nonce, s_nv_blob, &blob_len);
+    pack_extra(s_nv_plain);
+    ret = se_tropic_encrypt_storage_blob(key, k_nv_aad_v6, (uint16_t)(sizeof(k_nv_aad_v6) - 1u),
+                                         s_nv_plain, SE_NV_PLAIN_V6_LEN, nonce, s_nv_blob,
+                                         &blob_len);
     wc_ForceZero(key, sizeof(key));
     wc_ForceZero(s_nv_plain, sizeof(s_nv_plain));
     wc_ForceZero(nonce, sizeof(nonce));
     if (ret != LT_OK) {
         wc_ForceZero(s_nv_blob, sizeof(s_nv_blob));
+        wc_ForceZero(dwk, sizeof(dwk));
         return ret;
     }
 
-    ret = se_tropic_port_nv_raw_write(s_nv_blob, blob_len);
+    (void)memset(s_nv_page, 0xff, sizeof(s_nv_page));
+    (void)memcpy(s_nv_page, dwk, SE_NV_DWK_LEN);
+    (void)memcpy(s_nv_page + SE_NV_BLOB_OFF, s_nv_blob, blob_len);
+    wc_ForceZero(dwk, sizeof(dwk));
     wc_ForceZero(s_nv_blob, sizeof(s_nv_blob));
+    ret = se_tropic_port_nv_page_write(s_nv_page);
+    wc_ForceZero(s_nv_page, sizeof(s_nv_page));
     return ret;
 }
 
@@ -535,13 +675,13 @@ lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
 }
 
 lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
-                        const uint8_t hash32[SE_NV_PEER_HASH_LEN])
+                        const uint8_t hash48[SE_NV_PEER_HASH_LEN])
 {
     se_nv_state_t st;
     lt_ret_t ret;
     uint8_t i;
 
-    if ((hash32 == NULL) || (peer_name_ok(name, name_len) == 0)) {
+    if ((hash48 == NULL) || (peer_name_ok(name, name_len) == 0)) {
         return LT_PARAM_ERR;
     }
     ret = se_nv_load(&st);
@@ -562,7 +702,7 @@ lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
     st.peers[i].name_len = name_len;
     (void)memset(st.peers[i].name, 0, SE_NV_PEER_NAME_MAX);
     (void)memcpy(st.peers[i].name, name, name_len);
-    (void)memcpy(st.peers[i].hash, hash32, SE_NV_PEER_HASH_LEN);
+    (void)memcpy(st.peers[i].hash, hash48, SE_NV_PEER_HASH_LEN);
     st.peer_count = (uint8_t)(st.peer_count + 1u);
     ret = se_nv_store(&st);
     nv_state_wipe_secrets(&st);
@@ -621,14 +761,14 @@ lt_ret_t se_nv_peer_count(uint8_t *count)
 }
 
 lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
-                        uint8_t hash32[SE_NV_PEER_HASH_LEN])
+                        uint8_t hash48[SE_NV_PEER_HASH_LEN])
 {
     se_nv_state_t st;
     lt_ret_t ret;
     uint8_t nlen;
     uint8_t cap;
 
-    if ((name == NULL) || (name_len == NULL) || (hash32 == NULL)) {
+    if ((name == NULL) || (name_len == NULL) || (hash48 == NULL)) {
         return LT_PARAM_ERR;
     }
     cap = *name_len;
@@ -646,7 +786,7 @@ lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
         return LT_PARAM_ERR;
     }
     (void)memcpy(name, st.peers[index].name, nlen);
-    (void)memcpy(hash32, st.peers[index].hash, SE_NV_PEER_HASH_LEN);
+    (void)memcpy(hash48, st.peers[index].hash, SE_NV_PEER_HASH_LEN);
     *name_len = nlen;
     nv_state_wipe_secrets(&st);
     return LT_OK;
@@ -675,4 +815,228 @@ void se_nv_pending_fill_clear(void)
 {
     wc_ForceZero(s_pending_fill, sizeof(s_pending_fill));
     s_pending_valid = 0U;
+}
+
+int se_nv_has_owner(void)
+{
+    se_nv_state_t st;
+    lt_ret_t ret = se_nv_load(&st);
+    int has;
+
+    if (ret != LT_OK) {
+        return 0;
+    }
+    has = (s_extra.owner_len > 0U) ? 1 : 0;
+    nv_state_wipe_secrets(&st);
+    return has;
+}
+
+int se_nv_has_wrap(void)
+{
+    se_nv_state_t st;
+    lt_ret_t ret = se_nv_load(&st);
+    int has;
+
+    if (ret != LT_OK) {
+        return 0;
+    }
+    has = (s_extra.wrap_len > 0U) ? 1 : 0;
+    nv_state_wipe_secrets(&st);
+    return has;
+}
+
+int se_nv_has_mlkem(void)
+{
+    se_nv_state_t st;
+    lt_ret_t ret = se_nv_load(&st);
+    int has;
+
+    if (ret != LT_OK) {
+        return 0;
+    }
+    has = (s_extra.mlkem_len == SE_NV_MLKEM_MAX) ? 1 : 0;
+    nv_state_wipe_secrets(&st);
+    return has;
+}
+
+lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((out == NULL) || (len == NULL)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    nv_state_wipe_secrets(&st);
+    if (s_extra.owner_len == 0U) {
+        *len = 0U;
+        return LT_FAIL;
+    }
+    (void)memcpy(out, s_extra.owner, s_extra.owner_len);
+    *len = s_extra.owner_len;
+    return LT_OK;
+}
+
+lt_ret_t se_nv_set_owner(const uint8_t *spki, uint16_t spki_len,
+                         const uint8_t pw_hash[SE_NV_PW_HASH_LEN])
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((spki == NULL) || (pw_hash == NULL) || (spki_len == 0U) ||
+        (spki_len > SE_NV_OWNER_SPKI_MAX)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    (void)memset(s_extra.owner, 0, sizeof(s_extra.owner));
+    (void)memcpy(s_extra.owner, spki, spki_len);
+    s_extra.owner_len = spki_len;
+    (void)memcpy(s_extra.pw_hash, pw_hash, SE_NV_PW_HASH_LEN);
+    ret = se_nv_store(&st);
+    nv_state_wipe_secrets(&st);
+    return ret;
+}
+
+lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN])
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if (out == NULL) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    nv_state_wipe_secrets(&st);
+    if (s_extra.owner_len == 0U) {
+        return LT_FAIL;
+    }
+    (void)memcpy(out, s_extra.pw_hash, SE_NV_PW_HASH_LEN);
+    return LT_OK;
+}
+
+lt_ret_t se_nv_get_wrap(uint8_t *out, uint16_t *len, uint16_t cap)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((out == NULL) || (len == NULL)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    nv_state_wipe_secrets(&st);
+    if (s_extra.wrap_len == 0U) {
+        *len = 0U;
+        return LT_FAIL;
+    }
+    if (cap < s_extra.wrap_len) {
+        return LT_PARAM_ERR;
+    }
+    (void)memcpy(out, s_extra.wrap, s_extra.wrap_len);
+    *len = s_extra.wrap_len;
+    return LT_OK;
+}
+
+lt_ret_t se_nv_set_wrap(const uint8_t *wrap, uint16_t len)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((wrap == NULL) || (len == 0U) || (len > SE_NV_WRAP_MAX)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    (void)memset(s_extra.wrap, 0, sizeof(s_extra.wrap));
+    (void)memcpy(s_extra.wrap, wrap, len);
+    s_extra.wrap_len = len;
+    ret = se_nv_store(&st);
+    nv_state_wipe_secrets(&st);
+    return ret;
+}
+
+lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((out == NULL) || (len == NULL)) {
+        return LT_PARAM_ERR;
+    }
+    *len = 0U;
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    nv_state_wipe_secrets(&st);
+    if (s_extra.mlkem_len == 0U) {
+        return LT_FAIL;
+    }
+    (void)memcpy(out, s_extra.mlkem, s_extra.mlkem_len);
+    *len = s_extra.mlkem_len;
+    return LT_OK;
+}
+
+lt_ret_t se_nv_set_mlkem_pk(const uint8_t *pk, uint16_t len)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((pk == NULL) || (len != SE_NV_MLKEM_MAX)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    (void)memcpy(s_extra.mlkem, pk, SE_NV_MLKEM_MAX);
+    s_extra.mlkem_len = len;
+    ret = se_nv_store(&st);
+    nv_state_wipe_secrets(&st);
+    return ret;
+}
+
+lt_ret_t se_nv_clear_except_pairing(void)
+{
+    se_nv_state_t st;
+    uint8_t slot;
+    uint8_t priv[SE_NV_PAIRING_KEY_LEN];
+    uint8_t pub[SE_NV_PAIRING_KEY_LEN];
+    uint32_t flags;
+    lt_ret_t ret;
+
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    flags = st.flags & SE_NV_FLAG_PAIRING;
+    slot = st.pairing_slot;
+    (void)memcpy(priv, st.pairing_priv, sizeof(priv));
+    (void)memcpy(pub, st.pairing_pub, sizeof(pub));
+    (void)memset(&st, 0, sizeof(st));
+    extra_clear();
+    if (flags != 0U) {
+        st.flags = SE_NV_FLAG_PAIRING;
+        st.pairing_slot = slot;
+        (void)memcpy(st.pairing_priv, priv, sizeof(priv));
+        (void)memcpy(st.pairing_pub, pub, sizeof(pub));
+    }
+    wc_ForceZero(priv, sizeof(priv));
+    ret = se_nv_store(&st);
+    nv_state_wipe_secrets(&st);
+    return ret;
 }

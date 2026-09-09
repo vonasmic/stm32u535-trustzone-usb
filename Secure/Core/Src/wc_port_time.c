@@ -6,7 +6,6 @@
  * in MCU NV so reboot cannot roll a later timestamp backward.
  */
 #include <time.h>
-#include <string.h>
 #include "main.h"
 #include "se_time.h"
 #include "se_nv.h"
@@ -114,6 +113,15 @@ uint32_t se_time_unix_now(void)
     return se_time_floor_now();
 }
 
+#ifndef SE_HOST_MODEL
+/* Firmware-only: TIME_OVERRIDES in user_settings.h. Do not include that header
+ * here — host compiles this file without it. libc gmtime is not linked. */
+#define SE_TIME_YEAR0      1900
+#define SE_TIME_EPOCH_YEAR 1970
+#define SE_TIME_SECS_DAY   (24L * 60L * 60L)
+#define SE_TIME_LEAPYEAR(y) (!((y) % 4) && (((y) % 100) || !((y) % 400)))
+#define SE_TIME_YEARSIZE(y) (SE_TIME_LEAPYEAR(y) ? 366 : 365)
+
 time_t XTIME(time_t *t)
 {
     time_t now = (time_t)se_time_unix_now();
@@ -125,15 +133,44 @@ time_t XTIME(time_t *t)
 
 struct tm *XGMTIME(const time_t *timer, struct tm *tmp)
 {
-    struct tm *g;
+    static const int ytab[2][12] = {
+        {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
+        {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
+    };
+    static struct tm s_gm;
+    struct tm *out;
+    time_t secs;
+    unsigned long dayclock;
+    unsigned long dayno;
+    int year = SE_TIME_EPOCH_YEAR;
 
     if (timer == NULL) {
         return NULL;
     }
-    g = gmtime(timer);
-    if (g != NULL && tmp != NULL) {
-        memcpy(tmp, g, sizeof(*tmp));
-        return tmp;
+    out = (tmp != NULL) ? tmp : &s_gm;
+    secs = *timer;
+    dayclock = (unsigned long)secs % (unsigned long)SE_TIME_SECS_DAY;
+    dayno = (unsigned long)secs / (unsigned long)SE_TIME_SECS_DAY;
+
+    out->tm_sec = (int)(dayclock % 60U);
+    out->tm_min = (int)((dayclock % 3600U) / 60U);
+    out->tm_hour = (int)(dayclock / 3600U);
+    out->tm_wday = (int)((dayno + 4U) % 7U);
+
+    while (dayno >= (unsigned long)SE_TIME_YEARSIZE(year)) {
+        dayno -= (unsigned long)SE_TIME_YEARSIZE(year);
+        year++;
     }
-    return g;
+
+    out->tm_year = year - SE_TIME_YEAR0;
+    out->tm_yday = (int)dayno;
+    out->tm_mon = 0;
+    while (dayno >= (unsigned long)ytab[SE_TIME_LEAPYEAR(year)][out->tm_mon]) {
+        dayno -= (unsigned long)ytab[SE_TIME_LEAPYEAR(year)][out->tm_mon];
+        out->tm_mon++;
+    }
+    out->tm_mday = (int)++dayno;
+    out->tm_isdst = 0;
+    return out;
 }
+#endif /* !SE_HOST_MODEL */

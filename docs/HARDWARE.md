@@ -24,14 +24,17 @@ Non-secure view base `0x08000000`. Secure linker uses alias `0x0C000000` for the
 
 | Region | NS address | Secure alias | Size | Pages | Source |
 | --- | --- | --- | --- | --- | --- |
-| Secure code | `0x08000000` | `0x0C000000` | 176 KB | **0–21** | `FLASH` |
-| MCU NV (runtime) | `0x0802C000` | `0x0C02C000` | 8 KB | **22** | `FLASH_NV`, `.se_nv (NOLOAD)` |
+| Secure code | `0x08000000` | `0x0C000000` | 168 KB | **0–20** | `FLASH` |
+| Creds (runtime) | `0x0802A000` | `0x0C02A000` | 8 KB | **21** | `FLASH_CREDS`, SAE CA + device cert |
+| MCU NV (runtime) | `0x0802C000` | `0x0C02C000` | 8 KB | **22** | `FLASH_NV`, dwk header + sealed v6 |
 | NSC veneers | `0x0802E000` | `0x0C02E000` | 8 KB | **23** | `FLASH_NSC`, `.gnu.sgstubs` |
 | NonSecure app | `0x08030000` | — | 64 KB | **24–31** | NS `FLASH` |
 
-Page 22 is **not** part of the Secure ELF load. After a linker-map change, rebuild Secure so code still fits pages 0–21.
+Page 21 is Secure data (not part of the Secure ELF load). Page 22 is **not** part of the Secure ELF load. After a linker-map change, rebuild Secure so code still fits pages 0–20.
 
-NV implementation: `SE_NV_FLASH_ADDR = 0x0C02C000`, `SE_NV_FLASH_PAGE = 22` in [se_tropic_port_stm32.c](../Secure/Core/Src/se_tropic_port_stm32.c). Record layout: **[TROPIC.md](TROPIC.md)**.
+`SECWM1_PEND` stays `0x17` (page 23): page 21 is Secure-only data, not code.
+
+NV implementation: `SE_NV_FLASH_ADDR = 0x0C02C000`, `SE_NV_FLASH_PAGE = 22`; creds page 21 at `0x0C02A000` in [se_tropic_port_stm32.c](../Secure/Core/Src/se_tropic_port_stm32.c). Record layout: **[TROPIC.md](TROPIC.md)**.
 
 Boot: Secure init then jump to NonSecure `VTOR_TABLE_NS_START_ADDR = 0x08030000`.
 

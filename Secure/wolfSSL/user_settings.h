@@ -341,10 +341,7 @@ extern "C" {
  * ========================================================================= */
 #define HAVE_TLS_EXTENSIONS
 #define HAVE_SUPPORTED_CURVES
-#define HAVE_ENCRYPT_THEN_MAC
-#define HAVE_EXTENDED_MASTER
 #define WOLFSSL_ASN_TEMPLATE
-#define HAVE_SNI
 
 #if defined(WOLF_CONF_TLS13) && WOLF_CONF_TLS13 == 1
     #define WOLFSSL_TLS13
@@ -576,6 +573,7 @@ extern "C" {
 #define WOLFSSL_MLKEM_SMALL
 #define WOLFSSL_MLKEM_NO_ENCAPSULATE
 #define WOLFSSL_MLDSA_SMALL
+#define USE_SLOW_SHA256           /* smaller SHA-256 (libtropic HMAC + TLS) */
 #define USE_SLOW_SHA512           /* SHA-384 via sha512.c — smaller, slower */
 
 /* =========================================================================

@@ -7,12 +7,13 @@
 #include "se_tropic_pin.h"
 #include "se_tropic_port.h"
 #include "se_tropic_rmem.h"
+#include "se_nv.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/wc_mlkem.h>
 
-static const uint8_t k_mlkem_kek_info[] = "SE_tropic_mlkem_kek_v2";
+static const uint8_t k_mlkem_kek_info[] = "SE_tropic_mlkem_kek_v3";
 static const uint8_t k_seed_aad[] = "SE_tropic_mlkem_seed_v2";
 
 /* Large key material lives in BSS, not on the USB/TLS task stack. */
@@ -31,7 +32,7 @@ static lt_ret_t mlkem_derive_kek(const uint8_t final_key[32], uint8_t kek[32])
     if (lret != LT_OK) {
         return lret;
     }
-    ret = wc_HKDF(WC_SHA256, final_key, 32U, dwk, 32U, k_mlkem_kek_info,
+    ret = wc_HKDF(WC_SHA384, final_key, 32U, dwk, 32U, k_mlkem_kek_info,
                   (word32)(sizeof(k_mlkem_kek_info) - 1U), kek, 32U);
     wc_ForceZero(dwk, sizeof(dwk));
     return (ret == 0) ? LT_OK : LT_CRYPTO_ERR;
@@ -125,7 +126,7 @@ static lt_ret_t mlkem_check_pk(const uint8_t *pk, uint16_t pk_len)
         return LT_FAIL;
     }
     if (memcmp(pk, emb, SE_TROPIC_MLKEM_PK_LEN) != 0) {
-        se_tropic_log("ML-KEM pk mismatch vs embedded fw_mlkem_pk");
+        se_tropic_log("ML-KEM pk mismatch vs NV");
         return LT_FAIL;
     }
     return LT_OK;
@@ -179,6 +180,7 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
         *pk_len = SE_TROPIC_MLKEM_PK_LEN;
         (void)memcpy(s_pk_cache, pk, SE_TROPIC_MLKEM_PK_LEN);
         s_pk_cache_valid = 1U;
+        (void)se_nv_set_mlkem_pk(pk, SE_TROPIC_MLKEM_PK_LEN);
         se_tropic_mlkem_key_close();
     }
 
@@ -264,7 +266,7 @@ uint32_t se_tropic_kem_init_probe(void)
         se_tropic_log("KEM INIT refused: slot 510 occupied");
         return SE_TROPIC_SLOT_OCC;
     }
-    se_tropic_log("slot 510 empty; send KEM INIT <pin> CONFIRM");
+    se_tropic_log("slot 510 empty");
     return SE_TROPIC_OK;
 }
 
@@ -293,7 +295,7 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
         return SE_TROPIC_ERR;
     }
 
-    se_tropic_log("KEM INIT ok; embed fw_mlkem_pk and reflash");
+    se_tropic_log("KEM INIT ok; ML-KEM pk stored in NV");
     se_tropic_log("TROPIC KEM pub:");
     se_tropic_log_hex(NULL, pk, pk_len);
     return SE_TROPIC_OK;
@@ -307,7 +309,7 @@ uint32_t se_tropic_kem_pub_dump(void)
 
     st = se_tropic_mlkem_pub_read(pk, sizeof(pk), &pk_len);
     if (st != SE_TROPIC_OK) {
-        se_tropic_log("ML-KEM pk not embedded (run KEM INIT then embed_fw_creds.py)");
+        se_tropic_log("ML-KEM pk missing (run TROPIC KEM INIT)");
         return st;
     }
     se_tropic_log("TROPIC KEM pub:");

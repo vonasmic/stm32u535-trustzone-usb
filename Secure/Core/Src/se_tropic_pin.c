@@ -11,7 +11,7 @@
 #include <wolfssl/wolfcrypt/error-crypt.h>
 #include <wolfssl/wolfcrypt/hmac.h>
 
-static const uint8_t k_pin_pepper_info[] = "SE_tropic_pin_pepper_v1";
+static const uint8_t k_pin_pepper_info[] = "SE_tropic_pin_pepper_v2";
 
 /** Persistent MAC-and-Destroy PIN blob (R-MEM slot SE_TROPIC_PIN_NVM_SLOT). */
 struct se_tropic_pin_nvm_t {
@@ -33,7 +33,7 @@ static void xor32(const uint8_t *data, const uint8_t *key, uint8_t *dst)
     }
 }
 
-/** HKDF(device-seal key, "SE_tropic_pin_pepper_v1") — never leaves the MCU. */
+/** HKDF-SHA384(device-seal key, "SE_tropic_pin_pepper_v2") — never leaves the MCU. */
 static lt_ret_t pin_pepper(uint8_t out[SE_TROPIC_PIN_PEPPER_SIZE])
 {
     uint8_t dwk[32];
@@ -44,7 +44,7 @@ static lt_ret_t pin_pepper(uint8_t out[SE_TROPIC_PIN_PEPPER_SIZE])
     if (ret != LT_OK) {
         return ret;
     }
-    wret = wc_HKDF(WC_SHA256, dwk, (word32)sizeof(dwk), NULL, 0, k_pin_pepper_info,
+    wret = wc_HKDF(WC_SHA384, dwk, (word32)sizeof(dwk), NULL, 0, k_pin_pepper_info,
                    (word32)(sizeof(k_pin_pepper_info) - 1U), out, SE_TROPIC_PIN_PEPPER_SIZE);
     wc_ForceZero(dwk, sizeof(dwk));
     return (wret == 0) ? LT_OK : LT_CRYPTO_ERR;

@@ -9,7 +9,7 @@
 #include "libtropic_user_config.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/ecc.h>
-#include <wolfssl/wolfcrypt/sha256.h>
+#include <wolfssl/wolfcrypt/sha512.h>
 #include <wolfssl/wolfcrypt/asn.h>
 
 /* OpenSSL-generated P-256 private key (same as libtropic functional tests). */
@@ -66,14 +66,15 @@ int main(void)
 {
     lt_handle_t *h;
     uint8_t pub[64];
-    uint8_t hash[32];
+    /* SHA-384 digest; the chip signs its leftmost 32 bytes, as se_tropic_session.c does. */
+    uint8_t hash[WC_SHA384_DIGEST_SIZE];
     uint8_t sig[64];
     uint8_t empty_hash[32];
     lt_ecc_curve_type_t curve;
     lt_ecc_key_origin_t origin;
     lt_ret_t ret;
     uint32_t st;
-    Sha256 sha;
+    wc_Sha384 sha;
     const char *msg = "tropic-model-sign-test";
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -100,9 +101,10 @@ int main(void)
     st = se_tropic_pub_read(pub);
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "pub_read after store");
 
-    wc_InitSha256(&sha);
-    wc_Sha256Update(&sha, (const byte *)msg, (word32)strlen(msg));
-    wc_Sha256Final(&sha, hash);
+    wc_InitSha384(&sha);
+    wc_Sha384Update(&sha, (const byte *)msg, (word32)strlen(msg));
+    wc_Sha384Final(&sha, hash);
+    wc_Sha384Free(&sha);
 
     st = se_tropic_sign_hash(hash, sig);
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "sign after store");

@@ -10,7 +10,7 @@ Usage:
   <port>       serial device, e.g. COM7 or /dev/ttyACM0
   --keygen     also run TROPIC KEYGEN first if the ECC slot is empty
   --out        where to write the 64-byte raw X||Y public key
-  --message    string whose SHA-256 is signed (default "tropic-first-light")
+  --message    string whose SHA-384 is signed (default "tropic-first-light")
 
 TROPIC KEYGEN generates the device identity key inside the chip when the slot
 is empty. Occupied slots refuse without a PIN (`TROPIC KEYGEN <pin>`).
@@ -34,8 +34,9 @@ def verify_p256(pub_xy: bytes, digest: bytes, rs: bytes) -> None:
     der_sig = utils.encode_dss_signature(
         int.from_bytes(rs[:32], "big"), int.from_bytes(rs[32:], "big")
     )
+    # P-256 with SHA-384: the leftmost 256 bits of the digest are what the chip signed.
     try:
-        pub.verify(der_sig, digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        pub.verify(der_sig, digest, ec.ECDSA(utils.Prehashed(hashes.SHA384())))
     except InvalidSignature as exc:
         raise DeviceError("signature did NOT verify") from exc
 
@@ -66,8 +67,9 @@ def main() -> int:
                 print("slot already holds a key; skipping KEYGEN")
 
         pub = read_pub(ser)
-        digest = hashlib.sha256(args.message.encode("utf-8")).digest()
-        rs = sign_digest(ser, digest)
+        digest = hashlib.sha384(args.message.encode("utf-8")).digest()
+        # TROPIC SIGN takes exactly 32 bytes, the same leftmost half the verifier uses.
+        rs = sign_digest(ser, digest[:32])
         verify_p256(pub, digest, rs)
     except DeviceError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
@@ -81,7 +83,7 @@ def main() -> int:
     print()
     print(f"public key : {pub.hex()}")
     print(f"message    : {args.message!r}")
-    print(f"sha256     : {digest.hex()}")
+    print(f"sha384     : {digest.hex()}")
     print(f"signature  : {rs.hex()}")
     print(f"wrote      : {args.out}")
     print("PASS: signature verifies against the chip's public key")

@@ -276,11 +276,18 @@ static uint32_t qkd_feed(const uint8_t *chunk, uint32_t len)
     return SECURE_QKD_OK;
 }
 
-static uint32_t qkd_finish(uint32_t *countOut)
+uint8_t secure_qkd_ready_to_finish(void)
 {
-    uint32_t count;
+    return ((s_phase == QKD_PHASE_DONE) && (s_item0_stored != 0U) && (s_item1_stored != 0U))
+               ? 1U
+               : 0U;
+}
 
-    if (countOut == NULL) {
+static uint32_t qkd_finish(uint32_t *bytesOut)
+{
+    uint32_t key_bytes;
+
+    if (bytesOut == NULL) {
         return SECURE_QKD_ERR;
     }
 
@@ -289,14 +296,14 @@ static uint32_t qkd_finish(uint32_t *countOut)
         return SECURE_QKD_PARSE;
     }
 
-    count = (uint32_t)s_count;
+    key_bytes = s_key_bytes;
     qkd_wipe();
-    *countOut = count;
+    *bytesOut = key_bytes;
     return SECURE_QKD_OK;
 }
 
 uint32_t secure_qkd_ingest(const uint8_t *chunk, uint32_t len, uint32_t flags,
-                           uint32_t *countOut)
+                           uint32_t *bytesOut)
 {
     if (flags == SECURE_QKD_INGEST_DISCARD) {
         qkd_wipe();
@@ -304,7 +311,7 @@ uint32_t secure_qkd_ingest(const uint8_t *chunk, uint32_t len, uint32_t flags,
     }
 
     if (flags == SECURE_QKD_INGEST_FINISH) {
-        return qkd_finish(countOut);
+        return qkd_finish(bytesOut);
     }
 
     if (chunk == NULL && len > 0U) {

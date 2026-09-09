@@ -255,12 +255,21 @@ int main(void)
         TEST_ASSERT(out[i] == 0xEE, "wrong PIN leaves out untouched");
     }
 
-    host_fw_mlkem_pk[0] ^= 0x01u;
-    (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
-    TEST_ASSERT(ret == LT_FAIL, "pk mismatch refuses before pad");
-    host_fw_mlkem_pk[0] = pk_saved[0];
+    {
+        uint8_t tamper[SE_TROPIC_MLKEM_PK_LEN];
+        uint16_t tlen = 0U;
+
+        TEST_ASSERT_EQ(se_nv_get_mlkem_pk(tamper, &tlen), LT_OK, "nv mlkem pk");
+        TEST_ASSERT_EQ(tlen, SE_TROPIC_MLKEM_PK_LEN, "nv mlkem len");
+        tamper[0] ^= 0x01u;
+        TEST_ASSERT_EQ(se_nv_set_mlkem_pk(tamper, tlen), LT_OK, "tamper nv mlkem");
+        (void)memset(out, 0xEE, sizeof(out));
+        ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                         SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+        TEST_ASSERT(ret == LT_FAIL, "pk mismatch refuses before pad");
+        tamper[0] ^= 0x01u;
+        TEST_ASSERT_EQ(se_nv_set_mlkem_pk(tamper, tlen), LT_OK, "restore nv mlkem");
+    }
 
     while (1) {
         ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &next_slot);
@@ -292,31 +301,31 @@ int main(void)
         uint8_t dwk[32];
         uint8_t seed[SE_TROPIC_MLKEM_SEED_LEN];
         uint16_t got = 0;
-        static const uint8_t info_v1[] = "SE_tropic_mlkem_kek_v1";
         static const uint8_t info_v2[] = "SE_tropic_mlkem_kek_v2";
+        static const uint8_t info_v3[] = "SE_tropic_mlkem_kek_v3";
         static const uint8_t aad_v2[] = "SE_tropic_mlkem_seed_v2";
 
         ret = se_tropic_pin_check(h, pin, sizeof(pin), add, sizeof(add), final_key);
         TEST_ASSERT_EQ(ret, LT_OK, "pin_check for kek bind");
 
-        TEST_ASSERT_EQ(wc_HKDF(WC_SHA256, final_key, 32U, NULL, 0, info_v1,
-                               (word32)(sizeof(info_v1) - 1U), kek, 32U),
-                       0, "hkdf v1");
+        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, 32U, NULL, 0, info_v3,
+                               (word32)(sizeof(info_v3) - 1U), kek, 32U),
+                       0, "hkdf v3 no salt");
         ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
                                         (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
-        TEST_ASSERT(ret != LT_OK, "PIN-only kek_v1 cannot open seed");
-
-        TEST_ASSERT_EQ(wc_HKDF(WC_SHA256, final_key, 32U, NULL, 0, info_v2,
-                               (word32)(sizeof(info_v2) - 1U), kek, 32U),
-                       0, "hkdf v2 no salt");
-        ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
-                                        (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
-        TEST_ASSERT(ret != LT_OK, "PIN-only kek_v2 cannot open seed");
+        TEST_ASSERT(ret != LT_OK, "PIN-only kek_v3 cannot open seed");
 
         TEST_ASSERT_EQ(se_tropic_port_device_aead_key(dwk), LT_OK, "device key");
         TEST_ASSERT_EQ(wc_HKDF(WC_SHA256, final_key, 32U, dwk, 32U, info_v2,
                                (word32)(sizeof(info_v2) - 1U), kek, 32U),
                        0, "hkdf v2 dwk");
+        ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
+                                        (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
+        TEST_ASSERT(ret != LT_OK, "SHA-256 kek_v2 cannot open seed");
+
+        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, 32U, dwk, 32U, info_v3,
+                               (word32)(sizeof(info_v3) - 1U), kek, 32U),
+                       0, "hkdf v3 dwk");
         ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
                                         (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
         TEST_ASSERT_EQ(ret, LT_OK, "PIN+MCU kek opens seed");

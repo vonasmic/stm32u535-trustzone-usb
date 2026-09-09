@@ -8,6 +8,10 @@
 #include "wolfssl/ssl.h"
 #include "wolfssl/wolfcrypt/types.h"
 
+int secure_wrap_wrap_client_key(const byte *der, word32 derLen, byte *out, word32 *outLen,
+                                word32 outCap);
+int secure_wrap_unwrap_buf(const byte *blob, word32 blobLen, byte *out, word32 *outLen,
+                           word32 outCap);
 int secure_wrap_unwrap_client_key(byte *out, word32 *outLen, word32 outCap);
 int secure_client_key_load(WOLFSSL_CTX *ctx);
 

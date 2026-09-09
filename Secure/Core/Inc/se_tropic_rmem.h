@@ -86,8 +86,8 @@ extern "C" {
 #define SE_TROPIC_RMEM_SLOT_MAX      475u
 #define SE_TROPIC_RMEM_PLAIN_MAX     (SE_TROPIC_RMEM_SLOT_MAX - SE_TROPIC_RMEM_OVERHEAD)
 #define SE_TROPIC_RMEM_BLOB_MAX      SE_TROPIC_RMEM_SLOT_MAX
-/** Generic storage-blob plaintext (MCU NV v4 is larger than one R-MEM slot). */
-#define SE_TROPIC_STORAGE_PLAIN_MAX  1024u
+/** Generic storage-blob plaintext (MCU NV v6 is one FLASH page minus dwk+overhead). */
+#define SE_TROPIC_STORAGE_PLAIN_MAX  8096u
 
 /**
  * One SAE encapsulation covers the whole QKD fill: slots 0..2 hold the 1088 B
@@ -186,7 +186,7 @@ lt_ret_t se_tropic_read_and_decrypt_mcu_sealed_from_rmem(lt_handle_t *h, uint16_
 
 /**
  * Derive the per-pad AES key:
- * HKDF-SHA256(ss, "SE_tropic_qkd_slot_v2" || fill_id || slot_index LE).
+ * HKDF-SHA384(ss, "SE_tropic_qkd_slot_v3" || fill_id || slot_index LE).
  * @p slot_index is the SAE pad index (0 = first pad), not the R-MEM address.
  */
 lt_ret_t se_tropic_get_pad_encryption_key(const uint8_t ss[SE_TROPIC_MLKEM_SS_LEN],

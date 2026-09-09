@@ -62,33 +62,33 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 
 - TLS 1.3 only, cipher `TLS13-AES256-GCM-SHA384`, group **ML-KEM-768** only.
 - mTLS; `WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT`.
-- Provision verifies `fw_root_ca_der`; encrypt/decrypt verify `fw_client_ca_der` **and** pin the peer SPKI to `fw_user_spki` (home-PC user cert from `embed_fw_creds.py`). A CDC attacker presenting any other client-CA leaf is rejected.
+- Provision verifies SAE CA from FLASH_CREDS; encrypt/decrypt load **no client CA** and pin the peer SPKI to the enrolled owner ML-DSA key (same key as UserApp). A CDC attacker presenting any other leaf is rejected.
 - Client cert is **ML-DSA-44**; private key is AES-GCM wrapped under HKDF(`secure_dwk`) and unwrapped only in Secure.
-- Provision uplink is bound to this TLS session: `to_sign = SHA256(SHA256(spki||ecc_pub) || exporter)` with exporter label `EXPORTER-tropic-binding`. A TLS MitM gets a different exporter; forwarding a captured uplink fails.
+- Provision uplink is bound to this TLS session: `to_sign = SHA384(SHA384(spki||ecc_pub) || exporter)` using RFC 9266 `tls-exporter` (`EXPORTER-Channel-Binding`, empty context, 32 bytes — the RFC fixes that length). TROPIC01 signs the leftmost 32 bytes of `to_sign`, which is ECDSA-with-SHA-384 on P-256. A TLS MitM gets a different exporter; forwarding a captured uplink fails.
 - Wall clock from `PROVISION|ENCRYPT|DECRYPT <unix>` with a **TIME floor** in MCU NV (no rewind). Rejects certs that are not-yet-valid / expired against that clock.
 
 **Residual:**
 
 - Uplink **signature** is still P-256. A PQ attacker who can use Tropic ECC slot 0 can forge item 0 for a *chosen* exporter. They still cannot join a real SAE session without ML-KEM TLS and the ML-DSA client key. SAE must treat item 0 as **classical device binding**, not PQ identity. PQ identity is the TLS cert + item 6 (ML-KEM pk).
-- `fw_client_ca_der` empty (`len = 0`) until `embed_fw_creds.py` — encrypt/decrypt then fail closed (good) or operators ship a build that skips that CA (bad).
+- TLS refuses until owner + device cert + wrapped SK are enrolled (PROVISION also needs SAE CA + NV ML-KEM pk). There is no compiled-in client CA.
 - SAE sees PIN on the TLS application channel (encrypt/decrypt). Compromise of SAE ⇒ PIN.
 
 ### 2. USB CDC console
 
-**Attack:** Plug in, send commands; sniff PIN on the lab path; irreversible Tropic ops.
+**Attack:** Plug in, send commands; sniff the enrollment PIN on USB; irreversible Tropic ops.
 
 **Hardening:**
 
 - `PROVISION` / `ENCRYPT` / `DECRYPT` never take a PIN; PIN is only inside TLS.
-- Two-step probes: `KEM INIT` and `PAIRING` do not write until `CONFIRM` / `y`.
-- Occupied ECC slot 0 refuses `KEYGEN` without PIN; `KEYGEN <pin>` erase-and-replaces. R-MEM 510 refuses a second `KEM INIT`.
-- USB line cap 96 chars; TLS RX overflow aborts.
-- DEBUG ASCII only **before** the first TLS record (no record glue, less mix of logs and ciphertext).
+- `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
+- Occupied ECC slot 0 and `KEM INIT` / `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. Empty-slot `KEYGEN` stays unsigned USB. R-MEM 510 refuses a second `KEM INIT`.
+- USB line cap 144 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
+- DEBUG ASCII only **before** the first TLS record, framed as `DEBUG:<text>:DEBUG` so a glued ClientHello is still split at `:DEBUG`.
 
 **Residual:**
 
-- **No USB authentication.** Anyone with CDC can ping, keygen, pair, arm TLS.
-- `TROPIC KEYGEN <pin>` and `TROPIC KEM INIT … CONFIRM` put **PIN on USB**. Treat those as lab-only.
+- **No USB authentication** for ping, info, list, empty-slot keygen, or TLS arm. First USB `OWNER SET` wins. The reset password is dumpable with MCU flash (`SHA-384(dwk || password)`). Pairing survives owner wipe.
+- Occupied `KEYGEN` / `KEM INIT` / `PEER *` PIN is on MANAGE TLS (owner-pinned, not mTLS). After slot 510 is occupied, pad consume PIN is only inside ENCRYPT/DECRYPT mTLS.
 - DEBUG lines leak handshake/Tropic status to the USB host.
 
 ### 3. NonSecure world and NSC
@@ -99,7 +99,7 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 
 - Crypto, Tropic SPI, `secure_dwk`, NV, and wolfSSL live in **Secure**.
 - GTZC: SPI1 and RNG are Secure; USB is NonSecure.
-- NSC packets 64 B. PIN for `KEYGEN` replace and `KEM INIT` still crosses NS→S on those console commands.
+- NSC packets 64 B. Unsigned OWNER SET bytes still cross NS→S on the USB ring after `OwnerBegin`.
 
 **Residual:**
 
@@ -148,8 +148,8 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 | From a Secure-flash dump | Consequence |
 | --- | --- |
 | `secure_dwk` | Device AEAD, PIN pepper, TLS client **private** key |
-| NV page 22 | `fill_id`, cursors, pairing **priv**, time floor |
-| `fw_creds.h` | Client cert, CAs, `fw_mlkem_pk` if embedded |
+| NV page 22 | `fill_id`, cursors, pairing **priv**, owner SPKI, pw hash, wrap, ML-KEM pk |
+| FLASH_CREDS page 21 | SAE CA, device cert |
 
 A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation. Pads still need the PIN (8 M&D tries on silicon). Production hardening would move `secure_dwk` to a hardware unique key; this tree does not.
 
@@ -192,8 +192,8 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 ## Operator checklist (PQ-relevant)
 
 1. Do not leave factory **SH0** on a field device; run `TROPIC PAIRING n y` after model gates A–E/H. Build with `SE_TROPIC_SH0_PROD` for production chips, not eng-sample keys.
-2. Embed `fw_mlkem_pk` and `fw_client_ca_der` and reflash after `KEM INIT` / cert issue.
-3. Treat USB `KEYGEN <pin>` / `KEM INIT` PIN as lab-only.
+2. Enroll unsigned USB `OWNER SET` (owner + device cert/key + SAE CA), then `MANAGE` `KEM INIT` (unsigned PIN). TLS refuses ENCRYPT until owner + cert + wrap are present. ML-KEM pk lives in NV (no reflash).
+3. After enrollment, do not send the Tropic PIN on the ASCII line; encrypt/decrypt take it only inside mTLS. Occupied `KEYGEN` is identity replace over MANAGE, not enrollment.
 4. Lock SWD / enable hide protection if you ship; this project leaves `HDP1EN = 0`.
 5. SAE must require **ML-KEM TLS + ML-DSA client cert**; do not accept a P-256 uplink signature as the device’s PQ identity.
 6. Assume anyone with the **firmware image** can impersonate TLS and speak L3 after pairing (pairing priv in NV). Pads remain PIN-gated.

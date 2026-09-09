@@ -5,8 +5,8 @@
  * The private key never exists at rest: a 64-byte generation seed is wrapped
  * under HKDF(PIN final_key, salt=device-seal key) in slot 510. Opening it
  * needs both a surviving MAC-and-Destroy PIN check and this MCU. The public
- * key is sent in the TLS uplink (v3). Silicon may still embed fw_mlkem_pk so
- * pub_read works without PIN after reboot.
+ * key is sent in the TLS uplink (v4) and persisted in MCU NV by KEM INIT
+ * (no reflash).
  */
 #ifndef SE_TROPIC_MLKEM_H
 #define SE_TROPIC_MLKEM_H
@@ -26,8 +26,8 @@ extern "C" {
 lt_ret_t se_tropic_mlkem_seed_occupied(lt_handle_t *h, uint32_t *occupied);
 
 /**
- * One-time provisioning (TROPIC KEM INIT CONFIRM). Consumes M&D slots for PIN
- * setup and refuses when slot 510 is already occupied.
+ * User enrollment (TROPIC KEM INIT, unsigned PIN on MANAGE TLS). Consumes M&D slots for PIN setup
+ * and refuses when slot 510 is already occupied.
  * @param pk_out 1184-byte ML-KEM-768 public key on success
  */
 lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
@@ -35,14 +35,14 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
                                    uint8_t *pk_out, uint16_t pk_max, uint16_t *pk_len);
 
 /**
- * Read the ML-KEM public key for the TLS uplink (no PIN). Prefers embedded
- * fw_mlkem_pk; otherwise the cache filled by KEM INIT or pub_recover.
+ * Read the ML-KEM public key for the TLS uplink (no PIN). Prefers NV,
+ * then the RAM cache filled by KEM INIT or pub_recover.
  */
 uint32_t se_tropic_mlkem_pub_read(uint8_t *pk, uint16_t pk_max, uint16_t *pk_len);
 
 /**
- * Unwrap the Tropic seed with PIN and cache the public key. Use when this boot
- * has no embedded fw_mlkem_pk (host skip-provision, pre-reflash silicon).
+ * Unwrap the Tropic seed with PIN and cache the public key. Use when NV has
+ * no ML-KEM pk yet.
  */
 uint32_t se_tropic_mlkem_pub_recover(const uint8_t *pin, uint8_t pin_len,
                                      const uint8_t *add, uint8_t add_len);

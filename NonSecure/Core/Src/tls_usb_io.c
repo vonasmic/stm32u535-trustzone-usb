@@ -3,8 +3,8 @@
  * @brief   NonSecure CDC: parse host commands, arm TLS, pump Secure pipe
  *
  * Host commands live in s_host_cmds / s_tropic_cmds (HELP lists those tables).
- * PROVISION / ENCRYPT / DECRYPT <unix> set Secure time and arm TLS with a mode
- * enum. Only then are RX bytes forwarded and UsbService polled. Host disconnect
+ * PROVISION / ENCRYPT / DECRYPT / MANAGE <unix> set Secure time and arm TLS
+ * with a mode enum. Only then are RX bytes forwarded and UsbService polled.
  * / DTR off / TLS exit (IDLE) returns to command mode.
  */
 #include "tls_usb_io.h"
@@ -18,9 +18,11 @@ static UX_SLAVE_CLASS_CDC_ACM *s_cdc;
 static uint8_t s_dtr;
 static uint8_t s_active;
 static uint8_t s_tls_armed;
+static uint8_t s_bin_armed;
 static uint8_t s_wait_time_logged;
 
-#define TLS_CMD_MAX 96
+/* Longest ASCII line is TROPIC SIGN <64-hex> / HELP usage. */
+#define TLS_CMD_MAX 144
 
 static char s_cmd_line[TLS_CMD_MAX + 1];
 static uint8_t s_cmd_len;
@@ -43,8 +45,14 @@ static void ns_log(const char *msg)
 static void tls_disarm(void)
 {
     s_tls_armed = 0U;
+    s_bin_armed = 0U;
     s_cmd_len = 0U;
     s_wait_time_logged = 0U;
+}
+
+static int pipe_armed(void)
+{
+    return ((s_tls_armed != 0U) || (s_bin_armed != 0U)) ? 1 : 0;
 }
 
 static void tls_usb_xfer_idle(void)
@@ -104,10 +112,12 @@ static void cmd_help(char *args);
 static void cmd_provision(char *args);
 static void cmd_encrypt(char *args);
 static void cmd_decrypt(char *args);
+static void cmd_manage(char *args);
 static void cmd_tropic(char *args);
 static void cmd_tropic_ping(char *args);
 static void cmd_tropic_info(char *args);
 static void cmd_tropic_pub(char *args);
+static void cmd_tropic_hash(char *args);
 static void cmd_tropic_keygen(char *args);
 static void cmd_tropic_sign(char *args);
 static void cmd_tropic_kem(char *args);
@@ -115,27 +125,29 @@ static void cmd_tropic_kem_init(char *args);
 static void cmd_tropic_kem_pub(char *args);
 static void cmd_tropic_pairing(char *args);
 static void cmd_peer(char *args);
-static void cmd_peer_add(char *args);
-static void cmd_peer_remove(char *args);
 static void cmd_peer_list(char *args);
-static int parse_pin_digits(const char *dec, uint8_t *out, uint32_t *out_len);
+static void cmd_owner(char *args);
+static void cmd_owner_set(char *args);
 
 static const host_cmd_t s_kem_cmds[] = {
-    { "INIT",  "TROPIC KEM INIT <pin> [CONFIRM]", cmd_tropic_kem_init },
-    { "PUB",   "TROPIC KEM PUB",                      cmd_tropic_kem_pub },
+    { "INIT",  "TROPIC KEM INIT", cmd_tropic_kem_init },
+    { "PUB",   "TROPIC KEM PUB",  cmd_tropic_kem_pub },
 };
 
 static const host_cmd_t s_peer_cmds[] = {
-    { "ADD",    "PEER ADD <name> <64-hex>", cmd_peer_add },
-    { "REMOVE", "PEER REMOVE <name>",       cmd_peer_remove },
-    { "LIST",   "PEER LIST",                cmd_peer_list },
+    { "LIST", "PEER LIST", cmd_peer_list },
+};
+
+static const host_cmd_t s_owner_cmds[] = {
+    { "SET", "OWNER SET", cmd_owner_set },
 };
 
 static const host_cmd_t s_tropic_cmds[] = {
     { "PING",   "TROPIC PING",                         cmd_tropic_ping },
     { "INFO",   "TROPIC INFO",                         cmd_tropic_info },
     { "PUB",    "TROPIC PUB",                          cmd_tropic_pub },
-    { "KEYGEN", "TROPIC KEYGEN [<pin>]",               cmd_tropic_keygen },
+    { "HASH",   "TROPIC HASH",                         cmd_tropic_hash },
+    { "KEYGEN", "TROPIC KEYGEN",                       cmd_tropic_keygen },
     { "SIGN",   "TROPIC SIGN <64-hex>",                cmd_tropic_sign },
     { "KEM",    NULL,                                  cmd_tropic_kem },
     { "PAIRING", "TROPIC PAIRING <1-3> [y]",            cmd_tropic_pairing },
@@ -148,7 +160,9 @@ static const host_cmd_t s_host_cmds[] = {
     { "PROVISION", "PROVISION <unix>",             cmd_provision },
     { "ENCRYPT",   "ENCRYPT <unix>",               cmd_encrypt },
     { "DECRYPT",   "DECRYPT <unix>",               cmd_decrypt },
+    { "MANAGE",    "MANAGE <unix>",                cmd_manage },
     { "PEER",      NULL,                           cmd_peer },
+    { "OWNER",     NULL,                           cmd_owner },
     { "TROPIC",    NULL,                           cmd_tropic },
 };
 
@@ -220,6 +234,7 @@ static void cmd_help(char *args)
     (void)args;
     ns_log("commands:");
     cmd_list_usage(s_host_cmds, sizeof(s_host_cmds) / sizeof(s_host_cmds[0]));
+    cmd_list_usage(s_owner_cmds, sizeof(s_owner_cmds) / sizeof(s_owner_cmds[0]));
     cmd_list_usage(s_peer_cmds, sizeof(s_peer_cmds) / sizeof(s_peer_cmds[0]));
     cmd_list_usage(s_tropic_cmds, sizeof(s_tropic_cmds) / sizeof(s_tropic_cmds[0]));
     cmd_list_usage(s_kem_cmds, sizeof(s_kem_cmds) / sizeof(s_kem_cmds[0]));
@@ -274,6 +289,16 @@ static void cmd_decrypt(char *args)
     cmd_tls_start(SECURE_TLS_MODE_DECRYPT, args);
 }
 
+static void cmd_manage(char *args)
+{
+    cmd_tls_start(SECURE_TLS_MODE_MANAGE, args);
+}
+
+static void use_manage(void)
+{
+    ns_log("use MANAGE <unix>");
+}
+
 static void cmd_tropic_ping(char *args)
 {
     (void)args;
@@ -294,26 +319,28 @@ static void cmd_tropic_pub(char *args)
     tropic_log_status(SECURE_TropicPub_nsc_call(xy64));
 }
 
+static void cmd_tropic_hash(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicClientHash_nsc_call());
+}
+
 static void cmd_tropic_keygen(char *args)
 {
     char *p = trim_line(args);
-    uint8_t pin[8];
-    uint32_t pin_len = 0U;
+    uint32_t st;
 
-    if (*p == '\0') {
-        tropic_log_status(SECURE_TropicKeygen_nsc_call(NULL, 0U));
-        return;
-    }
-    if (parse_pin_digits(p, pin, &pin_len) != 0) {
-        ns_log("bad TROPIC KEYGEN pin");
-        return;
-    }
-    p = trim_line(p + pin_len);
     if (*p != '\0') {
         ns_log("bad TROPIC KEYGEN");
         return;
     }
-    tropic_log_status(SECURE_TropicKeygen_nsc_call(pin, pin_len));
+    st = SECURE_TropicKeygen_nsc_call(NULL, 0U);
+    if (st == SECURE_TROPIC_SLOT_OCC) {
+        tropic_log_status(st);
+        use_manage();
+        return;
+    }
+    tropic_log_status(st);
 }
 
 static void cmd_tropic_sign(char *args)
@@ -327,29 +354,6 @@ static void cmd_tropic_sign(char *args)
         return;
     }
     tropic_log_status(SECURE_TropicSign_nsc_call(hash32, rs64));
-}
-
-/* KEM INIT: 4–8 decimal digits 0-9; each digit becomes one PIN byte. */
-static int parse_pin_digits(const char *dec, uint8_t *out, uint32_t *out_len)
-{
-    size_t n;
-    size_t i;
-
-    if (dec == NULL || out == NULL || out_len == NULL) {
-        return -1;
-    }
-    n = strlen(dec);
-    if (n < 4U || n > 8U) {
-        return -1;
-    }
-    for (i = 0U; i < n; i++) {
-        if (dec[i] < '0' || dec[i] > '9') {
-            return -1;
-        }
-        out[i] = (uint8_t)(dec[i] - '0');
-    }
-    *out_len = (uint32_t)n;
-    return 0;
 }
 
 static void cmd_tropic_kem(char *args)
@@ -369,27 +373,12 @@ static void cmd_tropic_kem(char *args)
 static void cmd_tropic_kem_init(char *args)
 {
     char *p = trim_line(args);
-    char *tail;
-    uint8_t pin[8];
-    uint32_t pin_len = 0U;
-    uint32_t do_confirm = 0U;
 
-    tail = p + strcspn(p, " \t");
-    if (*tail != '\0') {
-        *tail++ = '\0';
-        tail = trim_line(tail);
-        if (strcmp(tail, "CONFIRM") == 0) {
-            do_confirm = 1U;
-        } else {
-            ns_log("bad TROPIC KEM INIT (expected CONFIRM)");
-            return;
-        }
-    }
-    if (parse_pin_digits(p, pin, &pin_len) != 0) {
-        ns_log("bad TROPIC KEM INIT pin");
+    if ((*p != '\0') && (strcmp(p, "CONFIRM") != 0)) {
+        ns_log("bad TROPIC KEM INIT");
         return;
     }
-    tropic_log_status(SECURE_TropicKemInit_nsc_call(pin, pin_len, do_confirm));
+    use_manage();
 }
 
 static void cmd_tropic_kem_pub(char *args)
@@ -443,33 +432,6 @@ static void cmd_tropic_pairing(char *args)
     tropic_log_status(SECURE_TropicPairing_nsc_call((uint32_t)slot));
 }
 
-static int peer_name_char_ok(unsigned char c)
-{
-    return ((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z')) ||
-           ((c >= '0') && (c <= '9')) || (c == '_') || (c == '.') || (c == '-');
-}
-
-static int parse_peer_name(const char *name, uint32_t *out_len)
-{
-    size_t n;
-    size_t i;
-
-    if ((name == NULL) || (out_len == NULL)) {
-        return -1;
-    }
-    n = strlen(name);
-    if ((n < 1U) || (n > SECURE_PEER_NAME_MAX)) {
-        return -1;
-    }
-    for (i = 0U; i < n; i++) {
-        if (peer_name_char_ok((unsigned char)name[i]) == 0) {
-            return -1;
-        }
-    }
-    *out_len = (uint32_t)n;
-    return 0;
-}
-
 static void hex_lower(char *dst, const uint8_t *src, uint32_t src_len)
 {
     static const char *const digits = "0123456789abcdef";
@@ -488,16 +450,8 @@ static void peer_log_status(uint32_t st, const char *ok_msg)
         ns_log(ok_msg);
         return;
     }
-    if (st == SECURE_PEER_EXISTS) {
-        ns_log("PEER nickname exists");
-        return;
-    }
     if (st == SECURE_PEER_NOT_FOUND) {
         ns_log("PEER not found");
-        return;
-    }
-    if (st == SECURE_PEER_FULL) {
-        ns_log("PEER list full");
         return;
     }
     if (st == SECURE_TROPIC_TAMPERED) {
@@ -507,48 +461,12 @@ static void peer_log_status(uint32_t st, const char *ok_msg)
     ns_log("PEER command failed");
 }
 
-static void cmd_peer_add(char *args)
-{
-    char *p = trim_line(args);
-    char *hash_tok;
-    uint8_t hash32[32];
-    uint32_t name_len = 0U;
-
-    hash_tok = p + strcspn(p, " \t");
-    if (*hash_tok == '\0') {
-        ns_log("bad PEER ADD");
-        return;
-    }
-    *hash_tok++ = '\0';
-    hash_tok = trim_line(hash_tok);
-    if ((parse_peer_name(p, &name_len) != 0) || (strlen(hash_tok) != 64U) ||
-        (parse_hex_nibbles(hash_tok, 64U, hash32, 32U) != 0)) {
-        ns_log("bad PEER ADD");
-        return;
-    }
-    peer_log_status(SECURE_PeerAdd_nsc_call((const uint8_t *)p, name_len, hash32),
-                    "PEER ADD ok");
-}
-
-static void cmd_peer_remove(char *args)
-{
-    char *p = trim_line(args);
-    uint32_t name_len = 0U;
-
-    if ((parse_peer_name(p, &name_len) != 0) || (p[name_len] != '\0')) {
-        ns_log("bad PEER REMOVE");
-        return;
-    }
-    peer_log_status(SECURE_PeerRemove_nsc_call((const uint8_t *)p, name_len),
-                    "PEER REMOVE ok");
-}
-
 static void cmd_peer_list(char *args)
 {
     uint8_t name[SECURE_PEER_NAME_MAX];
-    uint8_t hash32[32];
-    char hex[65];
-    char line[SECURE_PEER_NAME_MAX + 1U + 64U + 1U];
+    uint8_t hash48[SECURE_PEER_HASH_LEN];
+    char hex[(2U * SECURE_PEER_HASH_LEN) + 1U];
+    char line[SECURE_PEER_NAME_MAX + 1U + (2U * SECURE_PEER_HASH_LEN) + 1U];
     uint32_t i;
     uint32_t printed = 0U;
 
@@ -558,7 +476,7 @@ static void cmd_peer_list(char *args)
         uint32_t st;
 
         (void)memset(name, 0, sizeof(name));
-        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash32);
+        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash48);
         if (st == SECURE_PEER_NOT_FOUND) {
             break;
         }
@@ -566,7 +484,7 @@ static void cmd_peer_list(char *args)
             peer_log_status(st, "");
             return;
         }
-        hex_lower(hex, hash32, 32U);
+        hex_lower(hex, hash48, SECURE_PEER_HASH_LEN);
         (void)snprintf(line, sizeof(line), "%.*s %s", (int)nlen, (const char *)name, hex);
         ns_log(line);
         printed++;
@@ -585,6 +503,33 @@ static void cmd_peer(char *args)
     cmd = cmd_lookup(s_peer_cmds, sizeof(s_peer_cmds) / sizeof(s_peer_cmds[0]), p, &sub_args);
     if (cmd == NULL) {
         ns_log("unknown PEER command");
+        return;
+    }
+    cmd->handler(sub_args);
+}
+
+static void cmd_owner_set(char *args)
+{
+    if (*trim_line(args) != '\0') {
+        ns_log("bad OWNER SET");
+        return;
+    }
+    if (SECURE_OwnerBegin_nsc_call() != SECURE_USB_OK) {
+        ns_log("OWNER SET refused");
+        return;
+    }
+    s_bin_armed = 1U;
+}
+
+static void cmd_owner(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_owner_cmds, sizeof(s_owner_cmds) / sizeof(s_owner_cmds[0]), p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown OWNER command");
         return;
     }
     cmd->handler(sub_args);
@@ -649,13 +594,13 @@ static int process_host_rx(const uint8_t *data, uint32_t len)
         return 0;
     }
 
-    if (s_tls_armed != 0U) {
+    if (pipe_armed() != 0) {
         return (SECURE_UsbRx_nsc_call(data, len) == SECURE_USB_OK) ? 0 : -1;
     }
 
     for (i = 0U; i < len; i++) {
         process_pre_tls_byte(data[i]);
-        if (s_tls_armed != 0U) {
+        if (pipe_armed() != 0) {
             i++;
             if (i < len) {
                 if (SECURE_UsbRx_nsc_call(data + i, len - i) != SECURE_USB_OK) {
@@ -796,6 +741,17 @@ void tls_usb_poll(void)
                     tls_usb_drain_tx();
                     return;
                 }
+                /* Let wolfSSL drain the Secure RX ring before the next push.
+                 * A TLS 1.3 PQC server flight can exceed the ring if we only
+                 * service after the CDC read loop. */
+                if (pipe_armed() != 0) {
+                    st = SECURE_UsbService_nsc_call();
+                    tls_usb_drain_tx();
+                    if (st == SECURE_USB_IDLE || st == SECURE_USB_ERR) {
+                        tls_disarm();
+                        return;
+                    }
+                }
             }
         } else if (status == UX_STATE_ERROR || status == UX_STATE_EXIT) {
             break;
@@ -804,12 +760,12 @@ void tls_usb_poll(void)
         }
     } while (status == UX_STATE_NEXT && actual > 0U);
 
-    if ((s_dtr != 0U) && (s_tls_armed == 0U) && (s_wait_time_logged == 0U)) {
-        ns_log("waiting PROVISION|ENCRYPT|DECRYPT <unix>");
+    if ((s_dtr != 0U) && (pipe_armed() == 0) && (s_wait_time_logged == 0U)) {
+        ns_log("waiting PROVISION|ENCRYPT|DECRYPT|MANAGE <unix>");
         s_wait_time_logged = 1U;
     }
 
-    if ((s_tls_armed != 0U) && (s_dtr != 0U)) {
+    if ((pipe_armed() != 0) && (s_dtr != 0U)) {
         st = SECURE_UsbService_nsc_call();
         if (st == SECURE_USB_IDLE || st == SECURE_USB_ERR) {
             /* Session finished, failed, or link torn down — back to commands. */
@@ -820,4 +776,6 @@ void tls_usb_poll(void)
     tls_usb_drain_tx();
 }
 
+#ifndef SE_HOST_MODEL
 #include "se_ns_usbx_sources.inc"
+#endif

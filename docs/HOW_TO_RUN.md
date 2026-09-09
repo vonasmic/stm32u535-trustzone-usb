@@ -14,7 +14,7 @@ Command syntax: **[COMMANDS.md](COMMANDS.md)**. Flash map and option bytes: **[H
 | [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html)         | Build Secure + NonSecure                                           |
 | [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) | Flash + option bytes (`STM32_Programmer_CLI`)                      |
 | ST-LINK (SWD)                                                                     | Connect to the MCU                                                 |
-| Python 3 + OpenSSL                                                                | Optional: regenerate TLS credentials (`scripts/embed_fw_creds.py`) |
+| Python 3 + OpenSSL                                                                | Optional: `scripts/embed_fw_creds.py` helper for PEM→DER / SPKI / wrap payloads |
 
 
 Hardware: **TS13 DevKit** (or equivalent) with TROPIC01 on SPI1.
@@ -37,15 +37,7 @@ Irreversible Tropic sequences (`TROPIC PAIRING`, PIN setup) must pass host model
   - `Secure/Debug/SE_firmware_Secure.elf`
   - `NonSecure/Debug/SE_firmware_NonSecure.elf`
 
-Optional TLS credentials **before** the Secure build:
-
-```bash
-python scripts/embed_fw_creds.py <certs_dir> \
-  Secure/Core/Inc/fw_creds.h \
-  Secure/Core/Inc/wrapped_client_key.h
-```
-
-`<certs_dir>` is the CertGenerator tree (`ca/`, `client/`, `user/`, `Alice.pem`). `ENCRYPT` / `DECRYPT` load `fw_client_ca_der` and pin the TLS peer to `fw_user_spki` from `user/user-cert.pem`. If either array is empty (`len = 0`), re-run the embed script before those modes.
+Enroll TLS credentials **at runtime**: unsigned USB `OWNER SET` (owner + optional device cert/key + SAE CA), then `MANAGE` TLS for KEM INIT / CREDS / PEER. `scripts/embed_fw_creds.py` can still turn PEMs into DER/SPKI for those payloads; it is **not** a CubeIDE build step.
 
 ### 2. Option bytes (once, or after the linker map changes)
 
@@ -74,7 +66,7 @@ After NonSecure download, the vector table at `0x08030000` must **not** be `0xFF
 Reset or power-cycle. USB re-enumerates as CDC ACM. Open the serial port (any terminal). Idle prompt:
 
 ```text
-waiting PROVISION|ENCRYPT|DECRYPT <unix>
+waiting PROVISION|ENCRYPT|DECRYPT|MANAGE <unix>
 ```
 
 USB command lines are at most **96** characters. `HELP` lists names.
@@ -90,22 +82,21 @@ Default pairing is factory **SH0** (engineering-sample keys unless the firmware 
 
 ### 6. One-time chip state
 
-`KEYGEN` is one-shot (empty slot generates immediately). `KEM INIT` is two-step. Occupied slots refuse a second write unless noted.
+`KEYGEN` is one-shot when the ECC slot is empty. Occupied `KEYGEN` and `KEM INIT` print `use MANAGE <unix>` then take an unsigned PIN on MANAGE TLS. Occupied KEM slot 510 refuses a second write.
+
+```text
+OWNER SET
+TROPIC KEYGEN
+MANAGE <unix>    # KEM INIT (unsigned PIN + empty body)
+```
+
+This is how the **user** creates the owner key, device TLS creds (inside the OWNER SET blob or a later MANAGE CREDS DEVICE), PIN, and ML-KEM key (no factory PIN). The 1184-byte ML-KEM-768 public key is stored in NV and survives reboot without reflash.
+
+To replace an occupied P-256 key (unsigned PIN on MANAGE):
 
 ```text
 TROPIC KEYGEN
-TROPIC KEM INIT <pin>
-TROPIC KEM INIT <pin> CONFIRM
-```
-
-PIN is **4–8** decimal digits `0-9` (each digit becomes one byte, e.g. `9876` → `09 08 07 06`). `KEM INIT CONFIRM` prints the 1184-byte ML-KEM-768 public key and tells you to embed `fw_mlkem_pk`.
-
-If the device must export that public key after reboot **without** PIN, copy it with `embed_fw_creds.py` and **reflash Secure**. Until then `fw_mlkem_pk` is empty (`len = 0`); this boot still has a RAM cache from KEM INIT.
-
-To replace an existing P-256 key (PIN required, after `KEM INIT`):
-
-```text
-TROPIC KEYGEN <pin>
+MANAGE <unix>
 ```
 
 Optional, **irreversible** on silicon:
@@ -122,13 +113,13 @@ That writes a new X25519 host key to pairing slot 1–3, stores the private half
 Need a live Java SAE TLS server. Then:
 
 ```text
-PEER ADD <name> <64-hex>
+PEER ADD <name> <96-hex>
 PROVISION <unix>
 ```
 
-`PEER ADD` is optional. With an empty NV peer list the uplink has 7 items (no peer pairs). `<64-hex>` is SHA256 of the peer SPKI (64 hex digits), the same hash SAE already receives as uplink items 7+. Cap 8 nicknames; see [COMMANDS.md](COMMANDS.md).
+`PEER ADD` is optional and runs over MANAGE TLS (unsigned). With an empty NV peer list the uplink has 7 items (no peer pairs). `<96-hex>` is SHA384 of the peer SPKI (96 hex digits), the same hash SAE already receives as uplink items 7+. Cap 8 nicknames; see [COMMANDS.md](COMMANDS.md).
 
-`<unix>` is decimal Unix UTC seconds, non-zero. Secure also requires it in `[2024-01-01, 2038-01-01]`. If it is behind the stored TIME floor, firmware keeps the floor. PIN is **not** a console argument; it arrives on TLS after mTLS.
+`<unix>` is decimal Unix UTC seconds, non-zero. Secure also requires it in `[2024-01-01, 2038-01-01]`. If it is behind the stored TIME floor, firmware keeps the floor. PIN is **not** a console argument; ENCRYPT/DECRYPT take it inside mTLS, MANAGE takes it in the unsigned request when the command is PIN-gated.
 
 CDC RX then becomes an opaque TLS pipe until the session ends.
 
@@ -141,7 +132,7 @@ CDC RX then becomes an opaque TLS pipe until the session ends.
 No option-byte rewrite unless the flash map changed. Re-flash ELFs only when firmware changed.
 
 1. Power-cycle or reopen the serial port.
-2. Skip `KEYGEN` / `KEM INIT` if ECC slot 0 and R-MEM slot 510 already hold keys (`TROPIC slot occupied`). Replace the P-256 key with `TROPIC KEYGEN <pin>`.
+2. Skip `KEYGEN` / `KEM INIT` if ECC slot 0 and R-MEM slot 510 already hold keys (`TROPIC slot occupied` / occupied 510). Replace the P-256 key with `TROPIC KEYGEN` then unsigned PIN on MANAGE.
 3. Arm one TLS session:
 
 ```text
@@ -169,7 +160,7 @@ There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end retu
 ## Lab extras (not the SAE path)
 
 - `TROPIC SIGN <64-hex>` — ECDSA over a 32-byte hash.
-- `TROPIC PUB` / `TROPIC KEM PUB` — dump P-256 or ML-KEM public keys.
+- `TROPIC PUB` / `TROPIC HASH` / `TROPIC KEM PUB` — dump P-256 pub, device `client_hash`, or ML-KEM public key.
 
 ---
 
@@ -178,11 +169,11 @@ There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end retu
 ## Host vs silicon (same command names)
 
 
-|                 | Silicon USB                        | `se_host` stdin                                   |
+|                 | Silicon USB                        | `se_host` PTY + stdin                             |
 | --------------- | ---------------------------------- | ------------------------------------------------- |
-| Line limit      | 96 chars                           | 4096 chars                                        |
-| Unix time       | Sets Secure RTC + TIME floor       | Parsed and logged; wolfSSL uses the process clock |
-| After TLS       | Stays armed until the session ends | Blocking session, then the prompt returns         |
-| `QUIT` / `EXIT` | Not present                        | Exit the process                                  |
+| Line limit      | 144 chars                          | 144 chars (same `tls_usb_io.c`)                   |
+| Unix time       | Sets Secure RTC + TIME floor       | Same `se_time_set_unix`; wolfSSL uses process clock |
+| After TLS       | Stays armed until the session ends | Same firmware state machine                       |
+| Stop process    | Unplug / reset                     | Ctrl-C (unlinks `/tmp/ttyACM0`)                   |
 
 

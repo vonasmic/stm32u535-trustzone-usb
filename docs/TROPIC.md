@@ -19,9 +19,9 @@ TROPIC01 has 512 user-data slots. This project:
 | Physical | Purpose | Key / binding |
 | --- | --- | --- |
 | **0–2** | ML-KEM-768 `kem_ct` (1088 B split across 3 slots) | MCU device AEAD; AAD = `slot LE \|\| fill_id` |
-| **3–255** | Keystream pads, logical **0–252** (253 pads) | `HKDF-SHA256(ML-KEM ss, "SE_tropic_qkd_slot_v2" \|\| fill_id \|\| slot_index LE)`; blob binding = `slot_index LE` |
+| **3–255** | Keystream pads, logical **0–252** (253 pads) | `HKDF-SHA384(ML-KEM ss, "SE_tropic_qkd_slot_v3" \|\| fill_id \|\| slot_index LE)`; blob binding = `slot_index LE` |
 | **256–509** | Keystream pads, logical **253–506** (254 pads) | Same. Odd pad count → extra pad in the second half |
-| **510** | ML-KEM generation **seed** (64 B, KEK-wrapped) | `KEK = HKDF-SHA256(PIN final_key, salt=device_key, "SE_tropic_mlkem_kek_v2")`; AAD = `"SE_tropic_mlkem_seed_v2"` |
+| **510** | ML-KEM generation **seed** (64 B, KEK-wrapped) | `KEK = HKDF-SHA384(PIN final_key, salt=device_key, "SE_tropic_mlkem_kek_v3")`; AAD = `"SE_tropic_mlkem_seed_v2"` |
 | **511** | MAC-and-Destroy **PIN NVM** | MCU device AEAD; binding = `511 LE` |
 
 Constants: `SE_TROPIC_PAD_FIRST = 3`, `SE_TROPIC_PAD_COUNT = 507`, `SE_TROPIC_PAD_HALF = 253`, `SE_TROPIC_QKD_SLOT_LAST = 509`.
@@ -85,9 +85,9 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 ## MCU NV (not duplicated in flash)
 
-One AES-256-GCM blob, **535** bytes (`29 + 506` plaintext), AAD `"SE_nv_v4"`. Erase-then-write on Secure flash **page 22** (`0x0C02C000`). Host model: 1024-byte RAM page.
+One AES-256-GCM blob, **663** bytes (`29 + 634` plaintext), AAD `"SE_nv_v5"`. Erase-then-write on Secure flash **page 22** (`0x0C02C000`). Host model: 1024-byte RAM page.
 
-Load tries v4 first. If that MAC/length fails, it tries v3 (`29 + 113` plaintext, AAD `"SE_nv_v3"`), copies fill/OTP/TIME/pairing, and sets `peer_count = 0`. The next store writes v4 (migrates lab devices that already have fill/pairing). Empty/erased page is still flags 0. Any other MAC/length error → `DEVICE_TAMPERED`.
+Load tries v5 first. If that MAC/length fails, it tries v4 (`29 + 506` plaintext, AAD `"SE_nv_v4"`, SHA-256 peer hashes), then v3 (`29 + 113` plaintext, AAD `"SE_nv_v3"`, no peers). Both older layouts copy fill/OTP/TIME/pairing and set `peer_count = 0`, so peers are re-added with `PEER ADD` after a hash-width change. The next store writes v5. Empty/erased page is still flags 0. Any other MAC/length error → `DEVICE_TAMPERED`.
 
 Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
 
@@ -101,7 +101,7 @@ Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |
 | `pairing_priv` / `pairing_pub` | 32 B × 2 | X25519 host key (**priv lives here**, not only on Tropic) |
 | `peer_count` | 1 B | Occupied peers, 0–8 |
-| 8 × `{name_len, name[16], hash[32]}` | 49 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
+| 8 × `{name_len, name[16], hash[48]}` | 65 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
 
@@ -115,11 +115,13 @@ Silicon: **8** rounds (`SE_TROPIC_PIN_ROUNDS`). Host model: **4** (`host_libtrop
 
 PIN length **4–8** bytes.
 
-**Pepper** (MCU-only): `HKDF-SHA256(device_key, "SE_tropic_pin_pepper_v1")`. Tropic never sees it. `kdf_in = PIN || add || pepper`. Changing `secure_dwk` invalidates PIN NVM — re-run `KEM INIT`.
+**Pepper** (MCU-only): `HKDF-SHA384(device_key, "SE_tropic_pin_pepper_v2")`. Tropic never sees it. `kdf_in = PIN || add || pepper`. Changing `secure_dwk` invalidates PIN NVM — re-run `KEM INIT`.
 
 NVM blob in slot **511** (MCU-sealed): remaining attempts `i`, wrapped `ci[]`, auth tag `t`.
 
-### Setup (`TROPIC KEM INIT … CONFIRM`)
+### Setup (`MANAGE` KEM INIT)
+
+This is the **user** path to create the PIN and wrap the ML-KEM seed (slot 510). There is no factory PIN. USB `TROPIC KEM INIT` only prints `use MANAGE <unix>`. The unsigned MANAGE request carries the ASCII PIN and runs setup in one step:
 
 1. Random 32-byte `master_secret`.
 2. Init chip M&D slots `0 .. ROUNDS-1`.
@@ -156,18 +158,18 @@ Irreversible on silicon. The pairing **private** key is in MCU NV so a Tropic-on
 
 ## Device-seal key (`secure_dwk`)
 
-32-byte blob in [wrapped_client_key.h](../Secure/Core/Inc/wrapped_client_key.h) from `embed_fw_creds.py`.
+32-byte generate-once RNG value at the start of the NV page (bytes `[0,32)`). `0xFF…` means uninitialized. It is **not** AEAD'd with itself and never appears on USB or in the ELF.
 
 | Derived | HKDF | Used for |
 | --- | --- | --- |
-| Device AEAD | SHA-384(`secure_dwk`, `"SE_tropic_rmem_aes_v1"`) | MCU NV, kem_ct, PIN NVM |
-| PIN pepper | SHA-256(device AEAD, `"SE_tropic_pin_pepper_v1"`) | M&D `kdf_in` |
-| ML-KEM KEK | SHA-256(PIN `final_key`, salt=device AEAD, `"SE_tropic_mlkem_kek_v2"`) | Slot 510 |
-| TLS client key unwrap | SHA-384(`secure_dwk`, `"SE_firmware_wrap_v2"`) | ML-DSA private key |
+| Device AEAD (silicon) | SHA-384(`secure_dwk`, `"SE_tropic_rmem_aes_v1"`) | MCU NV, kem_ct, PIN NVM |
+| PIN pepper | SHA-384(device AEAD, `"SE_tropic_pin_pepper_v2"`) | M&D `kdf_in` |
+| ML-KEM KEK | SHA-384(PIN `final_key`, salt=device AEAD, `"SE_tropic_mlkem_kek_v3"`) | Slot 510 |
+| TLS client key wrap | SHA-384(`secure_dwk`, `"SE_firmware_wrap_v2"`) | ML-DSA private key (CREDS DEVICE) |
 
-Host model **does not** use `secure_dwk` for Tropic AEAD: [port_posix.c](../host/tropic_model/port_posix.c) has a fixed 32-byte test key. `se_host` still unwraps the TLS client key with `secure_dwk`.
+Host model **does not** use `secure_dwk` for Tropic AEAD: [port_posix.c](../host/tropic_model/port_posix.c) has a fixed 32-byte test key. Host still stores dwk in the NV header for password hash + wrap. `OWNER REPLACE` does not rotate dwk. Pairing slots survive that wipe.
 
-Opened ML-KEM public key must match embedded `fw_mlkem_pk` when that array is non-empty (`mlkem_check_pk`).
+Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`). `KEM INIT` writes that copy; no reflash.
 
 ---
 

@@ -4,11 +4,11 @@ How the host, USB console, Secure TLS client, and SAE talk. Tropic slot contents
 
 ```text
 USB ASCII commands  →  NonSecure parser  →  NSC  →  Secure
-USB TLS bytes       →  8 KiB rings       →  wolfSSL 1.3 client  →  Java SAE
+USB TLS bytes       →  16 KiB RX / 8 KiB TX rings →  wolfSSL 1.3 client  →  SAE (provision), UserApp (encrypt/decrypt), or UserApp (manage)
 SPI                 →  TROPIC01 L2/L3
 ```
 
-Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT`. After handshake the SAE infers the role from what the device sends (uplink vs silence) and from its own request.
+Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`. After handshake the peer infers the role from what the device sends (uplink vs silence) and from its own request.
 
 ---
 
@@ -16,16 +16,16 @@ Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT`. Afte
 
 NonSecure ([tls_usb_io.c](../NonSecure/Core/Src/tls_usb_io.c)):
 
-- **Command mode** — `\n`-terminated ASCII, max 96 chars.
-- After a successful `SECURE_TlsStart_nsc_call`, **TLS mode** — every RX byte goes to `SECURE_UsbRx_nsc_call`. Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`.
-- TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`).
+- **Command mode** — `\n`-terminated ASCII, max 144 chars.
+- After a successful `SECURE_TlsStart_nsc_call` or `SECURE_OwnerBegin_nsc_call`, **binary/TLS mode** — every RX byte goes to `SECURE_UsbRx_nsc_call`. Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`.
+- TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`). After each TLS RX packet, NonSecure runs `SECURE_UsbService_nsc_call` so wolfSSL drains the ring before the next push (a PQC ServerHello is ~12 KiB; dumping it first overflowed the old 8 KiB ring).
 - DTR off, CDC deactivate, overflow, or TLS end → command mode again.
 
-Secure rings ([se_usb_tls.h](../Secure/Core/Inc/se_usb_tls.h)): RX and TX **8192** bytes each.
+Secure rings ([se_usb_tls.h](../Secure/Core/Inc/se_usb_tls.h)): RX **16384** bytes, TX **8192** bytes.
 
-`DEBUG:` status lines (handshake progress, Tropic logs) go on the CDC TX ring **only before the first TLS record byte**. After that, TX is TLS only, so records do not glue onto ASCII (BouncyCastle). ClientHello waits until DEBUG is drained.
+Framed `DEBUG:<text>:DEBUG` status lines (handshake progress, Tropic logs) go on the CDC TX ring **only before the first TLS record byte**. After that, TX is TLS only. The closer `:DEBUG` is the ASCII/TLS boundary, so a ClientHello (`0x16`) glued onto the same USB read is still unambiguous. ClientHello waits until the current DEBUG frame has left the Secure TX ring.
 
-PIN is never on this pipe for the three TLS modes.
+PIN is never on the ASCII pipe for the TLS modes. Occupied KEYGEN / KEM INIT / PEER ADD/REMOVE / CREDS / OWNER REPLACE stream unsigned bodies over MANAGE TLS (no ML-DSA). ENCRYPT/DECRYPT stay mTLS.
 
 ---
 
@@ -33,7 +33,7 @@ PIN is never on this pipe for the three TLS modes.
 
 ## TLS 1.3 (device is client)
 
-[se_tls_client.c](../Secure/Core/Src/se_tls_client.c) (host mirror: [se_host_tls.c](../host/tropic_model/se_host_tls.c)):
+[se_tls_client.c](../Secure/Core/Src/se_tls_client.c) (same source on `se_host` over a PTY):
 
 
 | Setting            | Value                                                            |
@@ -41,8 +41,8 @@ PIN is never on this pipe for the three TLS modes.
 | Version            | TLS 1.3 only                                                     |
 | Cipher             | `TLS13-AES256-GCM-SHA384`                                        |
 | Group              | **ML-KEM-768** (`WOLFSSL_ML_KEM_768`)                            |
-| Client cert        | `fw_client_cert_der`                                             |
-| Client private key | wrapped`wrapped_client_key.h`using device AES key (`secure_dwk`) |
+| Client cert        | ENCRYPT/DECRYPT/PROVISION: device cert from FLASH_CREDS. MANAGE: none (not mTLS) |
+| Client private key | ENCRYPT/DECRYPT/PROVISION: NV wrap, HKDF(`secure_dwk`, `"SE_firmware_wrap_v2"`). MANAGE: none |
 | Peer verify        | `WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT`      |
 
 
@@ -53,19 +53,20 @@ PIN is never on this pipe for the three TLS modes.
 
 | Mode      | Constant                        | Verify blob                           |
 | --------- | ------------------------------- | ------------------------------------- |
-| Provision | `SECURE_TLS_MODE_PROVISION` = 1 | `fw_root_ca_der` (SAE application CA) |
-| Encrypt   | `SECURE_TLS_MODE_ENCRYPT` = 2   | `fw_client_ca_der` + pin `fw_user_spki` |
-| Decrypt   | `SECURE_TLS_MODE_DECRYPT` = 3   | `fw_client_ca_der` + pin `fw_user_spki` |
+| Provision | `SECURE_TLS_MODE_PROVISION` = 1 | SAE CA from FLASH_CREDS                          |
+| Encrypt   | `SECURE_TLS_MODE_ENCRYPT` = 2   | no CA; pin peer leaf SPKI to enrolled owner key  |
+| Decrypt   | `SECURE_TLS_MODE_DECRYPT` = 3   | no CA; pin peer leaf SPKI to enrolled owner key  |
+| Manage    | `SECURE_TLS_MODE_MANAGE` = 4    | no CA; pin peer leaf SPKI to enrolled owner key; no device client cert |
 
 
-If `fw_client_ca_der_len` is 0, ENCRYPT/DECRYPT fail at CA load until `scripts/embed_fw_creds.py` is re-run. If `fw_user_spki_len` is 0, they fail at setup (`embed user-cert.pem`). After handshake, ENCRYPT/DECRYPT also require the TLS peer SPKI to match `fw_user_spki` (home-PC `certs/user/user-cert.pem`). SAE/terminal identity is not accepted for those modes.
+TLS refuses until ready: ENCRYPT/DECRYPT need owner SPKI + device cert + wrapped SK; PROVISION needs those plus SAE CA and NV ML-KEM pk; MANAGE needs owner SPKI only.
 
 ### Exporter (session binding)
 
 After handshake:
 
-- Label: `EXPORTER-tropic-binding` (23 bytes)
-- Length: 32 bytes
+- RFC 9266 `tls-exporter`: label `EXPORTER-Channel-Binding`, empty context, 32 bytes
+  (same value BC JSSE returns from `getChannelBinding("tls-exporter")`)
 
 Used only on **provision**: hashed into the uplink signature so a MitM that terminates TLS cannot forward a valid uplink.
 
@@ -74,9 +75,10 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 
 | Mode      | Device sends              | Device reads                            |
 | --------- | ------------------------- | --------------------------------------- |
-| Provision | LV **uplink v3**          | LV **downlink v2** (QKD ingest)         |
+| Provision | LV **uplink v4**          | LV **downlink v2** (QKD ingest)         |
 | Encrypt   | nothing until SAE request | PIN + plaintext; replies OTP ciphertext |
 | Decrypt   | nothing until SAE request | PIN + encrypt reply; replies plaintext  |
+| Manage    | nothing until request     | unsigned cmd + optional PIN + body; replies status |
 
 
 Then TLS shutdown.
@@ -102,7 +104,7 @@ Unknown `version` is a hard error (`SECURE_QKD_WRONG_VERSION` on downlink). Upli
 
 | Message                    | Version                              |
 | -------------------------- | ------------------------------------ |
-| Session uplink (provision) | **3** (`SECURE_LV_UPLINK_VERSION`)   |
+| Session uplink (provision) | **4** (`SECURE_LV_UPLINK_VERSION`)   |
 | QKD downlink (provision)   | **2** (`SECURE_LV_DOWNLINK_VERSION`) |
 
 
@@ -110,7 +112,7 @@ Unknown `version` is a hard error (`SECURE_QKD_WRONG_VERSION` on downlink). Upli
 
 
 
-## Uplink v3 (Secure → SAE, provision only)
+## Uplink v4 (Secure → SAE, provision only)
 
 Built in [se_tropic_session.c](../Secure/Core/Src/se_tropic_session.c).
 
@@ -121,23 +123,30 @@ Built in [se_tropic_session.c](../Secure/Core/Src/se_tropic_session.c).
 | ----- | ----------------------- | ------------ | ----------------------------------------------- |
 | 0     | Session signature       | 64 B         | TROPIC P-256 ECDSA                              |
 | 1     | TROPIC P-256 public key | 64 B         | XY from ECC slot 0                              |
-| 2     | Client hash             | 32 B         | `SHA256(fw_client_spki || ecc_pub)`             |
+| 2     | Client hash             | 48 B         | `SHA384(device_cert_spki || ecc_pub)`           |
 | 3     | R-MEM slot size         | 2 B          | u16 LE, chip `r_mem_udata_slot_size_max`        |
 | 4     | Pad slot count          | 2 B          | u16 LE = **507**                                |
 | 5     | Pending `fill_id`       | 32 B         | RNG; committed when `kem_ct` is written         |
 | 6     | ML-KEM-768 public key   | **1184 B**   | Encapsulate from **this item**, not from a file |
-| 7+    | Per peer: hash, name    | 32 B + UTF-8 | MCU NV (`PEER ADD`); hash is SHA256 of the peer SPKI |
+| 7+    | Per peer: hash, name    | 48 B + UTF-8 | MCU NV (`PEER ADD`); hash is SHA384 of the peer SPKI |
 
 
 Signature digest:
 
 ```text
-client_hash = SHA256(fw_client_spki || ecc_pub)
-to_sign     = SHA256(client_hash || exporter)
-sig         = ECDSA_P256(Tropic slot 0, to_sign)
+client_hash = SHA384(device_cert_spki || ecc_pub)
+to_sign     = SHA384(client_hash || exporter)
+sig         = ECDSA_P256(Tropic slot 0, to_sign[0..31])
 ```
 
-The exporter is wiped after hashing. `fw_client_spki` is hashed, never sent.
+TROPIC01 takes exactly a 32-byte digest, so it signs the leftmost half of `to_sign`. That is
+plain ECDSA-with-SHA-384 on P-256: a verifier handed all 48 bytes derives the same `e` from the
+leftmost 256 bits (FIPS 186-4 §6.4).
+
+The exporter is wiped after hashing. Device-cert SPKI bits are hashed, never sent: SAE
+recomputes them from the mTLS client certificate (raw `subjectPublicKey` BIT STRING payload,
+same as `embed_fw_creds.py`, not the whole SPKI DER). USB command `TROPIC HASH` prints this
+same `client_hash` (96 hex digits).
 
 Encrypt/decrypt modes send **no** uplink.
 
