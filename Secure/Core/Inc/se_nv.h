@@ -40,6 +40,8 @@ extern "C" {
 #define SE_NV_PEER_EXISTS     ((lt_ret_t)201)
 #define SE_NV_PEER_NOT_FOUND  ((lt_ret_t)202)
 #define SE_NV_PEER_FULL       ((lt_ret_t)203)
+/** Encrypt/decrypt request needs more pads than this half still has. */
+#define SE_TROPIC_LT_OTP_EXHAUSTED ((lt_ret_t)204)
 
 /** Which QKD half-cursor to read or advance. */
 typedef enum {
@@ -114,6 +116,9 @@ lt_ret_t se_nv_set_pairing(uint8_t slot, const uint8_t priv[SE_NV_PAIRING_KEY_LE
 /** Copy committed pairing key; LT_FAIL when SE_NV_FLAG_PAIRING is unset. */
 lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
                            uint8_t pub[SE_NV_PAIRING_KEY_LEN]);
+
+/** Drop pairing flag and zero pairing keys. Keeps fill / TIME / owner / OTP. */
+lt_ret_t se_nv_clear_pairing(void);
 
 /**
  * Append a nickname+hash peer. Nickname is unique (case-sensitive).

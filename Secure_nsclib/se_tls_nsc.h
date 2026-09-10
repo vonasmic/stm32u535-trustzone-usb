@@ -85,9 +85,14 @@ uint32_t CSME_NSE_API SECURE_TropicSign_nsc_call(const uint8_t *hash32, uint8_t 
 uint32_t CSME_NSE_API SECURE_TropicKemInit_nsc_call(const uint8_t *pin, uint32_t pin_len,
                                                     uint32_t confirm);
 uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
+/** Remaining OTP bytes for encrypt and decrypt (no PIN). */
+uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(void);
 
-/** Write pairing key to TROPIC slot 1–3 and invalidate factory SH0. */
-uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot);
+/** Write pairing key to TROPIC slot 1–3 and invalidate factory SH0.
+ *  On OK, @p out64 is priv[32] || pub[32] for host backup. */
+uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot, uint8_t *out64);
+/** Restore pairing priv||pub (64 B) into MCU NV; no Tropic write. */
+uint32_t CSME_NSE_API SECURE_TropicPairingLoad_nsc_call(uint32_t slot, const uint8_t *in64);
 
 /**
  * PEER NV commands. ADD/REMOVE require a Tropic PIN. OK/ERR match Tropic;

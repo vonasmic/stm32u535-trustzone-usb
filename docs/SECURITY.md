@@ -82,7 +82,7 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 - `PROVISION` / `ENCRYPT` / `DECRYPT` never take a PIN; PIN is only inside TLS.
 - `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
 - Occupied ECC slot 0 and `KEM INIT` / `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. Empty-slot `KEYGEN` stays unsigned USB. R-MEM 510 refuses a second `KEM INIT`.
-- USB line cap 144 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
+- USB line cap 160 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
 - DEBUG ASCII only **before** the first TLS record, framed as `DEBUG:<text>:DEBUG` so a glued ClientHello is still split at `:DEBUG`.
 
 **Residual:**
@@ -112,7 +112,7 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 
 **Hardening:**
 
-- After `TROPIC PAIRING n y`, factory **SH0 is invalidated** and the X25519 **private** key is only in MCU NV (AES-GCM under `secure_dwk`). Tropic dump of pairing *pub* is not enough to speak L3 as this host.
+- After `TROPIC PAIRING n y`, factory **SH0 is invalidated** and the X25519 **private** key is in MCU NV (AES-GCM under `secure_dwk`) **and** printed once on USB for host backup (`pairing.key`). Tropic dump of pairing *pub* is not enough to speak L3 as this host.
 - MCU NV (`fill_id`, OTP cursors) is authoritative. Tropic mcounters must **match**; mismatch → `DEVICE_TAMPERED`.
 - kem_ct and PIN NVM are MCU-sealed (device AEAD + `fill_id` / slot binding). Pads are sealed under ML-KEM SS, not under L3.
 - PIN pepper never leaves the MCU; M&D inputs on SPI are not a PIN hash.
@@ -196,4 +196,4 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 3. After enrollment, do not send the Tropic PIN on the ASCII line; encrypt/decrypt take it only inside mTLS. Occupied `KEYGEN` is identity replace over MANAGE, not enrollment.
 4. Lock SWD / enable hide protection if you ship; this project leaves `HDP1EN = 0`.
 5. SAE must require **ML-KEM TLS + ML-DSA client cert**; do not accept a P-256 uplink signature as the device’s PQ identity.
-6. Assume anyone with the **firmware image** can impersonate TLS and speak L3 after pairing (pairing priv in NV). Pads remain PIN-gated.
+6. Assume anyone with the **firmware image** or the host **`pairing.key`** can speak L3 after pairing. Pads remain PIN-gated. Keep `pairing.key` with the device cert; without it an MCU reflash cannot reopen L3.

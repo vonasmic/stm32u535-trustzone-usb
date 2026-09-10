@@ -28,7 +28,7 @@ bash host/tropic_model/download_deps.sh
 
 Needs `python3`, `curl` or `wget`, `sha256sum`, `cmake`, a C compiler, and `make`. CMake fails until `_deps/wolfssl` exists.
 
-TLS credentials are enrolled at runtime (unsigned USB `OWNER SET`, then unsigned MANAGE TLS for KEM INIT / CREDS / PEER). `scripts/embed_fw_creds.py` is a host helper (PEM→DER, SPKI, wrap) for those payloads, not a firmware compile step.
+TLS credentials are enrolled at runtime (unsigned USB `OWNER SET`, then unsigned MANAGE TLS for KEM INIT / CREDS / PEER).
 
 ---
 
@@ -79,8 +79,8 @@ bash ../run_all.sh
 | E | `test_e_mcounter` | Monotonic cursor advance-before-use |
 | F | `test_f_mlkem` | ML-KEM provision / kem_ct / PIN-gated XOR |
 | G | `test_g_ingest` | QKD ingest / pad store |
-| H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key |
-| I | `test_i_post_tls` | Encrypt TLS body / OTP reply with slot IDs |
+| H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key, LOAD after NV wipe |
+| I | `test_i_post_tls` | Encrypt TLS body / OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
 | J | `test_j_peers` | PEER NV add/remove/list, v3→v4 migrate, uplink item count `7+2n` |
 | K | `test_k_owner` | First-wins owner, REPLACE, unsigned MANAGE CREDS stream, NV ML-KEM |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
@@ -151,12 +151,12 @@ HELP
 TROPIC PING
 TROPIC INFO
 TROPIC PUB
-TROPIC HASH
+CLIENT HASH
 TROPIC KEYGEN
 TROPIC SIGN <64-hex>
 TROPIC KEM INIT
 TROPIC KEM PUB
-TROPIC PAIRING <1-3> [y]
+TROPIC PAIRING <1-3> [y|LOAD <priv> <pub>]
 OWNER SET
 PROVISION <unix>
 ENCRYPT <unix>

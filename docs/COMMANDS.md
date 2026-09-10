@@ -11,7 +11,7 @@ TLS framing after arming: **[COMMUNICATION.md](COMMUNICATION.md)**. Tropic slots
 | Rule | USB CDC | Host `se_host` |
 | --- | --- | --- |
 | Line end | `\n` (`\r` ignored) | Same (PTY + stdin) |
-| Max line | **144** chars | **144** chars (same parser) |
+| Max line | **160** chars | **160** chars (same parser) |
 | Whitespace | Trim spaces/tabs | Same |
 | Match | Case-sensitive prefix; optional spaces/tabs/`=` after the name | Same |
 | Empty line | Ignored | Ignored |
@@ -25,10 +25,10 @@ There is **no** `TIME=` command. `SECURE_SetUnixTime_nsc_call` exists on the NSC
 
 ## PIN / owner policy
 
-| Context | On the 144-char ASCII line? |
+| Context | On the 160-char ASCII line? |
 | --- | --- |
 | `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | **Never** — PIN (when used) is only inside TLS |
-| `HELP` / `PING` / `INFO` / `PUB` / `HASH` / `KEM PUB` / `PEER LIST` / `SIGN` / `PAIRING` / empty-slot `KEYGEN` | **No** (unsigned) |
+| `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `KEM PUB` / `PEER LIST` / `SIGN` / `PAIRING` / empty-slot `KEYGEN` | **No PIN** (unsigned). `PAIRING y` prints the host X25519 priv+pub; `PAIRING LOAD` puts that backup on the line |
 | Occupied `TROPIC KEYGEN`, `TROPIC KEM INIT`, `PEER ADD` / `REMOVE`, `CREDS *`, `OWNER REPLACE` | USB prints `use MANAGE <unix>`. Command + PIN (ASCII digits, same bytes as ENCRYPT) + body stream over owner-pinned TLS. **No ML-DSA.** |
 | `OWNER SET` | Unsigned USB blob (password + SPKI + optional device cert/key + SAE CA). First-wins |
 
@@ -58,6 +58,7 @@ Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 
 | `MANAGE <unix>` | yes | yes | same | Arm TLS mode **4**. Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command (see above), status reply, shutdown. |
 | `OWNER SET` | yes | yes | then unsigned blob | First USB wins if the owner slot is empty; else refuse. Blob may include device cert/key and SAE CA. |
 | `PEER LIST` | yes | yes | — | Print each NV peer, or `PEER list empty` |
+| `CLIENT HASH` | yes | yes | — | Print `client hash:` + 96 hex digits: `SHA384(device_cert_spki \|\| ecc_pub)`, same as provision uplink item 2 |
 | `TROPIC …` | yes | yes | subcommand | Dispatch to the TROPIC table |
 
 ### `<unix>`
@@ -94,20 +95,21 @@ USB line max is **144** chars. Certs and PIN-gated commands use MANAGE TLS appli
 
 ## `TROPIC` subcommands
 
-Two-step commands: `PAIRING` still probes then `y`. Occupied `KEYGEN` and `KEM INIT` print `use MANAGE <unix>`. Empty-slot `KEYGEN` is one-shot and unsigned.
+Two-step commands: `PAIRING` still probes then `y` (or `LOAD` after a reflash). Occupied `KEYGEN` and `KEM INIT` print `use MANAGE <unix>`. Empty-slot `KEYGEN` is one-shot and unsigned.
 
 | Syntax | Two-step | Parameters | Firmware |
 | --- | --- | --- | --- |
 | `TROPIC PING` | no | — | `lt_ping("hello")`. Success: `TROPIC ping ok` |
 | `TROPIC INFO` | no | — | Chip ID, RISC-V/SPECT FW versions, cert-store lengths |
 | `TROPIC PUB` | no | — | Read P-256 public key from ECC slot 0; hex-dump 64 bytes |
-| `TROPIC HASH` | no | — | Print `client hash:` + 96 hex digits: `SHA384(device_cert_spki \|\| ecc_pub)`, same as provision uplink item 2 |
 | `TROPIC KEYGEN` | no / MANAGE | none | If ECC slot 0 empty: generate P-256. If occupied: `use MANAGE <unix>` then unsigned PIN on MANAGE |
 | `TROPIC SIGN <64-hex>` | no | exactly **64 hex chars** (32-byte hash) | ECDSA; hex-dump 64-byte `r\|\|s`. Bad length/hex: `bad TROPIC SIGN hash` |
 | `TROPIC PAIRING <1-3>` | **probe** | slot decimal **1–3** | Warnings only; no Tropic write. Prints `TROPIC PAIRING n y` |
-| `TROPIC PAIRING <1-3> y` | **confirm** | slot + `y` or `Y` | Generate X25519, write pub to pairing slot, persist priv in MCU NV, invalidate factory SH0, re-session |
+| `TROPIC PAIRING <1-3> y` | **confirm** | slot + `y` or `Y` | Generate X25519, write pub to pairing slot, persist priv in MCU NV, invalidate factory SH0, re-session. Prints `TROPIC PAIRING KEY n <64-hex-priv> <64-hex-pub>` for host backup |
+| `TROPIC PAIRING <1-3> LOAD <64-hex-priv> <64-hex-pub>` | no | slot + priv + pub | Restore MCU NV after a reflash. No Tropic write / no SH0 invalidate. Verifies X25519(pub)=priv, then L3 with that slot |
 | `TROPIC KEM INIT` | **MANAGE** | USB prints `use MANAGE <unix>` | **User enrollment** over unsigned MANAGE. Occupied R-MEM **510** refused. Else M&D PIN setup, wrap seed, persist 1184-byte pk in NV |
 | `TROPIC KEM PUB` | no | — | Dump NV ML-KEM pk (or RAM cache). Else `ML-KEM pk missing…` / `TROPIC not ready` |
+| `TROPIC OTP LEFT` | no | — | Remaining / half-capacity pad kilobytes (floor, 1024). No PIN. Prints `OTP left enc=A/B kb dec=C/D kb`. Unprovisioned is `0/capacity`, not `TROPIC not ready`. Tamper as usual |
 
 Unknown TROPIC: `unknown TROPIC command`. Unknown KEM sub: `unknown TROPIC KEM command`.
 
@@ -120,7 +122,7 @@ WARNING: irreversible on real silicon; resend with y to continue
 TROPIC PAIRING N y
 ```
 
-Slot outside 1–3: `TROPIC PAIRING slot must be 1-3`. Confirm token not `y`/`Y`: `bad TROPIC PAIRING (expected y)`.
+Slot outside 1–3: `TROPIC PAIRING slot must be 1-3`. Confirm token not `y`/`Y`/`LOAD`: `bad TROPIC PAIRING (expected y or LOAD)`. Bad LOAD hex: `bad TROPIC PAIRING LOAD key`. Success: `TROPIC PAIRING LOAD ok`.
 
 ---
 
@@ -136,7 +138,7 @@ Mapped in NonSecure / `se_host` from NSC codes (`SECURE_TROPIC_*` in [se_tls_nsc
 | `TAMPERED` (5) | `DEVICE_TAMPERED` |
 | other | `TROPIC command failed` |
 
-Parser errors (examples): `bad unix time`, `bad TROPIC KEYGEN`, `bad TROPIC KEM INIT`, `OWNER SET refused`, `use MANAGE <unix>`, `bad TROPIC PAIRING slot`.
+Parser errors (examples): `bad unix time`, `bad TROPIC KEYGEN`, `bad TROPIC KEM INIT`, `OWNER SET refused`, `use MANAGE <unix>`, `bad TROPIC PAIRING slot`, `bad TROPIC PAIRING LOAD key`.
 
 ### PEER status strings
 
@@ -166,15 +168,16 @@ DECRYPT <unix>
 MANAGE <unix>
 OWNER SET
 PEER LIST
+CLIENT HASH
 TROPIC PING
 TROPIC INFO
 TROPIC PUB
-TROPIC HASH
 TROPIC KEYGEN
 TROPIC SIGN <64-hex>
-TROPIC PAIRING <1-3> [y]
+TROPIC PAIRING <1-3> [y|LOAD <priv> <pub>]
 TROPIC KEM INIT
 TROPIC KEM PUB
+TROPIC OTP LEFT
 ```
 
 Host adds `QUIT`.
@@ -190,7 +193,9 @@ Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.
 | `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | `SECURE_TlsStart_nsc_call(mode, unix)` |
 | `OWNER SET` | `SECURE_OwnerBegin_nsc_call` then unsigned USB blob |
 | `PEER LIST` | `SECURE_PeerGet_nsc_call` |
-| `TROPIC HASH` | `SECURE_TropicClientHash_nsc_call` |
+| `CLIENT HASH` | `SECURE_TropicClientHash_nsc_call` |
+| `TROPIC OTP LEFT` | `SECURE_TropicOtpLeft_nsc_call` |
 | `TROPIC PING` … `PAIRING` | `SECURE_Tropic*_nsc_call` |
+| `TROPIC PAIRING … LOAD` | `SECURE_TropicPairingLoad_nsc_call` |
 | Armed USB RX/TX | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call` |
 | Debug log | `SECURE_UsbLog_nsc_call` |

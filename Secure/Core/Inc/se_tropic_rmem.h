@@ -259,10 +259,12 @@ lt_ret_t se_tropic_OTP_xor_consume(lt_handle_t *h, se_nv_otp_dir_t dir,
                                const uint8_t *msg, uint16_t len, uint8_t *out);
 
 /**
- * PIN-unlock and ML-KEM-decapsulate for pad XOR. Refuses if the pad count
- * does not fit in @p dir's remaining half (no erase yet).
- * ENCRYPT: @p msg_len is plaintext bytes, @p n_pads is 0.
- * DECRYPT TLS: @p msg_len is 0, @p n_pads is the reply count.
+ * PIN-unlock and ML-KEM-decapsulate for pad XOR. Refuses with
+ * SE_TROPIC_LT_OTP_EXHAUSTED if the pad count does not fit in @p dir's
+ * remaining half (no erase yet).
+ * Counting follows @p dir, not which argument is non-zero:
+ * ENCRYPT uses @p msg_len (plaintext bytes); @p n_pads is ignored.
+ * DECRYPT uses @p n_pads (encrypt-reply pad count); @p msg_len is ignored.
  */
 lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
                                     const uint8_t *add, uint8_t add_len, se_nv_otp_dir_t dir,
@@ -271,6 +273,18 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
 uint16_t se_tropic_otp_xor_pad_max(void);
 uint32_t se_tropic_otp_xor_bytes_left(void);
 uint32_t se_tropic_otp_xor_pads_needed(void);
+
+/**
+ * Remaining and half-capacity keystream bytes for @p dir. Unused pads in that
+ * half times slot plaintext max. Unprovisioned OTP (no fill/cursors) reports
+ * remaining 0 and the default half capacity. Exhausted cursor reports 0 left.
+ * Does not need PIN. Either @p left_out or @p cap_out may be NULL.
+ */
+lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
+                                   uint32_t *left_out, uint32_t *cap_out);
+
+/** Remaining keystream bytes for @p dir (quota left only). */
+lt_ret_t se_tropic_otp_bytes_remaining(lt_handle_t *h, se_nv_otp_dir_t dir, uint32_t *bytes_out);
 
 /**
  * Read, burn, and XOR one pad. ENCRYPT: @p req_slot is NULL. DECRYPT: SAE
@@ -286,8 +300,9 @@ void se_tropic_otp_xor_close(void);
 
 /**
  * XOR a whole message (open, pad loop, close). Used by model tests.
- * ENCRYPT (@p req_slots NULL) follows the encrypt cursor. DECRYPT needs
- * consecutive @p req_slots. @p slot_used is the first physical slot burned.
+ * ENCRYPT (@p req_slots NULL) opens by plaintext byte length. DECRYPT opens
+ * by @p req_slots_n (encrypt-reply pad count) and needs consecutive slots.
+ * @p slot_used is the first physical slot burned.
  */
 lt_ret_t se_tropic_otp_xor_message(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
                                     const uint8_t *add, uint8_t add_len, const uint8_t *msg,

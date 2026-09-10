@@ -326,12 +326,52 @@ uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void)
     return se_tropic_kem_pub_dump();
 }
 
-uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot)
+uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(void)
 {
+    return se_tropic_otp_left_dump();
+}
+
+uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot, uint8_t *out64)
+{
+    uint8_t *ns_out;
+    uint32_t st;
+
     if (slot > 255U) {
         return SECURE_TROPIC_ERR;
     }
-    return se_create_pairing_key_to_tropic((uint8_t)slot);
+    ns_out = (uint8_t *)ns_sanitize_out(out64, 64U);
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    st = se_create_pairing_key_to_tropic((uint8_t)slot);
+    if (st != SECURE_TROPIC_OK) {
+        (void)memset(ns_out, 0, 64U);
+        return st;
+    }
+    st = se_tropic_pairing_export(NULL, ns_out, ns_out + 32U);
+    if (st != SECURE_TROPIC_OK) {
+        (void)memset(ns_out, 0, 64U);
+    }
+    return st;
+}
+
+uint32_t CSME_NSE_API SECURE_TropicPairingLoad_nsc_call(uint32_t slot, const uint8_t *in64)
+{
+    const uint8_t *ns_in;
+    uint8_t local[64];
+    uint32_t st;
+
+    if (slot > 255U) {
+        return SECURE_TROPIC_ERR;
+    }
+    ns_in = (const uint8_t *)ns_sanitize_in(in64, 64U);
+    if (ns_in == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    (void)memcpy(local, ns_in, sizeof(local));
+    st = se_tropic_pairing_load((uint8_t)slot, local, local + 32U);
+    wc_ForceZero(local, sizeof(local));
+    return st;
 }
 
 static uint32_t peer_lt_to_nsc(lt_ret_t ret)

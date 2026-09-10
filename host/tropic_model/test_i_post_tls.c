@@ -5,7 +5,9 @@
  * No wolfSSL client. After a G-style QKD load, parse the TLS encrypt header
  * (u8 pin_len | pin | u32 LE msg_len) then plaintext; reply is n_pads + records.
  * XOR each pad, and encode the OTP pad-record reply. Also covers leftover
- * TLS bytes and a two-pad Tropic XOR.
+ * TLS bytes, a two-pad Tropic XOR, a 100 KiB encrypt, remaining-byte query,
+ * decrypt skip-ahead, and encrypt/decrypt refuse when the request needs more
+ * pads than remain (fail-early, no partial ciphertext).
  */
 #include "test_harness.h"
 #include "secure_qkd_ingest.h"
@@ -15,6 +17,7 @@
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
 #include "se_tropic_rmem.h"
+#include "se_tropic_pin.h"
 #include "se_nv.h"
 #include "host_fw_mlkem.h"
 #include "libtropic.h"
@@ -24,6 +27,7 @@
 #include <wolfssl/wolfcrypt/wc_mlkem.h>
 
 #define CHUNK_SIZE 7u
+#define LONG_MSG_LEN (100u * 1024u)
 
 static lt_ret_t sae_encapsulate(const uint8_t pk[SE_TROPIC_MLKEM_PK_LEN],
                                 uint8_t ct[SE_TROPIC_KEM_CT_LEN],
@@ -219,7 +223,170 @@ static uint32_t parse_until_pad_ready(const uint8_t **p, uint32_t *left)
     return st;
 }
 
-/** Pad-at-a-time assembler without Tropic: plaintext encrypt, record decrypt. */
+static void pattern_keystream(uint8_t *out, uint16_t len, uint16_t slot)
+{
+    uint16_t i;
+
+    for (i = 0U; i < len; i++) {
+        out[i] = (uint8_t)(((uint32_t)slot * 31u) + (uint32_t)i);
+    }
+}
+
+static void pattern_plaintext(uint8_t *out, uint16_t len, uint32_t off)
+{
+    uint16_t i;
+
+    for (i = 0U; i < len; i++) {
+        out[i] = (uint8_t)(0xA5u ^ (uint8_t)((off + (uint32_t)i) & 0xFFu));
+    }
+}
+
+/** Fill @p n_pads encrypt-half slots, then XOR a 100 KiB message pad-by-pad. */
+static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
+                             const uint8_t pk[SE_TROPIC_MLKEM_PK_LEN])
+{
+    static uint8_t pad[SE_TROPIC_RMEM_PLAIN_MAX];
+    static uint8_t image[SE_TROPIC_RMEM_BLOB_MAX];
+    uint8_t kem_ct[SE_TROPIC_KEM_CT_LEN];
+    uint8_t ss[SE_TROPIC_MLKEM_SS_LEN];
+    uint8_t fill_id[SE_NV_FILL_ID_LEN];
+    uint8_t nonce[SE_TROPIC_RMEM_NONCE_LEN];
+    uint8_t hdr[1u + SE_TROPIC_PIN_SIZE_MAX + 4u];
+    uint8_t pt[SE_TROPIC_RMEM_PLAIN_MAX];
+    uint16_t image_len;
+    uint16_t plain_max;
+    uint16_t slot;
+    uint32_t n_need;
+    uint32_t left_before = 0U;
+    uint32_t left_after = 0U;
+    uint32_t hdr_len = 0U;
+    uint32_t st;
+    uint32_t off = 0U;
+    uint32_t cursor_before = 0U;
+    uint32_t cursor_after = 0U;
+    uint16_t n_pads_u16;
+    lt_ret_t ret;
+    int i;
+
+    printf("--- I: 100 KiB encrypt ---\n");
+    plain_max = se_tropic_get_rmem_slot_plaintext_max_size(h);
+    TEST_ASSERT(plain_max > 16U, "plain_max for 100 KiB");
+    n_need = (LONG_MSG_LEN + (uint32_t)plain_max - 1U) / (uint32_t)plain_max;
+    TEST_ASSERT(n_need > 1U, "100 KiB spans multiple pads");
+    TEST_ASSERT(n_need <= (uint32_t)SE_TROPIC_PAD_HALF, "100 KiB fits encrypt half");
+    n_pads_u16 = (uint16_t)n_need;
+
+    ret = sae_encapsulate(pk, kem_ct, ss);
+    TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate 100 KiB");
+    ret = se_tropic_kem_ct_write(h, kem_ct);
+    TEST_ASSERT_EQ(ret, LT_OK, "kem_ct write 100 KiB");
+    ret = se_tropic_qkd_arm_halves(h, 1U);
+    TEST_ASSERT_EQ(ret, LT_OK, "arm encrypt-first half");
+    ret = se_nv_get_fill_id(fill_id);
+    TEST_ASSERT_EQ(ret, LT_OK, "fill_id after 100 KiB kem_ct");
+
+    for (slot = 0U; slot < n_pads_u16; slot++) {
+        pattern_keystream(pad, plain_max, slot);
+        for (i = 0; i < (int)SE_TROPIC_RMEM_NONCE_LEN; i++) {
+            nonce[i] = (uint8_t)(0xD0u + (uint8_t)i);
+        }
+        nonce[0] = (uint8_t)slot;
+        nonce[1] = (uint8_t)(slot >> 8);
+        image_len = sizeof(image);
+        ret = seal_pad_pending(ss, fill_id, slot, pad, plain_max, nonce, image, &image_len);
+        TEST_ASSERT_EQ(ret, LT_OK, "seal 100 KiB pad");
+        ret = se_tropic_qkd_store(h, slot, image, image_len);
+        TEST_ASSERT_EQ(ret, LT_OK, "store 100 KiB pad");
+    }
+
+    ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_before);
+    TEST_ASSERT_EQ(ret, LT_OK, "remaining before 100 KiB");
+    TEST_ASSERT(left_before >= LONG_MSG_LEN, "half covers 100 KiB");
+
+    hdr[hdr_len++] = pin_len;
+    (void)memcpy(hdr + hdr_len, pin, pin_len);
+    hdr_len += (uint32_t)pin_len;
+    se_append_u32le(hdr, &hdr_len, LONG_MSG_LEN);
+    secure_otp_reset();
+    st = parse_request_in_chunks(hdr, hdr_len, 0U);
+    TEST_ASSERT_EQ(st, SECURE_OTP_REQ_COMPLETE, "100 KiB header complete");
+    TEST_ASSERT_EQ(secure_otp_encrypt_msg_len(), LONG_MSG_LEN, "100 KiB msg_len");
+    TEST_ASSERT(secure_otp_request_pin(NULL) != NULL, "100 KiB pin ptr");
+
+    /* Quota is decided from PIN+msg_len, before any plaintext or pad erase. */
+    ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, SE_NV_OTP_ENCRYPT, LONG_MSG_LEN, 0U);
+    TEST_ASSERT_EQ(ret, LT_OK, "100 KiB xor open");
+    TEST_ASSERT_EQ(se_tropic_otp_xor_pads_needed(), n_need, "100 KiB pad count");
+    secure_otp_encrypt_begin_plaintext(plain_max, LONG_MSG_LEN);
+
+    while (off < LONG_MSG_LEN) {
+        uint32_t consumed = 0U;
+        uint16_t take;
+        uint16_t logical = 0U;
+        uint8_t *chunk;
+        uint16_t got = 0U;
+
+        take = plain_max;
+        if (((uint32_t)take + off) > LONG_MSG_LEN) {
+            take = (uint16_t)(LONG_MSG_LEN - off);
+        }
+        pattern_plaintext(pt, take, off);
+        st = secure_otp_read_pad(pt, (uint32_t)take, &consumed);
+        TEST_ASSERT_EQ(st, SECURE_OTP_PAD_READY, "100 KiB pad ready");
+        TEST_ASSERT_EQ(consumed, (uint32_t)take, "100 KiB consumed pad");
+        chunk = secure_otp_pad_payload(&got);
+        TEST_ASSERT(chunk != NULL, "100 KiB chunk");
+        TEST_ASSERT_EQ(got, take, "100 KiB take");
+        ret = se_tropic_otp_xor_pad(h, NULL, chunk, take, chunk, &logical, NULL);
+        TEST_ASSERT_EQ(ret, LT_OK, "100 KiB xor pad");
+        TEST_ASSERT_EQ(logical, (uint16_t)(off / (uint32_t)plain_max), "100 KiB logical");
+        pattern_keystream(pad, take, logical);
+        for (i = 0; i < (int)take; i++) {
+            TEST_ASSERT(chunk[i] == (uint8_t)(pt[i] ^ pad[i]), "100 KiB xor byte");
+        }
+        secure_otp_pad_done();
+        off += (uint32_t)take;
+    }
+    TEST_ASSERT_EQ(se_tropic_otp_xor_bytes_left(), 0u, "100 KiB stream done");
+    se_tropic_otp_xor_close();
+
+    ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_after);
+    TEST_ASSERT_EQ(ret, LT_OK, "remaining after 100 KiB");
+    TEST_ASSERT_EQ(left_after, left_before - (n_need * (uint32_t)plain_max),
+                   "100 KiB burned whole pads");
+
+    ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor_before);
+    TEST_ASSERT_EQ(ret, LT_OK, "cursor after 100 KiB");
+    ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, SE_NV_OTP_ENCRYPT, left_after + 1U, 0U);
+    TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "oversize after 100 KiB refuses");
+    se_tropic_otp_xor_close();
+    ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor_after);
+    TEST_ASSERT_EQ(ret, LT_OK, "cursor after oversize refuse");
+    TEST_ASSERT_EQ(cursor_after, cursor_before, "refuse does not burn pads");
+
+    wc_ForceZero(ss, sizeof(ss));
+    wc_ForceZero(kem_ct, sizeof(kem_ct));
+    secure_otp_reset();
+    return 0;
+}
+
+static int advance_until_one_pad(lt_handle_t *h, se_nv_otp_dir_t dir, uint32_t one_pad_bytes)
+{
+    uint32_t left = 0U;
+    lt_ret_t ret;
+
+    while (1) {
+        ret = se_tropic_otp_bytes_remaining(h, dir, &left);
+        TEST_ASSERT_EQ(ret, LT_OK, "remaining while advancing");
+        if (left == one_pad_bytes) {
+            return 0;
+        }
+        TEST_ASSERT(left > one_pad_bytes, "still have pads to burn");
+        ret = se_tropic_qkd_cursor_advance(h, dir);
+        TEST_ASSERT_EQ(ret, LT_OK, "advance toward last pad");
+    }
+}
+
 static int test_otp_parse_pads(void)
 {
     const uint16_t plain_max = 8U;
@@ -333,6 +500,14 @@ static int test_otp_parse_pads(void)
         TEST_ASSERT(memcmp(joined, pt, sizeof(pt)) == 0, "pt joined");
     }
 
+    {
+        uint8_t err[8];
+
+        TEST_ASSERT(secure_otp_encode_err(SECURE_OTP_ERR_EXHAUSTED, err) == 0, "err encode");
+        TEST_ASSERT_EQ(se_u32le(err), 0u, "err n_pads");
+        TEST_ASSERT_EQ(se_u32le(err + 4U), SECURE_OTP_ERR_EXHAUSTED, "err code");
+    }
+
     off = 0U;
     TEST_ASSERT(secure_otp_encode_n_pads(3u, stream) == 0, "synth count");
     off = 4U;
@@ -436,6 +611,31 @@ int main(void)
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "init_session");
     h = se_tropic_handle();
     TEST_ASSERT(h != NULL, "handle");
+    {
+        uint32_t left_enc = 1U;
+        uint32_t left_dec = 1U;
+        uint32_t cap_enc = 0U;
+        uint32_t cap_dec = 0U;
+        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
+
+        if (pmax == 0U) {
+            pmax = SE_TROPIC_RMEM_PLAIN_MAX;
+        }
+        ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_ENCRYPT, &left_enc, &cap_enc);
+        TEST_ASSERT_EQ(ret, LT_OK, "encrypt quota before fill");
+        TEST_ASSERT_EQ(left_enc, 0U, "encrypt empty before fill");
+        TEST_ASSERT_EQ(cap_enc,
+                       ((uint32_t)SE_TROPIC_PAD_COUNT - (uint32_t)SE_TROPIC_PAD_HALF) *
+                           (uint32_t)pmax,
+                       "encrypt default half capacity");
+        ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_DECRYPT, &left_dec, &cap_dec);
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt quota before fill");
+        TEST_ASSERT_EQ(left_dec, 0U, "decrypt empty before fill");
+        TEST_ASSERT_EQ(cap_dec, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)pmax,
+                       "decrypt default half capacity");
+        st = se_tropic_otp_left_dump();
+        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "LEFT dump before fill is 0/capacity");
+    }
 
     ret = se_tropic_mlkem_provision(h, pin, sizeof(pin), NULL, 0U, pk, sizeof(pk), &pk_len);
     TEST_ASSERT_EQ(ret, LT_OK, "mlkem provision");
@@ -491,6 +691,21 @@ int main(void)
     ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor);
     TEST_ASSERT_EQ(ret, LT_OK, "cursor after ingest");
     TEST_ASSERT_EQ(cursor, (uint32_t)SE_TROPIC_PAD_FIRST, "cursor still first pad");
+    {
+        uint32_t left_enc = 0U;
+        uint32_t left_dec = 0U;
+        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
+
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_enc);
+        TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after ingest");
+        TEST_ASSERT_EQ(left_enc, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)pmax,
+                       "encrypt remaining is pads * pad size");
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left_dec);
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining after ingest");
+        TEST_ASSERT_EQ(left_dec,
+                       (uint32_t)(SE_TROPIC_PAD_COUNT - SE_TROPIC_PAD_HALF) * (uint32_t)pmax,
+                       "decrypt remaining is pads * pad size");
+    }
 
     for (i = 0; i < (int)sizeof(msg); i++) {
         msg[i] = (uint8_t)(0xE1u + (uint8_t)i);
@@ -696,6 +911,136 @@ int main(void)
         TEST_ASSERT_EQ(secure_otp_decrypt_pad_slot(), 1u, "decrypt slot 1");
         TEST_ASSERT_EQ(left, 0u, "decrypt stream exhausted");
         secure_otp_pad_done();
+    }
+
+    printf("--- I: decrypt skip-ahead ---\n");
+    for (i = 0; i < (int)SE_NV_FILL_ID_LEN; i++) {
+        pending_fill[i] = (uint8_t)(0x71u + (uint8_t)i);
+    }
+    se_nv_pending_fill_set(pending_fill);
+    ret = sae_encapsulate(pk, kem_ct, ss);
+    TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate skip");
+    for (i = 0; i < 32; i++) {
+        pad_a[i] = (uint8_t)(0xA0u + (uint8_t)i);
+        pad_b[i] = (uint8_t)(0xB0u + (uint8_t)i);
+    }
+    for (i = 0; i < (int)SE_TROPIC_RMEM_NONCE_LEN; i++) {
+        nonce0[i] = (uint8_t)(0xD1u + (uint8_t)i);
+        nonce1[i] = (uint8_t)(0xE1u + (uint8_t)i);
+    }
+    image_a_len = sizeof(image_a);
+    ret = seal_pad_pending(ss, pending_fill, 0u, pad_a, 32u, nonce0, image_a, &image_a_len);
+    TEST_ASSERT_EQ(ret, LT_OK, "seal skip pad0");
+    image_b_len = sizeof(image_b);
+    ret = seal_pad_pending(ss, pending_fill, 2u, pad_b, 32u, nonce1, image_b, &image_b_len);
+    TEST_ASSERT_EQ(ret, LT_OK, "seal skip pad2");
+
+    blob_len = 0U;
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 5u);
+    secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
+    {
+        const uint8_t half = 0U;
+
+        secure_lv_put_item(blob, &blob_len, &half, 1u);
+    }
+    secure_lv_put_item(blob, &blob_len, image_a, image_a_len);
+    secure_lv_put_item(blob, &blob_len, NULL, 0u);
+    secure_lv_put_item(blob, &blob_len, image_b, image_b_len);
+    TEST_ASSERT(blob_len <= (uint32_t)sizeof(blob), "skip LV fits");
+
+    secure_qkd_discard();
+    st = feed_qkd(blob, blob_len);
+    TEST_ASSERT_EQ(st, SECURE_QKD_OK, "skip ingest");
+    count = 0U;
+    st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
+    TEST_ASSERT_EQ(st, SECURE_QKD_OK, "skip FINISH");
+
+    {
+        uint16_t req_slot = 2U;
+        uint16_t logical = 0U;
+        uint16_t phys = 0U;
+        uint8_t ct[32];
+        uint32_t skip_cur = 0U;
+
+        for (i = 0; i < 32; i++) {
+            ct[i] = (uint8_t)(0x5Au ^ pad_b[i]);
+        }
+        /* Decrypt counts pads from n_pads; a leftover msg_len (TLS union) is ignored. */
+        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_DECRYPT, 17U, 1U);
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt skip open");
+        ret = se_tropic_otp_xor_pad(h, &req_slot, ct, 32u, ct, &logical, &phys);
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt skip xor");
+        TEST_ASSERT_EQ(logical, 2u, "skipped to logical 2");
+        TEST_ASSERT_EQ(phys, (uint16_t)(SE_TROPIC_PAD_FIRST + 2u), "skipped to physical 5");
+        for (i = 0; i < 32; i++) {
+            TEST_ASSERT(ct[i] == (uint8_t)(0x5Au), "skip xor recovered pad2");
+        }
+        se_tropic_otp_xor_close();
+        ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_DECRYPT, &skip_cur);
+        TEST_ASSERT_EQ(ret, LT_OK, "cursor after skip");
+        TEST_ASSERT_EQ(skip_cur, (uint32_t)(SE_TROPIC_PAD_FIRST + 3u), "cursor past burned pads");
+        {
+            uint8_t raw[SE_TROPIC_RMEM_BLOB_MAX];
+            uint16_t raw_len = 0U;
+
+            ret = lt_r_mem_data_read(h, SE_TROPIC_PAD_FIRST, raw, sizeof(raw), &raw_len);
+            TEST_ASSERT_EQ(ret, LT_L3_R_MEM_DATA_READ_SLOT_EMPTY, "skipped pad0 burned");
+        }
+    }
+
+    TEST_ASSERT(test_long_encrypt(h, pin, (uint8_t)sizeof(pin), pk) == 0, "100 KiB encrypt");
+
+    printf("--- I: almost-empty encrypt/decrypt refuse ---\n");
+    for (i = 0; i < (int)SE_NV_FILL_ID_LEN; i++) {
+        pending_fill[i] = (uint8_t)(0x81u + (uint8_t)i);
+    }
+    se_nv_pending_fill_set(pending_fill);
+    ret = sae_encapsulate(pk, kem_ct, ss);
+    TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate empty");
+    blob_len = 0U;
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 3u);
+    secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
+    {
+        const uint8_t half = 1U;
+
+        secure_lv_put_item(blob, &blob_len, &half, 1u);
+    }
+    secure_lv_put_item(blob, &blob_len, image0, image0_len);
+    secure_qkd_discard();
+    st = feed_qkd(blob, blob_len);
+    TEST_ASSERT_EQ(st, SECURE_QKD_OK, "empty ingest");
+    count = 0U;
+    st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
+    TEST_ASSERT_EQ(st, SECURE_QKD_OK, "empty FINISH");
+    {
+        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
+        uint32_t two = (uint32_t)pmax * 2U;
+        uint32_t left = 0U;
+
+        TEST_ASSERT(advance_until_one_pad(h, SE_NV_OTP_ENCRYPT, (uint32_t)pmax) == 0,
+                    "encrypt one pad left");
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left);
+        TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining one pad");
+        TEST_ASSERT_EQ(left, (uint32_t)pmax, "encrypt almost empty");
+        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_ENCRYPT, two, 0U);
+        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "encrypt over-consume");
+        se_tropic_otp_xor_close();
+        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_ENCRYPT,
+                                     LONG_MSG_LEN, 0U);
+        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "100 KiB over one pad refuses");
+        se_tropic_otp_xor_close();
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left);
+        TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after 100 KiB refuse");
+        TEST_ASSERT_EQ(left, (uint32_t)pmax, "refuse left the last pad");
+
+        TEST_ASSERT(advance_until_one_pad(h, SE_NV_OTP_DECRYPT, (uint32_t)pmax) == 0,
+                    "decrypt one pad left");
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left);
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining one pad");
+        TEST_ASSERT_EQ(left, (uint32_t)pmax, "decrypt almost empty");
+        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_DECRYPT, 0U, 2U);
+        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "decrypt over-consume");
+        se_tropic_otp_xor_close();
     }
 
     secure_otp_reset();

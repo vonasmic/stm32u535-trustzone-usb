@@ -385,6 +385,16 @@ int secure_otp_encode_n_pads(uint32_t n_pads, uint8_t out[4])
     return 0;
 }
 
+int secure_otp_encode_err(uint32_t err_code, uint8_t out[8])
+{
+    if ((out == NULL) || (err_code == 0U)) {
+        return -1;
+    }
+    se_put_u32le(out, 0U);
+    se_put_u32le(out + 4U, err_code);
+    return 0;
+}
+
 int secure_otp_encode_pad(uint8_t decrypt, uint16_t slot, const uint8_t *data, uint16_t len,
                           uint8_t *out, uint32_t cap, uint32_t *written)
 {

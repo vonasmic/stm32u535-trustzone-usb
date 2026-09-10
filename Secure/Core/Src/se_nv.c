@@ -674,6 +674,24 @@ lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
     return LT_OK;
 }
 
+lt_ret_t se_nv_clear_pairing(void)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    st.flags &= (uint32_t)~SE_NV_FLAG_PAIRING;
+    st.pairing_slot = 0U;
+    wc_ForceZero(st.pairing_priv, sizeof(st.pairing_priv));
+    wc_ForceZero(st.pairing_pub, sizeof(st.pairing_pub));
+    ret = se_nv_store(&st);
+    nv_state_wipe_secrets(&st);
+    return ret;
+}
+
 lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
                         const uint8_t hash48[SE_NV_PEER_HASH_LEN])
 {

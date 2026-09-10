@@ -5,6 +5,7 @@
 #include "test_harness.h"
 #include "se_tropic.h"
 #include "se_tropic_port.h"
+#include "se_nv.h"
 #include "libtropic_user_config.h"
 #include "libtropic.h"
 #include <string.h>
@@ -46,6 +47,9 @@ int main(void)
     lt_ret_t ret;
     uint8_t pub[32];
     uint8_t tropic_pub[32];
+    uint8_t priv[32];
+    uint8_t bad_pub[32];
+    uint8_t slot_out = 0U;
     const uint8_t slot = (uint8_t)TR01_PAIRING_KEY_SLOT_INDEX_1;
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -96,6 +100,27 @@ int main(void)
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "re-init uses new pairing key");
     st = se_tropic_ping();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "ping after re-init with new key");
+
+    st = se_tropic_pairing_export(&slot_out, priv, pub);
+    TEST_ASSERT_EQ(st, SE_TROPIC_OK, "export host pairing key");
+    TEST_ASSERT_EQ(slot_out, slot, "exported slot");
+
+    se_tropic_deinit_session();
+    se_tropic_pairing_unload();
+    TEST_ASSERT_EQ(se_nv_clear_pairing(), LT_OK, "simulate MCU rewrite (NV pairing gone)");
+
+    st = se_tropic_init_session();
+    TEST_ASSERT_EQ(st, SE_TROPIC_ERR, "rewrite without host backup cannot open L3");
+
+    (void)memcpy(bad_pub, pub, sizeof(bad_pub));
+    bad_pub[0] ^= 1U;
+    st = se_tropic_pairing_load(slot, priv, bad_pub);
+    TEST_ASSERT_EQ(st, SE_TROPIC_ERR, "load rejects pub that does not match priv");
+
+    st = se_tropic_pairing_load(slot, priv, pub);
+    TEST_ASSERT_EQ(st, SE_TROPIC_OK, "load after rewrite");
+    st = se_tropic_ping();
+    TEST_ASSERT_EQ(st, SE_TROPIC_OK, "ping after pairing LOAD");
     se_tropic_deinit_session();
 
     host_crypto_deinit();

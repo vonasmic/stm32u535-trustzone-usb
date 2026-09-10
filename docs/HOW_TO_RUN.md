@@ -14,7 +14,6 @@ Command syntax: **[COMMANDS.md](COMMANDS.md)**. Flash map and option bytes: **[H
 | [STM32CubeIDE](https://www.st.com/en/development-tools/stm32cubeide.html)         | Build Secure + NonSecure                                           |
 | [STM32CubeProgrammer](https://www.st.com/en/development-tools/stm32cubeprog.html) | Flash + option bytes (`STM32_Programmer_CLI`)                      |
 | ST-LINK (SWD)                                                                     | Connect to the MCU                                                 |
-| Python 3 + OpenSSL                                                                | Optional: `scripts/embed_fw_creds.py` helper for PEM→DER / SPKI / wrap payloads |
 
 
 Hardware: **TS13 DevKit** (or equivalent) with TROPIC01 on SPI1.
@@ -37,7 +36,7 @@ Irreversible Tropic sequences (`TROPIC PAIRING`, PIN setup) must pass host model
   - `Secure/Debug/SE_firmware_Secure.elf`
   - `NonSecure/Debug/SE_firmware_NonSecure.elf`
 
-Enroll TLS credentials **at runtime**: unsigned USB `OWNER SET` (owner + optional device cert/key + SAE CA), then `MANAGE` TLS for KEM INIT / CREDS / PEER. `scripts/embed_fw_creds.py` can still turn PEMs into DER/SPKI for those payloads; it is **not** a CubeIDE build step.
+Enroll TLS credentials **at runtime**: unsigned USB `OWNER SET` (owner + optional device cert/key + SAE CA), then `MANAGE` TLS for KEM INIT / CREDS / PEER.
 
 ### 2. Option bytes (once, or after the linker map changes)
 
@@ -69,7 +68,7 @@ Reset or power-cycle. USB re-enumerates as CDC ACM. Open the serial port (any te
 waiting PROVISION|ENCRYPT|DECRYPT|MANAGE <unix>
 ```
 
-USB command lines are at most **96** characters. `HELP` lists names.
+USB command lines are at most **160** characters. `HELP` lists names.
 
 ### 5. Tropic bring-up
 
@@ -106,7 +105,11 @@ TROPIC PAIRING 1
 TROPIC PAIRING 1 y
 ```
 
-That writes a new X25519 host key to pairing slot 1–3, stores the private half in MCU NV, and **invalidates factory SH0**.
+That writes a new X25519 host key to pairing slot 1–3, stores the private half in MCU NV, **invalidates factory SH0**, and prints `TROPIC PAIRING KEY` so the host can save `pairing.key`. After an MCU reflash:
+
+```text
+TROPIC PAIRING 1 LOAD <64-hex-priv> <64-hex-pub>
+```
 
 ### 7. First SAE session
 
@@ -149,7 +152,7 @@ DECRYPT <unix>
 | `DECRYPT`   | XOR-consume the **decrypt** pad half; SAE sends PIN + the encrypt reply.                                                                               |
 
 
-Pads are one-shot. When a half is exhausted, ENCRYPT/DECRYPT fail until a new `PROVISION`. Cursor mismatch or fill_id mismatch returns `DEVICE_TAMPERED`.
+Pads are one-shot. When a half is exhausted, ENCRYPT/DECRYPT reply with OTP error code **1** (`EXHAUSTED`) until a new `PROVISION`. Cursor mismatch or fill_id mismatch returns `DEVICE_TAMPERED`.
 
 There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end returns to command mode.
 
@@ -160,7 +163,7 @@ There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end retu
 ## Lab extras (not the SAE path)
 
 - `TROPIC SIGN <64-hex>` — ECDSA over a 32-byte hash.
-- `TROPIC PUB` / `TROPIC HASH` / `TROPIC KEM PUB` — dump P-256 pub, device `client_hash`, or ML-KEM public key.
+- `TROPIC PUB` / `CLIENT HASH` / `TROPIC KEM PUB` — dump P-256 pub, device `client_hash`, or ML-KEM public key.
 
 ---
 
@@ -171,7 +174,7 @@ There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end retu
 
 |                 | Silicon USB                        | `se_host` PTY + stdin                             |
 | --------------- | ---------------------------------- | ------------------------------------------------- |
-| Line limit      | 144 chars                          | 144 chars (same `tls_usb_io.c`)                   |
+| Line limit      | 160 chars                          | 160 chars (same `tls_usb_io.c`)                   |
 | Unix time       | Sets Secure RTC + TIME floor       | Same `se_time_set_unix`; wolfSSL uses process clock |
 | After TLS       | Stays armed until the session ends | Same firmware state machine                       |
 | Stop process    | Unplug / reset                     | Ctrl-C (unlinks `/tmp/ttyACM0`)                   |

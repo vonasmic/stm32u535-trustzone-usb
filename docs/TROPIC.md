@@ -79,7 +79,7 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 - Decrypt **rewind** (`target < cursor`) is refused.
 - Decrypt **skip-ahead**: intermediate pads are burned (`erase + advance`, no XOR).
-- Exhausted: Tropic mcounter `0xFFFFFFFE`; MCU cursor **510** (not a keystream slot).
+- Exhausted: Tropic mcounter `0xFFFFFFFE`; MCU cursor **510** (not a keystream slot). TLS replies with `SECURE_OTP_ERR_EXHAUSTED`. `TROPIC OTP LEFT` prints remaining/capacity kilobytes per half (`enc=A/B kb dec=C/D kb`). No fill yet is `0/capacity`, not an error.
 
 ---
 
@@ -99,7 +99,7 @@ Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
 | `time_floor` | u32 | Monotonic Unix floor for wolfSSL |
 | `flags` | u32 | `FILL`, `TIME`, `PAIRING`, `OTP` |
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |
-| `pairing_priv` / `pairing_pub` | 32 B × 2 | X25519 host key (**priv lives here**, not only on Tropic) |
+| `pairing_priv` / `pairing_pub` | 32 B × 2 | X25519 host key (also printed once on USB for `pairing.key`) |
 | `peer_count` | 1 B | Occupied peers, 0–8 |
 | 8 × `{name_len, name[16], hash[48]}` | 65 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
 
@@ -151,8 +151,11 @@ Until paired, L3 uses factory **SH0** (pairing slot 0). Firmware default is **en
 3. Persist priv+pub in MCU NV.
 4. `lt_pairing_key_invalidate(slot 0)` — factory SH0 **burned**.
 5. Re-open L3 with the new slot.
+6. Print `TROPIC PAIRING KEY n <priv-hex> <pub-hex>` on USB so UserApp can save `pairing.key` next to the device cert.
 
-Irreversible on silicon. The pairing **private** key is in MCU NV so a Tropic-only dump cannot impersonate L3 after SH0 is gone.
+Irreversible on silicon. The pairing **private** key is in MCU NV (and, after INIT, in the host `pairing.key`) so a Tropic-only dump cannot impersonate L3 after SH0 is gone.
+
+After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start from factory keys. `TROPIC PAIRING n LOAD <priv> <pub>` writes the saved key back into MCU NV (no Tropic write) and re-opens L3. UserApp INIT does this automatically when `pairing.key` is present.
 
 ---
 
@@ -197,7 +200,7 @@ Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`).
 
 | Function | Algorithm | Where |
 | --- | --- | --- |
-| L3 session | **X25519** | Tropic pairing slots; **priv in MCU NV** after pairing |
+| L3 session | **X25519** | Tropic pairing slots; **priv in MCU NV** after pairing (host `pairing.key` backup) |
 | Session attest | **P-256 ECDSA** | Tropic ECC slot 0 (classical) |
 | R-MEM at rest | AES-256-GCM | Ciphertext on Tropic |
 | M&D | HMAC-SHA256 + destroy | Tropic hardware slots + slot 511 |
@@ -211,7 +214,7 @@ Readable: ciphertext of kem_ct, pads, wrapped seed, PIN NVM, consumed M&D state,
 
 Not decryptable without MCU secrets: kem_ct and PIN NVM (`secure_dwk`), slot 510 (PIN + MCU salt), pads (ML-KEM SS **and** `fill_id` from MCU NV).
 
-Post-pairing L3: pairing **private** is in MCU NV; SH0 is invalid. Dump + broken X25519 still does not yield pad plaintext.
+Post-pairing L3: pairing **private** is in MCU NV (and the host `pairing.key` backup); SH0 is invalid. Dump + broken X25519 still does not yield pad plaintext.
 
 A PQC attacker who “gets Tropic contents” therefore gets **classical chip state and AES-GCM blobs**, not the QKD pads. Pads need ML-KEM sk (PIN path) plus MCU `fill_id`.
 

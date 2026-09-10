@@ -5,7 +5,9 @@
  * User PTY vs optional SAE PTY: user slave attached wins (lab "home PC").
  * That tears down the SAE symlink so a continuous usb-tcp bridge waits and
  * reopens when UserApp DISCONNECTs. Slave attach is DTR. Stdin is extra RX.
- * ASCII TX (DEBUG:<text>:DEBUG) is echoed to stdout; TLS types 0x14–0x17 are not.
+ * ASCII TX (DEBUG:<text>:DEBUG) is echoed to stdout. After the first TLS
+ * content type (0x14–0x17) the rest of the session is muted: USB TX is
+ * 64-byte slices, so later packets of the same record are not type bytes.
  */
 #define _GNU_SOURCE
 #include "host_pty.h"
@@ -45,6 +47,8 @@ static UX_SLAVE_CLASS_CDC_ACM s_cdc;
 static uint32_t s_write_off;
 static uint32_t s_tick_base_ms;
 static uint8_t s_tick_inited;
+/* 1 once a TLS record type is seen; stay quiet until a DEBUG: write. */
+static uint8_t s_echo_tls;
 
 static uint32_t monotonic_ms(void)
 {
@@ -96,6 +100,19 @@ static int slave_is_attached(int master)
     return 1;
 }
 
+static int tls_content_type(uint8_t b)
+{
+    return (b >= 0x14U && b <= 0x17U) ? 1 : 0;
+}
+
+static int starts_debug_frame(const uint8_t *buf, ULONG len)
+{
+    static const char prefix[] = "DEBUG:";
+    enum { n = (int)(sizeof(prefix) - 1U) };
+
+    return (len >= (ULONG)n && memcmp(buf, prefix, (size_t)n) == 0) ? 1 : 0;
+}
+
 static void echo_ascii_tx(const uint8_t *buf, ULONG len)
 {
     ULONG n = 0U;
@@ -103,10 +120,19 @@ static void echo_ascii_tx(const uint8_t *buf, ULONG len)
     if (buf == NULL || len == 0U) {
         return;
     }
-    /* Stop at the first TLS record byte so DEBUG:<text>:DEBUG plus a glued
-     * ClientHello is not dumped as binary on stdout. */
-    while (n < len && (buf[n] < 0x14U || buf[n] > 0x17U)) {
+    /* Per-packet 0x14–0x17 skip is not enough: NonSecure pops 64-byte TX
+     * slices, so ClientHello/appdata tails do not start with a content type. */
+    if (s_echo_tls != 0U) {
+        if (starts_debug_frame(buf, len) == 0) {
+            return;
+        }
+        s_echo_tls = 0U;
+    }
+    while (n < len && tls_content_type(buf[n]) == 0) {
         n++;
+    }
+    if (n < len) {
+        s_echo_tls = 1U;
     }
     if (n == 0U) {
         return;
@@ -234,6 +260,7 @@ int host_pty_open(const char *link_path, const char *sae_link_path)
     s_stdin_disabled = 0;
     s_activated = 0;
     s_write_off = 0U;
+    s_echo_tls = 0U;
     return 0;
 }
 
@@ -247,6 +274,7 @@ void host_pty_close(void)
     s_have_sae = 0;
     s_activated = 0;
     s_slave_attached = 0;
+    s_echo_tls = 0U;
 }
 
 void host_pty_poll_link(void)
@@ -307,6 +335,7 @@ void host_pty_poll_link(void)
         s_slave_attached = 0;
         s_io = NULL;
         s_write_off = 0U;
+        s_echo_tls = 0U;
         tls_usb_cdc_parameter_change(&s_cdc);
     }
     s_io = want;

@@ -283,7 +283,7 @@ int main(void)
     }
     ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
                                      SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
-    TEST_ASSERT(ret != LT_OK, "exhausted cursor refuses");
+    TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "exhausted cursor refuses");
 
     se_tropic_deinit_session();
     st = se_tropic_init_session();

@@ -47,6 +47,8 @@ int main(int argc, char **argv)
     int i;
 
     setvbuf(stdout, NULL, _IONBF, 0);
+    /* Model TCP send() and DEBUG fwrite: EPIPE instead of killing the pane. */
+    (void)signal(SIGPIPE, SIG_IGN);
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {

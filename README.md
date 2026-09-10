@@ -53,5 +53,5 @@ Secure_nsclib/           NSC headers shared with NonSecure
 libtropic/               Vendored TROPIC01 SDK (read-only)
 host/                    Model tests + se_host — see host/README.md
 docs/                    Firmware documentation (this index)
-scripts/embed_fw_creds.py  Host helper (PEM→DER); not a firmware compile step
+scripts/                 Host verify helpers (session uplink)
 ```

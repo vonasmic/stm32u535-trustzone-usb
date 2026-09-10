@@ -23,6 +23,16 @@ extern "C" {
 #define SECURE_OTP_REQ_COMPLETE 5u  /**< PIN + u32 length parsed — open XOR, then read pads. */
 #define SECURE_OTP_PAD_READY    6u  /**< One pad buffered — XOR, reply, secure_otp_pad_done(), continue. */
 
+/**
+ * TLS error reply (SE → UserApp) when n_pads is 0:
+ *   u32 n_pads LE = 0 | u32 err_code LE
+ */
+#define SECURE_OTP_ERR_EXHAUSTED 1u  /**< Remaining pads cannot cover the request. */
+#define SECURE_OTP_ERR_PARSE     3u  /**< Same meaning as SECURE_OTP_REQ_PARSE. */
+#define SECURE_OTP_ERR_PIN       4u  /**< PIN / ML-KEM open failed. */
+#define SECURE_OTP_ERR_TAMPERED  5u  /**< Cursor or fill_id mismatch. */
+#define SECURE_OTP_ERR_FAIL      255u
+
 void secure_otp_reset(void);
 void secure_otp_reset_pad(void);
 
@@ -51,6 +61,8 @@ void secure_otp_pad_done(void);
 /* --- reply (SE → SAE): encode one n_pads header or pad record into @p out --- */
 
 int secure_otp_encode_n_pads(uint32_t n_pads, uint8_t out[4]);
+/** Error reply: n_pads = 0, then @p err_code. */
+int secure_otp_encode_err(uint32_t err_code, uint8_t out[8]);
 /** @p decrypt: 0 encrypt (u16 slot | u16 len | data), else decrypt (u16 len | data). */
 int secure_otp_encode_pad(uint8_t decrypt, uint16_t slot, const uint8_t *data, uint16_t len,
                           uint8_t *out, uint32_t cap, uint32_t *written);

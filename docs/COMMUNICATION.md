@@ -16,7 +16,7 @@ Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT` / `MA
 
 NonSecure ([tls_usb_io.c](../NonSecure/Core/Src/tls_usb_io.c)):
 
-- **Command mode** — `\n`-terminated ASCII, max 144 chars.
+- **Command mode** — `\n`-terminated ASCII, max 160 chars.
 - After a successful `SECURE_TlsStart_nsc_call` or `SECURE_OwnerBegin_nsc_call`, **binary/TLS mode** — every RX byte goes to `SECURE_UsbRx_nsc_call`. Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`.
 - TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`). After each TLS RX packet, NonSecure runs `SECURE_UsbService_nsc_call` so wolfSSL drains the ring before the next push (a PQC ServerHello is ~12 KiB; dumping it first overflowed the old 8 KiB ring).
 - DTR off, CDC deactivate, overflow, or TLS end → command mode again.
@@ -81,7 +81,7 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 | Manage    | nothing until request     | unsigned cmd + optional PIN + body; replies status |
 
 
-Then TLS shutdown.
+Then bidirectional TLS shutdown: the device sends {@code close_notify} and stays in TLS until the SAE (or UserApp) close_notify arrives, then returns to ASCII. A 3 s timeout still disarms if the peer never closes.
 
 ---
 
@@ -145,8 +145,7 @@ leftmost 256 bits (FIPS 186-4 §6.4).
 
 The exporter is wiped after hashing. Device-cert SPKI bits are hashed, never sent: SAE
 recomputes them from the mTLS client certificate (raw `subjectPublicKey` BIT STRING payload,
-same as `embed_fw_creds.py`, not the whole SPKI DER). USB command `TROPIC HASH` prints this
-same `client_hash` (96 hex digits).
+not the whole SPKI DER). USB command `CLIENT HASH` prints this same `client_hash` (96 hex digits).
 
 Encrypt/decrypt modes send **no** uplink.
 
@@ -205,6 +204,15 @@ repeat n_pads times:
 
 Last chunk may be short. Cap is remaining pads in the **encrypt** half. `logical_slot` is SAE pad index (0 = first pad), not the physical R-MEM index.
 
+If the request needs more pads than remain, the device replies with an error instead of ciphertext:
+
+```text
+u32 n_pads LE = 0
+u32 err_code LE
+```
+
+UserApp prints `OTP error <code> (<name>): …`. Codes: **1** exhausted, **3** parse, **4** PIN, **5** tampered, **255** fail.
+
 ### DECRYPT (SAE → SE)
 
 ```text
@@ -224,9 +232,9 @@ repeat n_pads times:
   u8  chunk[chunk_len]
 ```
 
-No slot IDs. SAE concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short.
+No slot IDs. SAE concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
 
-OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`). There is no USB console OTP command.
+OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`). Remaining/capacity pad kilobytes (no PIN, no consume) are `TROPIC OTP LEFT` on the USB console.
 
 ### Parser codes
 
@@ -237,5 +245,7 @@ OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`). There is no USB console OTP
 | `SECURE_OTP_REQ_PARSE` (3)    | Bad framing; abort            |
 | `SECURE_OTP_REQ_COMPLETE` (5) | PIN + length parsed; open XOR |
 | `SECURE_OTP_PAD_READY` (6)    | One pad ready to XOR and send |
+
+Error reply `err_code` when `n_pads = 0`: `SECURE_OTP_ERR_EXHAUSTED` (1), `PARSE` (3), `PIN` (4), `TAMPERED` (5), `FAIL` (255).
 
 

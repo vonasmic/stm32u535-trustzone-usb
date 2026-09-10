@@ -21,6 +21,8 @@ uint32_t se_tropic_init_session(void);
 void se_tropic_deinit_session(void);
 uint32_t se_tropic_ping(void);
 uint32_t se_tropic_info(void);
+/** USB: remaining/capacity encrypt and decrypt pad kilobytes (no PIN). */
+uint32_t se_tropic_otp_left_dump(void);
 uint32_t se_tropic_pub_read(uint8_t *out_xy64);
 /** Empty slot: generate. Occupied: PIN required, then erase+generate. */
 uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len);
@@ -30,6 +32,19 @@ uint32_t se_tropic_session_sign(const uint8_t hash32[32], uint8_t rs64[64]);
 uint32_t se_create_pairing_key_to_tropic(uint8_t slot);
 /** Copy active host pairing public key (32 B). ERR if still on factory SH0. */
 uint32_t se_tropic_pairing_pub_read(uint8_t out32[32]);
+/**
+ * Copy the committed host pairing private+public (32 B each).
+ * ERR if still on factory SH0. @p slot / @p priv / @p pub may be NULL.
+ */
+uint32_t se_tropic_pairing_export(uint8_t *slot, uint8_t priv[32], uint8_t pub[32]);
+/**
+ * Restore a previously exported host pairing key into MCU NV (no Tropic write).
+ * Verifies X25519(pub) matches @p priv, then opens L3 with that slot.
+ * Use after an MCU reflash: Tropic already holds the pub and SH0 is burned.
+ */
+uint32_t se_tropic_pairing_load(uint8_t slot, const uint8_t priv[32], const uint8_t pub[32]);
+/** Drop the RAM pairing cache (does not touch NV). */
+void se_tropic_pairing_unload(void);
 uint32_t se_tropic_is_session_active(void);
 lt_handle_t *se_tropic_handle(void);
 

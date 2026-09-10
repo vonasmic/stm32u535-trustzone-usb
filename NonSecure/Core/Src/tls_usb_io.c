@@ -21,8 +21,8 @@ static uint8_t s_tls_armed;
 static uint8_t s_bin_armed;
 static uint8_t s_wait_time_logged;
 
-/* Longest ASCII line is TROPIC SIGN <64-hex> / HELP usage. */
-#define TLS_CMD_MAX 144
+/* Longest ASCII line is TROPIC PAIRING LOAD <slot> <64-hex-priv> <64-hex-pub>. */
+#define TLS_CMD_MAX 160
 
 static char s_cmd_line[TLS_CMD_MAX + 1];
 static uint8_t s_cmd_len;
@@ -117,21 +117,30 @@ static void cmd_tropic(char *args);
 static void cmd_tropic_ping(char *args);
 static void cmd_tropic_info(char *args);
 static void cmd_tropic_pub(char *args);
-static void cmd_tropic_hash(char *args);
 static void cmd_tropic_keygen(char *args);
 static void cmd_tropic_sign(char *args);
 static void cmd_tropic_kem(char *args);
 static void cmd_tropic_kem_init(char *args);
 static void cmd_tropic_kem_pub(char *args);
+static void cmd_tropic_otp(char *args);
+static void cmd_tropic_otp_left(char *args);
 static void cmd_tropic_pairing(char *args);
+static void hex_lower(char *dst, const uint8_t *src, uint32_t src_len);
+static void ns_memzero(void *p, uint32_t n);
 static void cmd_peer(char *args);
 static void cmd_peer_list(char *args);
 static void cmd_owner(char *args);
 static void cmd_owner_set(char *args);
+static void cmd_client(char *args);
+static void cmd_client_hash(char *args);
 
 static const host_cmd_t s_kem_cmds[] = {
     { "INIT",  "TROPIC KEM INIT", cmd_tropic_kem_init },
     { "PUB",   "TROPIC KEM PUB",  cmd_tropic_kem_pub },
+};
+
+static const host_cmd_t s_otp_cmds[] = {
+    { "LEFT", "TROPIC OTP LEFT", cmd_tropic_otp_left },
 };
 
 static const host_cmd_t s_peer_cmds[] = {
@@ -142,15 +151,19 @@ static const host_cmd_t s_owner_cmds[] = {
     { "SET", "OWNER SET", cmd_owner_set },
 };
 
+static const host_cmd_t s_client_cmds[] = {
+    { "HASH", "CLIENT HASH", cmd_client_hash },
+};
+
 static const host_cmd_t s_tropic_cmds[] = {
     { "PING",   "TROPIC PING",                         cmd_tropic_ping },
     { "INFO",   "TROPIC INFO",                         cmd_tropic_info },
     { "PUB",    "TROPIC PUB",                          cmd_tropic_pub },
-    { "HASH",   "TROPIC HASH",                         cmd_tropic_hash },
     { "KEYGEN", "TROPIC KEYGEN",                       cmd_tropic_keygen },
     { "SIGN",   "TROPIC SIGN <64-hex>",                cmd_tropic_sign },
     { "KEM",    NULL,                                  cmd_tropic_kem },
-    { "PAIRING", "TROPIC PAIRING <1-3> [y]",            cmd_tropic_pairing },
+    { "OTP",    NULL,                                  cmd_tropic_otp },
+    { "PAIRING", "TROPIC PAIRING <1-3> [y|LOAD <priv> <pub>]", cmd_tropic_pairing },
 };
 
 /* Add/remove rows here; HELP walks the same tables used for dispatch. */
@@ -163,6 +176,7 @@ static const host_cmd_t s_host_cmds[] = {
     { "MANAGE",    "MANAGE <unix>",                cmd_manage },
     { "PEER",      NULL,                           cmd_peer },
     { "OWNER",     NULL,                           cmd_owner },
+    { "CLIENT",    NULL,                           cmd_client },
     { "TROPIC",    NULL,                           cmd_tropic },
 };
 
@@ -236,8 +250,10 @@ static void cmd_help(char *args)
     cmd_list_usage(s_host_cmds, sizeof(s_host_cmds) / sizeof(s_host_cmds[0]));
     cmd_list_usage(s_owner_cmds, sizeof(s_owner_cmds) / sizeof(s_owner_cmds[0]));
     cmd_list_usage(s_peer_cmds, sizeof(s_peer_cmds) / sizeof(s_peer_cmds[0]));
+    cmd_list_usage(s_client_cmds, sizeof(s_client_cmds) / sizeof(s_client_cmds[0]));
     cmd_list_usage(s_tropic_cmds, sizeof(s_tropic_cmds) / sizeof(s_tropic_cmds[0]));
     cmd_list_usage(s_kem_cmds, sizeof(s_kem_cmds) / sizeof(s_kem_cmds[0]));
+    cmd_list_usage(s_otp_cmds, sizeof(s_otp_cmds) / sizeof(s_otp_cmds[0]));
 }
 
 static int parse_unix_arg(char *args, uint32_t *out)
@@ -319,12 +335,6 @@ static void cmd_tropic_pub(char *args)
     tropic_log_status(SECURE_TropicPub_nsc_call(xy64));
 }
 
-static void cmd_tropic_hash(char *args)
-{
-    (void)args;
-    tropic_log_status(SECURE_TropicClientHash_nsc_call());
-}
-
 static void cmd_tropic_keygen(char *args)
 {
     char *p = trim_line(args);
@@ -387,6 +397,26 @@ static void cmd_tropic_kem_pub(char *args)
     tropic_log_status(SECURE_TropicKemPub_nsc_call());
 }
 
+static void cmd_tropic_otp(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_otp_cmds, sizeof(s_otp_cmds) / sizeof(s_otp_cmds[0]), p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown TROPIC OTP command");
+        return;
+    }
+    cmd->handler(sub_args);
+}
+
+static void cmd_tropic_otp_left(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicOtpLeft_nsc_call());
+}
+
 static void pairing_warn(unsigned long slot)
 {
     char line[96];
@@ -404,8 +434,15 @@ static void cmd_tropic_pairing(char *args)
 {
     char *p = trim_line(args);
     char *end = NULL;
+    char *pub_hex = NULL;
     unsigned long slot;
     uint32_t do_confirm = 0U;
+    uint32_t do_load = 0U;
+    uint32_t st;
+    uint8_t key64[64];
+    char line[160];
+    char privhex[65];
+    char pubhex[65];
 
     slot = strtoul(p, &end, 10);
     if (end == p) {
@@ -416,20 +453,53 @@ static void cmd_tropic_pairing(char *args)
     if (*p != '\0') {
         if ((p[0] == 'y' || p[0] == 'Y') && p[1] == '\0') {
             do_confirm = 1U;
+        } else if (strncmp(p, "LOAD", 4) == 0) {
+            p = trim_line(p + 4);
+            pub_hex = strchr(p, ' ');
+            if ((strlen(p) != 129U) || (pub_hex != (p + 64)) || (pub_hex[0] != ' ') ||
+                (parse_hex_nibbles(p, 64U, key64, 32U) != 0) ||
+                (parse_hex_nibbles(trim_line(pub_hex), 64U, key64 + 32U, 32U) != 0)) {
+                ns_memzero(key64, sizeof(key64));
+                ns_log("bad TROPIC PAIRING LOAD key");
+                return;
+            }
+            do_load = 1U;
         } else {
-            ns_log("bad TROPIC PAIRING (expected y)");
+            ns_log("bad TROPIC PAIRING (expected y or LOAD)");
             return;
         }
     }
     if ((slot < 1UL) || (slot > 3UL)) {
+        ns_memzero(key64, sizeof(key64));
         ns_log("TROPIC PAIRING slot must be 1-3");
+        return;
+    }
+    if (do_load != 0U) {
+        st = SECURE_TropicPairingLoad_nsc_call((uint32_t)slot, key64);
+        ns_memzero(key64, sizeof(key64));
+        if (st == SECURE_TROPIC_OK) {
+            ns_log("TROPIC PAIRING LOAD ok");
+        }
+        tropic_log_status(st);
         return;
     }
     if (do_confirm == 0U) {
         pairing_warn(slot);
         return;
     }
-    tropic_log_status(SECURE_TropicPairing_nsc_call((uint32_t)slot));
+    (void)memset(key64, 0, sizeof(key64));
+    st = SECURE_TropicPairing_nsc_call((uint32_t)slot, key64);
+    if (st == SECURE_TROPIC_OK) {
+        hex_lower(privhex, key64, 32U);
+        hex_lower(pubhex, key64 + 32U, 32U);
+        (void)snprintf(line, sizeof(line), "TROPIC PAIRING KEY %lu %s %s", slot, privhex,
+                       pubhex);
+        ns_log(line);
+        ns_memzero(privhex, sizeof(privhex));
+        ns_memzero(pubhex, sizeof(pubhex));
+    }
+    ns_memzero(key64, sizeof(key64));
+    tropic_log_status(st);
 }
 
 static void hex_lower(char *dst, const uint8_t *src, uint32_t src_len)
@@ -442,6 +512,19 @@ static void hex_lower(char *dst, const uint8_t *src, uint32_t src_len)
         dst[(i * 2U) + 1U] = digits[src[i] & 0x0fu];
     }
     dst[src_len * 2U] = '\0';
+}
+
+static void ns_memzero(void *p, uint32_t n)
+{
+    volatile uint8_t *b = (volatile uint8_t *)p;
+    uint32_t i;
+
+    if (p == NULL) {
+        return;
+    }
+    for (i = 0U; i < n; i++) {
+        b[i] = 0U;
+    }
 }
 
 static void peer_log_status(uint32_t st, const char *ok_msg)
@@ -530,6 +613,26 @@ static void cmd_owner(char *args)
     cmd = cmd_lookup(s_owner_cmds, sizeof(s_owner_cmds) / sizeof(s_owner_cmds[0]), p, &sub_args);
     if (cmd == NULL) {
         ns_log("unknown OWNER command");
+        return;
+    }
+    cmd->handler(sub_args);
+}
+
+static void cmd_client_hash(char *args)
+{
+    (void)args;
+    tropic_log_status(SECURE_TropicClientHash_nsc_call());
+}
+
+static void cmd_client(char *args)
+{
+    char *p = trim_line(args);
+    char *sub_args = NULL;
+    const host_cmd_t *cmd;
+
+    cmd = cmd_lookup(s_client_cmds, sizeof(s_client_cmds) / sizeof(s_client_cmds[0]), p, &sub_args);
+    if (cmd == NULL) {
+        ns_log("unknown CLIENT command");
         return;
     }
     cmd->handler(sub_args);

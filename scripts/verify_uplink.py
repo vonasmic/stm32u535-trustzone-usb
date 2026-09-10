@@ -26,7 +26,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from embed_fw_creds import spki_raw_from_cert_der
 from secure_lv import (SECURE_LV_UPLINK_FIXED_ITEMS, SECURE_LV_UPLINK_VERSION, LvError,
                        LvVersionError, decode, encode)
 
@@ -39,6 +38,51 @@ HASH_LEN = 48
 
 class UplinkError(ValueError):
     pass
+
+
+def _read_asn1_len(data: bytes, pos: int) -> tuple[int, int]:
+    b = data[pos]
+    pos += 1
+    if b < 0x80:
+        return b, pos
+    n = b & 0x7F
+    val = 0
+    for _ in range(n):
+        val = (val << 8) | data[pos]
+        pos += 1
+    return val, pos
+
+
+def _der_children(body: bytes) -> list[tuple[int, bytes]]:
+    out = []
+    pos = 0
+    while pos < len(body):
+        tag = body[pos]
+        pos += 1
+        ln, pos = _read_asn1_len(body, pos)
+        if pos + ln > len(body):
+            break
+        out.append((tag, body[pos:pos + ln]))
+        pos += ln
+    return out
+
+
+def spki_raw_from_cert_der(der: bytes) -> bytes:
+    """Raw subjectPublicKey bits; must match firmware hashing of the device cert."""
+    certificate = _der_children(der)
+    if not certificate or certificate[0][0] != 0x30:
+        raise UplinkError("not a DER certificate")
+    tbs = _der_children(certificate[0][1])
+    if not tbs or tbs[0][0] != 0x30:
+        raise UplinkError("missing tbsCertificate")
+    for tag, body in _der_children(tbs[0][1]):
+        if tag != 0x30:
+            continue
+        fields = _der_children(body)
+        if len(fields) == 2 and fields[0][0] == 0x30 and fields[1][0] == 0x03:
+            bits = fields[1][1]
+            return bits[1:] if bits and bits[0] == 0x00 else bits
+    raise UplinkError("could not locate subjectPublicKeyInfo")
 
 
 def _verify_p256(pub_xy: bytes, digest: bytes, rs: bytes) -> None:

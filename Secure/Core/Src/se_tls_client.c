@@ -9,7 +9,9 @@
  * (n_pads then slot/chunk records). Encrypt/decrypt also pin the TLS peer
  * SPKI to the home-PC user key embedded from certs/user/user-cert.pem.
  * Encrypt replies include slots. Decrypt replies are n_pads then plaintext
- * chunks only. OTP-consume uses separate cursors.
+ * chunks only. OTP-consume uses separate cursors. After the last application
+ * record the client sends close_notify and stays in TLS until the peer's
+ * close_notify (SAE or UserApp), then returns to ASCII.
  */
 #include "se_tls_client.h"
 #include "se_tls_nsc.h"
@@ -37,6 +39,7 @@
 
 #define TLS_APP_READ_CHUNK 512
 #define TLS_WRITE_CHUNK    1024
+#define TLS_SHUTDOWN_MS    3000u
 
 extern int se_tls_embed_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx);
 extern int se_tls_embed_send(WOLFSSL *ssl, char *buf, int sz, void *ctx);
@@ -67,12 +70,14 @@ static uint8_t s_otp_tx[4u + 4u + SE_TROPIC_RMEM_PLAIN_MAX];
 static uint16_t s_otp_tx_len;
 static uint16_t s_otp_tx_off;
 static uint8_t s_otp_count_written;
+static uint8_t s_otp_err;
 static uint32_t s_qkd_key_bytes;
 static uint8_t s_tls_der[SE_CREDS_DER_MAX];
 static uint32_t s_manage_got;
 static uint8_t s_manage_tx[SE_MANAGE_RSP_MAX];
 static uint16_t s_manage_tx_len;
 static uint16_t s_manage_tx_off;
+static uint32_t s_shutdown_tick;
 
 static void tls_wipe_otp(void)
 {
@@ -82,6 +87,7 @@ static void tls_wipe_otp(void)
     s_otp_tx_len = 0U;
     s_otp_tx_off = 0U;
     s_otp_count_written = 0U;
+    s_otp_err = 0U;
     se_tropic_otp_xor_close();
     secure_otp_reset();
 }
@@ -112,6 +118,31 @@ static void tls_wipe_ssl(void)
     }
     wc_ForceZero(s_exporter, sizeof(s_exporter));
     tls_wipe_manage();
+    s_shutdown_tick = 0U;
+}
+
+static void tls_session_close(void)
+{
+    tls_wipe_ssl();
+    se_usb_tls_clear_rx();
+    se_usb_tls_end_tls_wire();
+    se_usb_debug_printf("TLS session ok");
+    tls_wipe_mode();
+    s_state = TLS_ST_IDLE;
+}
+
+static int tls_shutdown_peer_pending(int ret)
+{
+    int err;
+
+    if (ret == WOLFSSL_SUCCESS) {
+        return 0;
+    }
+    if (ret == WOLFSSL_SHUTDOWN_NOT_DONE) {
+        return 1;
+    }
+    err = wolfSSL_get_error(s_ssl, ret);
+    return (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) ? 1 : 0;
 }
 
 static int tls_setup_groups(WOLFSSL_CTX *ctx, WOLFSSL *ssl)
@@ -302,6 +333,7 @@ void se_tls_reset_quiet(void)
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
     se_time_clear_synced();
+    s_qkd_key_bytes = 0U;
     s_state = TLS_ST_IDLE;
 }
 
@@ -320,6 +352,7 @@ void se_tls_abort(void)
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
     se_time_clear_synced();
+    s_qkd_key_bytes = 0U;
     if (ssl_err == ASN_BEFORE_DATE_E) {
         se_usb_debug_printf("TLS failed: cert not yet valid (RTC)");
     } else if (ssl_err == ASN_AFTER_DATE_E) {
@@ -376,6 +409,33 @@ static int tls_write_se_ok(uint32_t key_bytes)
     return tls_write_all((const uint8_t *)line, (uint32_t)line_len, s_ssl);
 }
 
+static uint32_t tls_otp_map_open_err(lt_ret_t ret)
+{
+    if (ret == SE_TROPIC_LT_OTP_EXHAUSTED) {
+        return SECURE_OTP_ERR_EXHAUSTED;
+    }
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return SECURE_OTP_ERR_TAMPERED;
+    }
+    if (ret == LT_FAIL) {
+        return SECURE_OTP_ERR_PIN;
+    }
+    return SECURE_OTP_ERR_FAIL;
+}
+
+static int tls_otp_fail_reply(uint32_t err_code)
+{
+    if (secure_otp_encode_err(err_code, s_otp_tx) != 0) {
+        return -1;
+    }
+    s_otp_tx_len = 8U;
+    s_otp_tx_off = 0U;
+    s_otp_err = 1U;
+    s_otp_count_written = 1U;
+    se_usb_debug_printf("OTP err %lu", (unsigned long)err_code);
+    return 0;
+}
+
 static int tls_otp_flush_reply(void)
 {
     while (s_otp_tx_off < s_otp_tx_len) {
@@ -399,7 +459,7 @@ static int tls_otp_flush_reply(void)
     return 1;
 }
 
-static int tls_otp_open_xor(void)
+static int tls_otp_open_xor(uint32_t *err_out)
 {
     const uint8_t *pin;
     uint8_t pin_len = 0U;
@@ -410,6 +470,9 @@ static int tls_otp_open_xor(void)
     lt_ret_t ret;
     uint8_t decrypt;
 
+    if (err_out != NULL) {
+        *err_out = SECURE_OTP_ERR_FAIL;
+    }
     pin = secure_otp_request_pin(&pin_len);
     decrypt = (s_mode == SECURE_TLS_MODE_DECRYPT) ? 1U : 0U;
     msg_len = secure_otp_encrypt_msg_len();
@@ -427,9 +490,16 @@ static int tls_otp_open_xor(void)
         return -1;
     }
     dir = (decrypt != 0U) ? SE_NV_OTP_DECRYPT : SE_NV_OTP_ENCRYPT;
-    ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, dir, msg_len, n_pads);
+    if (decrypt != 0U) {
+        ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, dir, 0U, n_pads);
+    } else {
+        ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, dir, msg_len, 0U);
+    }
     if (ret != LT_OK) {
         se_tropic_otp_xor_close();
+        if (err_out != NULL) {
+            *err_out = tls_otp_map_open_err(ret);
+        }
         return -1;
     }
     if (decrypt != 0U) {
@@ -523,9 +593,13 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
             st = secure_otp_encrypt_parse_request(data, len, &consumed);
         }
         if (st == SECURE_OTP_REQ_COMPLETE) {
-            if (tls_otp_open_xor() != 0) {
-                se_usb_debug_printf("OTP open fail");
-                return -1;
+            uint32_t err = SECURE_OTP_ERR_FAIL;
+
+            if (tls_otp_open_xor(&err) != 0) {
+                if (tls_otp_fail_reply(err) != 0) {
+                    return -1;
+                }
+                return 1;
             }
             data += consumed;
             len -= consumed;
@@ -534,7 +608,10 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
             }
         } else if (st != SECURE_OTP_REQ_OK) {
             se_usb_debug_printf("OTP parse %lu", (unsigned long)st);
-            return -1;
+            if (tls_otp_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
+                return -1;
+            }
+            return 1;
         } else {
             return 0;
         }
@@ -547,12 +624,24 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
         }
         if (tls_otp_xor_into_reply() != 0) {
             se_usb_debug_printf("OTP xor fail");
+            if (s_otp_count_written == 0U) {
+                if (tls_otp_fail_reply(SECURE_OTP_ERR_FAIL) != 0) {
+                    return -1;
+                }
+                return 1;
+            }
             return -1;
         }
         return 1;
     }
     if (st != SECURE_OTP_REQ_OK) {
         se_usb_debug_printf("OTP parse %lu", (unsigned long)st);
+        if (s_otp_count_written == 0U) {
+            if (tls_otp_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
+                return -1;
+            }
+            return 1;
+        }
         return -1;
     }
     wc_ForceZero(s_otp_rest, s_otp_rest_len);
@@ -573,6 +662,13 @@ void se_tls_service_once(void)
         if (tls_start() != 0) {
             se_tls_abort();
         }
+        return;
+    }
+
+    if (s_state == TLS_ST_DONE) {
+        se_usb_debug_printf("TLS session ok");
+        tls_wipe_mode();
+        s_state = TLS_ST_IDLE;
         return;
     }
 
@@ -735,8 +831,8 @@ void se_tls_service_once(void)
         s_otp_tx_len = 0U;
         s_otp_tx_off = 0U;
         secure_otp_pad_done();
-        if (se_tropic_otp_xor_bytes_left() == 0U) {
-            se_usb_debug_printf("otp sent");
+        if ((s_otp_err != 0U) || (se_tropic_otp_xor_bytes_left() == 0U)) {
+            se_usb_debug_printf((s_otp_err != 0U) ? "otp err sent" : "otp sent");
             tls_wipe_otp();
             s_state = TLS_ST_SHUTDOWN;
         } else {
@@ -813,17 +909,31 @@ void se_tls_service_once(void)
         break;
 
     case TLS_ST_SHUTDOWN:
-        (void)wolfSSL_shutdown(s_ssl);
-        tls_wipe_ssl();
-        se_usb_tls_clear_rx();
-        se_usb_tls_end_tls_wire();
-        s_state = TLS_ST_DONE;
-        break;
+        if (s_ssl == NULL) {
+            tls_session_close();
+            break;
+        }
+        n = wolfSSL_shutdown(s_ssl);
+        if (n == WOLFSSL_SUCCESS) {
+            tls_session_close();
+            break;
+        }
+        if (tls_shutdown_peer_pending(n) != 0) {
+            uint32_t now = HAL_GetTick();
 
-    case TLS_ST_DONE:
-        se_usb_debug_printf("TLS session ok");
-        tls_wipe_mode();
-        s_state = TLS_ST_IDLE;
+            if (s_shutdown_tick == 0U) {
+                s_shutdown_tick = (now == 0U) ? 1U : now;
+                break;
+            }
+            if ((now - s_shutdown_tick) < TLS_SHUTDOWN_MS) {
+                break;
+            }
+            se_usb_debug_printf("TLS shutdown timeout");
+            tls_session_close();
+            break;
+        }
+        se_usb_debug_printf("TLS shutdown failed");
+        se_tls_abort();
         break;
 
     case TLS_ST_ERROR:
