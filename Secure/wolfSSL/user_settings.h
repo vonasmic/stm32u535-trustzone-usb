@@ -441,7 +441,12 @@ extern "C" {
 #if defined(WOLF_CONF_AESGCM) && WOLF_CONF_AESGCM >= 1
     #define HAVE_AESGCM
     #define HAVE_AES_DECRYPT
-    /* Full AES Te/Td T-tables (~8 KiB); trim elsewhere if Secure FLASH overflows. */
+    /* Bitsliced AES: S-box is a boolean circuit, no Te/Td/Tsbox in FLASH.
+     * HAVE_AES_ECB is required by wolfSSL for that implementation (GCM still
+     * uses CTR). 32-bit slices match Cortex-M; 64-bit would bloat Aes.bs_key. */
+    #define WC_AES_BITSLICED
+    #define HAVE_AES_ECB
+    #define WC_AES_BS_WORD_SIZE 32
     #if WOLF_CONF_AESGCM == 2
         #define GCM_TABLE_4BIT
     #else
@@ -567,12 +572,13 @@ extern "C" {
  * ========================================================================= */
 #define BENCH_EMBEDDED
 
-/* ML-KEM TLS client size cuts; ML-DSA uses full tables (no WOLFSSL_MLDSA_SMALL). */
 #define WOLFSSL_SHA3_SMALL
 #define WOLFSSL_MLKEM_SMALL
 #define WOLFSSL_MLKEM_NO_ENCAPSULATE
 #define USE_SLOW_SHA256           /* smaller SHA-256 (libtropic HMAC + TLS) */
 #define USE_SLOW_SHA512           /* SHA-384 via sha512.c — smaller, slower */
+#define WOLFSSL_NOSHA3_224
+#define WOLFSSL_NOSHA3_384
 
 /* =========================================================================
  * Debugging
@@ -621,7 +627,7 @@ extern "C" {
 #define NO_MAIN_DRIVER
 #define NO_DEV_RANDOM
 #define NO_OLD_TLS
-#define NO_SERVER
+#define NO_WOLFSSL_SERVER         /* TLS client only; NO_SERVER is a no-op */
 
 #define NO_DSA
 #define NO_RC4

@@ -44,7 +44,6 @@
 									<listOptionValue builtIn="false" value="STM32U535xx"/>
 									<listOptionValue builtIn="false" value="WOLFSSL_USER_SETTINGS"/>
 									<listOptionValue builtIn="false" value="LT_USE_WOLFCRYPT=1"/>
-									<listOptionValue builtIn="false" value="LT_HELPERS=1"/>
 									<listOptionValue builtIn="false" value="LT_SILICON_REV_ACAB=1"/>
 									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_DEBUG=0"/>
 									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_INFO=0"/>
@@ -143,7 +142,6 @@
 									<listOptionValue builtIn="false" value="STM32U535xx"/>
 									<listOptionValue builtIn="false" value="WOLFSSL_USER_SETTINGS"/>
 									<listOptionValue builtIn="false" value="LT_USE_WOLFCRYPT=1"/>
-									<listOptionValue builtIn="false" value="LT_HELPERS=1"/>
 									<listOptionValue builtIn="false" value="LT_SILICON_REV_ACAB=1"/>
 									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_DEBUG=0"/>
 									<listOptionValue builtIn="false" value="LT_LOG_ENABLE_INFO=0"/>

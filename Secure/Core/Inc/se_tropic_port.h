@@ -8,7 +8,6 @@
 #ifndef SE_TROPIC_PORT_H
 #define SE_TROPIC_PORT_H
 
-#include <stdarg.h>
 #include <stdint.h>
 #include "libtropic.h"
 
@@ -26,7 +25,14 @@ void se_tropic_port_hw_init(void);
 uint32_t se_tropic_port_attach(lt_handle_t *h);
 
 /** Debug line (USB CDC DEBUG on firmware and se_host). */
-void se_tropic_log(const char *fmt, ...);
+void se_tropic_log(const char *msg);
+
+/** Two CDC DEBUG lines: @p what, then lt_ret_verbose(@p ret). */
+static inline void se_tropic_log_fail(const char *what, lt_ret_t ret)
+{
+    se_tropic_log(what);
+    se_tropic_log(lt_ret_verbose(ret));
+}
 
 /** Hex-dump @p data via se_tropic_log (optional @p label line first). */
 void se_tropic_log_hex(const char *label, const uint8_t *data, uint32_t len);

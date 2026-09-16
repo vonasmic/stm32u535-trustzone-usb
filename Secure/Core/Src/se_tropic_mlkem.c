@@ -291,7 +291,7 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
 
     ret = se_tropic_mlkem_provision(h, pin, pin_len, add, add_len, pk, sizeof(pk), &pk_len);
     if (ret != LT_OK) {
-        se_tropic_log("KEM INIT fail %s", lt_ret_verbose(ret));
+        se_tropic_log_fail("KEM INIT fail", ret);
         return SE_TROPIC_ERR;
     }
 

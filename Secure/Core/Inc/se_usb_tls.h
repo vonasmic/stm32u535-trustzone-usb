@@ -52,7 +52,7 @@ int se_usb_tls_rx_take(uint8_t *out, uint32_t max);
 uint8_t se_usb_tls_rx_overflow(void);
 
 /** Queue a framed DEBUG status line on the CDC TX ring for the host bridge. */
-void se_usb_debug_printf(const char *fmt, ...);
+void se_usb_debug_puts(const char *msg);
 
 void se_usb_tls_service_once(void);
 

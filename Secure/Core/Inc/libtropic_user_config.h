@@ -7,7 +7,6 @@
  */
 
 #define LT_USE_WOLFCRYPT              1
-#define LT_HELPERS                    1
 #define LT_SILICON_REV_ACAB           1
 
 #define LT_LOG_ENABLE_DEBUG           0

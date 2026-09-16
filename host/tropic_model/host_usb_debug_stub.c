@@ -1,22 +1,17 @@
 /**
  * @file    host_usb_debug_stub.c
- * @brief   stdout stand-in for se_usb_debug_printf (A–J tests; not se_host)
+ * @brief   stdout stand-in for se_usb_debug_puts (A–J tests; not se_host)
  */
 #include "se_usb_tls.h"
-#include <stdarg.h>
 #include <stdio.h>
 
-void se_usb_debug_printf(const char *fmt, ...)
+void se_usb_debug_puts(const char *msg)
 {
-    va_list ap;
-
-    if (fmt == NULL) {
+    if (msg == NULL) {
         return;
     }
-    va_start(ap, fmt);
-    (void)vfprintf(stdout, fmt, ap);
-    va_end(ap);
-    fputc('\n', stdout);
+    (void)fputs(msg, stdout);
+    (void)fputc('\n', stdout);
     (void)fflush(stdout);
 }
 

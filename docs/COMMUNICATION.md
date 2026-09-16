@@ -79,7 +79,7 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 
 | Mode      | Peer | Device sends              | Device reads                            |
 | --------- | ---- | ------------------------- | --------------------------------------- |
-| Provision | SAE  | LV **uplink v4**          | LV **downlink v2** (QKD ingest)         |
+| Provision | SAE  | LV **uplink v4**, then `SE_OK\n` | LV **downlink v2** (QKD ingest)         |
 | Encrypt   | USER | nothing until USER request | PIN + plaintext; replies OTP ciphertext |
 | Decrypt   | USER | nothing until USER request | PIN + encrypt reply; replies plaintext  |
 | Manage    | USER | nothing until request     | unsigned cmd + optional PIN + body; replies status |

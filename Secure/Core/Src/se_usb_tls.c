@@ -6,8 +6,6 @@
 #include "se_tls_client.h"
 #include "se_time.h"
 #include "wolfssl/ssl.h"
-#include <stdarg.h>
-#include <stdio.h>
 #include <string.h>
 
 static SeUsbRxRing s_rx;
@@ -196,7 +194,7 @@ int se_usb_tls_tx_pop(uint8_t *out, uint32_t max, uint32_t *out_len)
     return tx_read(out, max, out_len);
 }
 
-void se_usb_debug_printf(const char *fmt, ...)
+void se_usb_debug_puts(const char *msg)
 {
     /* "DEBUG: " + body + ":DEBUG" + CRLF */
     static const char prefix[] = SE_USB_DEBUG_PREFIX " ";
@@ -206,35 +204,32 @@ void se_usb_debug_printf(const char *fmt, ...)
         CRLF_LEN = 2
     };
     char buf[192];
-    va_list ap;
-    int body;
-    int total;
+    uint32_t mlen;
     uint32_t room;
+    uint32_t total;
 
     /* Never interleave ASCII with TLS records on the same CDC pipe. */
-    if ((s_active == 0U) || (fmt == NULL) || (s_tls_wire != 0U)) {
+    if ((s_active == 0U) || (msg == NULL) || (s_tls_wire != 0U)) {
         return;
     }
 
+    mlen = (uint32_t)strlen(msg);
     room = (uint32_t)sizeof(buf) - (uint32_t)PREFIX_LEN - (uint32_t)SUFFIX_LEN
            - (uint32_t)CRLF_LEN;
+    if (mlen > room) {
+        mlen = room;
+    }
     (void)memcpy(buf, prefix, (size_t)PREFIX_LEN);
-    va_start(ap, fmt);
-    body = vsnprintf(buf + PREFIX_LEN, (size_t)room, fmt, ap);
-    va_end(ap);
-    if (body < 0) {
-        return;
+    if (mlen > 0U) {
+        (void)memcpy(buf + PREFIX_LEN, msg, (size_t)mlen);
     }
-    if ((uint32_t)body >= room) {
-        body = (int)(room - 1U);
-    }
-    total = PREFIX_LEN + body;
+    total = (uint32_t)PREFIX_LEN + mlen;
     (void)memcpy(buf + total, SE_USB_DEBUG_SUFFIX, (size_t)SUFFIX_LEN);
-    total += SUFFIX_LEN;
+    total += (uint32_t)SUFFIX_LEN;
     buf[total++] = '\r';
     buf[total++] = '\n';
 
-    (void)tx_write((const uint8_t *)buf, (uint32_t)total);
+    (void)tx_write((const uint8_t *)buf, total);
 }
 
 int se_tls_embed_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx)
@@ -304,7 +299,7 @@ void se_usb_tls_service_once(void)
     if (s_rx.overflow != 0U) {
         se_tls_abort();
         link_reset_flags();
-        se_usb_debug_printf("RX overflow, abort");
+        se_usb_debug_puts("RX overflow, abort");
         return;
     }
     if ((s_active == 0U) || (s_dtr == 0U)) {

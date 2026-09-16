@@ -10,8 +10,6 @@
 #include "se_usb_tls.h"
 #include "se_nv.h"
 #include "main.h"
-#include <stdarg.h>
-#include <stdio.h>
 #include <string.h>
 #include "se_tropic_mlkem.h"
 #include "wolfssl/wolfcrypt/hmac.h"
@@ -64,18 +62,9 @@ uint32_t se_tropic_port_attach(lt_handle_t *h)
     return SE_TROPIC_OK;
 }
 
-void se_tropic_log(const char *fmt, ...)
+void se_tropic_log(const char *msg)
 {
-    char buf[160];
-    va_list ap;
-
-    if (fmt == NULL) {
-        return;
-    }
-    va_start(ap, fmt);
-    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    se_usb_debug_printf("%s", buf);
+    se_usb_debug_puts(msg);
 }
 
 lt_ret_t se_tropic_port_device_aead_key(uint8_t out[32])

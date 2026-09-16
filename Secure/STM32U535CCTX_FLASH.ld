@@ -78,8 +78,8 @@ SECTIONS
   } >FLASH
 
   /* SG veneers first on page 23, then string literals. Must appear before
-   * FLASH .rodata so *(.rodata*) does not claim .rodata.str1.*. Veneers are
-   * a few hundred bytes of 8 KB; the leftover absorbs ~2.5 KB FLASH overflow. */
+   * FLASH .rodata so *(.rodata*) does not claim them. -fdata-sections names
+   * literals .rodata.<fn>.str1.1, not .rodata.str1.1. */
   .gnu.sgstubs :
   {
     . = ALIGN(4);
@@ -90,6 +90,7 @@ SECTIONS
   .rodata_str (READONLY) :
   {
     *(.rodata.str1.*)
+    *(.rodata.*str1.*)
   } >FLASH_NSC
 
   /* Constant data into "FLASH" Rom type memory */

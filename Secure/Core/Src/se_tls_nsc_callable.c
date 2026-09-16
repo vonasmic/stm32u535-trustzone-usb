@@ -194,10 +194,9 @@ uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
         return SECURE_USB_ERR;
     }
     if (rc > 0) {
-        se_usb_debug_printf("TIME behind floor, using unix=%lu",
-                            (unsigned long)se_time_unix_now());
+        se_usb_debug_puts("TIME behind floor");
     } else {
-        se_usb_debug_printf("time synced unix=%lu", (unsigned long)unix_utc);
+        se_usb_debug_puts("time synced");
     }
 
     return (se_tls_arm(mode) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
@@ -211,10 +210,9 @@ uint32_t CSME_NSE_API SECURE_SetUnixTime_nsc_call(uint32_t unix_utc)
         return SECURE_USB_ERR;
     }
     if (rc > 0) {
-        se_usb_debug_printf("TIME behind floor, using unix=%lu",
-                            (unsigned long)se_time_unix_now());
+        se_usb_debug_puts("TIME behind floor");
     } else {
-        se_usb_debug_printf("time synced unix=%lu", (unsigned long)unix_utc);
+        se_usb_debug_puts("time synced");
     }
     return SECURE_USB_OK;
 }
@@ -238,7 +236,7 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len)
     }
     (void)memcpy(tmp, ns_msg, len);
     tmp[len] = '\0';
-    se_usb_debug_printf("%s", tmp);
+    se_usb_debug_puts(tmp);
     return SECURE_USB_OK;
 }
 

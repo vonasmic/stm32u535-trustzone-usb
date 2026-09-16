@@ -91,7 +91,7 @@ static int session_sign(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     int rc = -1;
 
     if (se_tropic_pub_read(ecc_pub) != SE_TROPIC_OK) {
-        se_usb_debug_printf("session: TROPIC pub read failed");
+        se_usb_debug_puts("session: TROPIC pub read failed");
         return -1;
     }
 
@@ -118,7 +118,7 @@ static int session_sign(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
      * the digest (FIPS 186-4 §6.4), so handing it the first 32 bytes of the SHA-384
      * value is what a verifier computes from the full 48 bytes. */
     if (se_tropic_sign_hash(to_sign, sig) != SE_TROPIC_OK) {
-        se_usb_debug_printf("session: TROPIC sign failed");
+        se_usb_debug_puts("session: TROPIC sign failed");
         wc_ForceZero(to_sign, sizeof(to_sign));
         return -1;
     }
@@ -155,13 +155,13 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
 
     if (se_tropic_mlkem_pub_read(s_uplink_kem_pk, sizeof(s_uplink_kem_pk), &kem_pk_len) !=
         SE_TROPIC_OK) {
-        se_usb_debug_printf("session: ML-KEM pk not available");
+        se_usb_debug_puts("session: ML-KEM pk not available");
         return -1;
     }
 
     ret = se_tropic_port_nv_random(pending_fill, sizeof(pending_fill));
     if (ret != LT_OK) {
-        se_usb_debug_printf("session: pending fill_id RNG failed");
+        se_usb_debug_puts("session: pending fill_id RNG failed");
         return -1;
     }
     se_nv_pending_fill_set(pending_fill);
@@ -173,7 +173,7 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     peer_n = 0U;
     ret = se_nv_peer_count(&peer_n);
     if (ret != LT_OK) {
-        se_usb_debug_printf("session: peer list NV failed");
+        se_usb_debug_puts("session: peer list NV failed");
         return -1;
     }
     count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * (unsigned int)peer_n));
@@ -218,6 +218,6 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
 
 uint32_t se_tropic_cert_dump(void)
 {
-    se_usb_debug_printf("TROPIC cert not used (identity key lives on TROPIC01)");
+    se_usb_debug_puts("TROPIC cert not used (identity key lives on TROPIC01)");
     return 1U;
 }

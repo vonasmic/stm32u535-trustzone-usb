@@ -15,7 +15,6 @@
 #include "libtropic_port_posix_tcp.h"
 #include <arpa/inet.h>
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,19 +62,10 @@ uint32_t se_tropic_port_attach(lt_handle_t *h)
     return SE_TROPIC_OK;
 }
 
-void se_tropic_log(const char *fmt, ...)
+void se_tropic_log(const char *msg)
 {
-    char buf[160];
-    va_list ap;
-
-    if (fmt == NULL) {
-        return;
-    }
-    va_start(ap, fmt);
-    (void)vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
     /* Same CDC DEBUG path as se_tropic_port_stm32.c so UserApp transact sees a reply. */
-    se_usb_debug_printf("%s", buf);
+    se_usb_debug_puts(msg);
 }
 
 lt_ret_t se_tropic_port_device_aead_key(uint8_t out[32])

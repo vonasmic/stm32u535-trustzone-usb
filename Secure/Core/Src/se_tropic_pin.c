@@ -163,7 +163,7 @@ lt_ret_t se_tropic_pin_setup(lt_handle_t *h, const uint8_t *master_secret, const
 
     ret = lt_r_mem_data_erase(h, SE_TROPIC_PIN_NVM_SLOT);
     if (ret != LT_OK) {
-        se_tropic_log("PIN setup erase fail %s", lt_ret_verbose(ret));
+        se_tropic_log_fail("PIN setup erase fail", ret);
         goto exit;
     }
 
@@ -187,12 +187,12 @@ lt_ret_t se_tropic_pin_setup(lt_handle_t *h, const uint8_t *master_secret, const
 
         ret = pin_md_pair(h, (unsigned)i, u, ignore, ignore);
         if (ret != LT_OK) {
-            se_tropic_log("PIN setup M&D init fail %s", lt_ret_verbose(ret));
+            se_tropic_log_fail("PIN setup M&D init fail", ret);
             goto exit;
         }
         ret = pin_md_pair(h, (unsigned)i, v, s1, s2);
         if (ret != LT_OK) {
-            se_tropic_log("PIN setup M&D wrap fail %s", lt_ret_verbose(ret));
+            se_tropic_log_fail("PIN setup M&D wrap fail", ret);
             goto exit;
         }
         ret = pin_md_pair(h, (unsigned)i, u, ignore, ignore);
@@ -209,7 +209,7 @@ lt_ret_t se_tropic_pin_setup(lt_handle_t *h, const uint8_t *master_secret, const
     ret = se_tropic_encrypt_and_write_mcu_sealed_to_rmem(h, SE_TROPIC_PIN_NVM_SLOT,
                                                          (const uint8_t *)&nvm, sizeof(nvm));
     if (ret != LT_OK) {
-        se_tropic_log("PIN setup NVM write fail %s", lt_ret_verbose(ret));
+        se_tropic_log_fail("PIN setup NVM write fail", ret);
         goto exit;
     }
 
@@ -263,7 +263,7 @@ lt_ret_t se_tropic_pin_check(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
     ret = se_tropic_read_and_decrypt_mcu_sealed_from_rmem(h, SE_TROPIC_PIN_NVM_SLOT, (uint8_t *)&nvm,
                                                           sizeof(nvm), &read_size);
     if (ret != LT_OK) {
-        se_tropic_log("PIN check NVM read fail %s", lt_ret_verbose(ret));
+        se_tropic_log_fail("PIN check NVM read fail", ret);
         goto exit;
     }
     if (read_size < sizeof(nvm)) {
@@ -291,7 +291,7 @@ lt_ret_t se_tropic_pin_check(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
 
     ret = pin_md_pair(h, (unsigned)nvm.i, v_, s1, s2);
     if (ret != LT_OK) {
-        se_tropic_log("PIN check M&D fail %s", lt_ret_verbose(ret));
+        se_tropic_log_fail("PIN check M&D fail", ret);
         goto exit;
     }
 

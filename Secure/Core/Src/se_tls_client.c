@@ -30,7 +30,6 @@
 #include "se_manage.h"
 #include "se_le.h"
 #include "main.h"
-#include <stdio.h>
 #include <string.h>
 #include "wolfssl/ssl.h"
 #include "wolfssl/wolfcrypt/error-crypt.h"
@@ -71,7 +70,6 @@ static uint16_t s_otp_tx_len;
 static uint16_t s_otp_tx_off;
 static uint8_t s_otp_count_written;
 static uint8_t s_otp_err;
-static uint32_t s_qkd_key_bytes;
 static uint8_t s_tls_der[SE_CREDS_DER_MAX];
 static uint32_t s_manage_got;
 static uint8_t s_manage_tx[SE_MANAGE_RSP_MAX];
@@ -126,7 +124,7 @@ static void tls_session_close(void)
     tls_wipe_ssl();
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
-    se_usb_debug_printf("TLS session ok");
+    se_usb_debug_puts("TLS session ok");
     tls_wipe_mode();
     s_state = TLS_ST_IDLE;
 }
@@ -197,12 +195,12 @@ static int tls_load_provision_ca(WOLFSSL_CTX *ctx)
     uint16_t ca_len = 0U;
 
     if (se_creds_get_sae_ca(s_tls_der, &ca_len, (uint16_t)sizeof(s_tls_der)) != LT_OK) {
-        se_usb_debug_printf("TLS setup: no SAE CA");
+        se_usb_debug_puts("TLS setup: no SAE CA");
         return -1;
     }
     if (wolfSSL_CTX_load_verify_buffer(ctx, s_tls_der, (long)ca_len, WOLFSSL_FILETYPE_ASN1) !=
         WOLFSSL_SUCCESS) {
-        se_usb_debug_printf("TLS setup: load CA failed");
+        se_usb_debug_puts("TLS setup: load CA failed");
         return -1;
     }
     return 0;
@@ -214,7 +212,7 @@ static int tls_start(void)
 
     s_ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
     if (s_ctx == NULL) {
-        se_usb_debug_printf("TLS setup: CTX_new failed");
+        se_usb_debug_puts("TLS setup: CTX_new failed");
         return -1;
     }
 
@@ -235,16 +233,16 @@ static int tls_start(void)
     if (s_mode != SECURE_TLS_MODE_MANAGE) {
         if (se_creds_get_device_cert(s_tls_der, &cert_len, (uint16_t)sizeof(s_tls_der)) !=
             LT_OK) {
-            se_usb_debug_printf("TLS setup: no device cert");
+            se_usb_debug_puts("TLS setup: no device cert");
             return -1;
         }
         if (wolfSSL_CTX_use_certificate_buffer(s_ctx, s_tls_der, (long)cert_len,
                                                WOLFSSL_FILETYPE_ASN1) != WOLFSSL_SUCCESS) {
-            se_usb_debug_printf("TLS setup: load client cert failed");
+            se_usb_debug_puts("TLS setup: load client cert failed");
             return -1;
         }
         if (secure_client_key_load(s_ctx) != 0) {
-            se_usb_debug_printf("TLS setup: load key failed");
+            se_usb_debug_puts("TLS setup: load key failed");
             return -1;
         }
     }
@@ -254,7 +252,7 @@ static int tls_start(void)
 
     s_ssl = wolfSSL_new(s_ctx);
     if (s_ssl == NULL) {
-        se_usb_debug_printf("TLS setup: SSL_new failed");
+        se_usb_debug_puts("TLS setup: SSL_new failed");
         return -1;
     }
 
@@ -262,7 +260,7 @@ static int tls_start(void)
     wolfSSL_SetIOWriteCtx(s_ssl, NULL);
 
     if (tls_setup_groups(s_ctx, s_ssl) != 0) {
-        se_usb_debug_printf("TLS setup: ML-KEM group failed");
+        se_usb_debug_puts("TLS setup: ML-KEM group failed");
         return -1;
     }
 
@@ -272,7 +270,7 @@ static int tls_start(void)
     }
 
     s_state = TLS_ST_HANDSHAKE;
-    se_usb_debug_printf("sending handshake");
+    se_usb_debug_puts("sending handshake");
     return 0;
 }
 
@@ -293,16 +291,16 @@ int se_tls_arm(uint32_t mode)
     }
     if (mode == SECURE_TLS_MODE_PROVISION) {
         if (se_ready_provision() == 0) {
-            se_usb_debug_printf("TLS refused: not provision-ready");
+            se_usb_debug_puts("TLS refused: not provision-ready");
             return -1;
         }
     } else if (mode == SECURE_TLS_MODE_MANAGE) {
         if (se_nv_has_owner() == 0) {
-            se_usb_debug_printf("TLS refused: no owner");
+            se_usb_debug_puts("TLS refused: no owner");
             return -1;
         }
     } else if (se_ready_encrypt() == 0) {
-        se_usb_debug_printf("TLS refused: not encrypt-ready");
+        se_usb_debug_puts("TLS refused: not encrypt-ready");
         return -1;
     }
     s_mode = mode;
@@ -333,7 +331,6 @@ void se_tls_reset_quiet(void)
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
     se_time_clear_synced();
-    s_qkd_key_bytes = 0U;
     s_state = TLS_ST_IDLE;
 }
 
@@ -352,61 +349,52 @@ void se_tls_abort(void)
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
     se_time_clear_synced();
-    s_qkd_key_bytes = 0U;
     if (ssl_err == ASN_BEFORE_DATE_E) {
-        se_usb_debug_printf("TLS failed: cert not yet valid (RTC)");
+        se_usb_debug_puts("TLS failed: cert not yet valid (RTC)");
     } else if (ssl_err == ASN_AFTER_DATE_E) {
-        se_usb_debug_printf("TLS failed: cert expired (RTC)");
+        se_usb_debug_puts("TLS failed: cert expired (RTC)");
     } else if (ssl_err == VERSION_ERROR) {
-        se_usb_debug_printf("TLS failed: record version (restart bridge)");
+        se_usb_debug_puts("TLS failed: record version (restart bridge)");
     } else if (ssl_err == 0) {
-        se_usb_debug_printf("TLS aborted");
+        se_usb_debug_puts("TLS aborted");
     } else {
-        se_usb_debug_printf("TLS failed err=%d", ssl_err);
+        se_usb_debug_puts("TLS failed");
     }
     /* Stay idle until NonSecure sends PROVISION / ENCRYPT / DECRYPT <unix>. */
     s_state = TLS_ST_IDLE;
 }
 
-static void tls_qkd_status(uint32_t st, uint32_t key_bytes)
+static void tls_qkd_status(uint32_t st)
 {
     if (st == SECURE_QKD_WRONG_VERSION) {
-        se_usb_debug_printf("downlink schema mismatch (expect v%u)",
-                            (unsigned)SECURE_LV_DOWNLINK_VERSION);
+        se_usb_debug_puts("downlink schema mismatch");
     } else if (st == SECURE_QKD_STORE) {
-        se_usb_debug_printf("downlink Tropic store failed");
+        se_usb_debug_puts("downlink Tropic store failed");
     } else if (st != SECURE_QKD_OK) {
-        se_usb_debug_printf("downlink parse error %lu", (unsigned long)st);
+        se_usb_debug_puts("downlink parse error");
     } else {
-        se_usb_debug_printf("response done, qkd=%lu", (unsigned long)key_bytes);
+        se_usb_debug_puts("response done");
     }
 }
 
 static int tls_qkd_finish_and_ack(void)
 {
-    uint32_t st;
     uint32_t key_bytes = 0U;
+    uint32_t st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &key_bytes);
 
-    st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &key_bytes);
-    tls_qkd_status(st, key_bytes);
+    tls_qkd_status(st);
     if (st != SECURE_QKD_OK) {
         return -1;
     }
-    s_qkd_key_bytes = key_bytes;
     s_state = TLS_ST_WRITE_ACK;
     return 0;
 }
 
-static int tls_write_se_ok(uint32_t key_bytes)
+static int tls_write_se_ok(void)
 {
-    char line[24];
-    int line_len;
+    static const char line[] = "SE_OK\n";
 
-    line_len = snprintf(line, sizeof(line), "SE_OK %lu\n", (unsigned long)key_bytes);
-    if ((line_len <= 0) || ((size_t)line_len >= sizeof(line))) {
-        return -1;
-    }
-    return tls_write_all((const uint8_t *)line, (uint32_t)line_len, s_ssl);
+    return tls_write_all((const uint8_t *)line, sizeof(line) - 1U, s_ssl);
 }
 
 static uint32_t tls_otp_map_open_err(lt_ret_t ret)
@@ -432,7 +420,7 @@ static int tls_otp_fail_reply(uint32_t err_code)
     s_otp_tx_off = 0U;
     s_otp_err = 1U;
     s_otp_count_written = 1U;
-    se_usb_debug_printf("OTP err %lu", (unsigned long)err_code);
+    se_usb_debug_puts("OTP err");
     return 0;
 }
 
@@ -607,7 +595,7 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
                 return 0;
             }
         } else if (st != SECURE_OTP_REQ_OK) {
-            se_usb_debug_printf("OTP parse %lu", (unsigned long)st);
+            se_usb_debug_puts("OTP parse");
             if (tls_otp_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
                 return -1;
             }
@@ -623,7 +611,7 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
             return -1;
         }
         if (tls_otp_xor_into_reply() != 0) {
-            se_usb_debug_printf("OTP xor fail");
+            se_usb_debug_puts("OTP xor fail");
             if (s_otp_count_written == 0U) {
                 if (tls_otp_fail_reply(SECURE_OTP_ERR_FAIL) != 0) {
                     return -1;
@@ -635,7 +623,7 @@ static int tls_otp_parse_incoming(const uint8_t *data, uint32_t len)
         return 1;
     }
     if (st != SECURE_OTP_REQ_OK) {
-        se_usb_debug_printf("OTP parse %lu", (unsigned long)st);
+        se_usb_debug_puts("OTP parse");
         if (s_otp_count_written == 0U) {
             if (tls_otp_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
                 return -1;
@@ -658,7 +646,7 @@ void se_tls_service_once(void)
         if ((s_mode == 0U) || (se_time_is_synced() == 0)) {
             return;
         }
-        se_usb_debug_printf("trying TLS");
+        se_usb_debug_puts("trying TLS");
         if (tls_start() != 0) {
             se_tls_abort();
         }
@@ -666,7 +654,7 @@ void se_tls_service_once(void)
     }
 
     if (s_state == TLS_ST_DONE) {
-        se_usb_debug_printf("TLS session ok");
+        se_usb_debug_puts("TLS session ok");
         tls_wipe_mode();
         s_state = TLS_ST_IDLE;
         return;
@@ -683,11 +671,11 @@ void se_tls_service_once(void)
         if (n == WOLFSSL_SUCCESS) {
             if (s_mode == SECURE_TLS_MODE_MANAGE) {
                 if (se_tls_user_pin_peer(s_ssl) != 0) {
-                    se_usb_debug_printf("TLS failed: user key mismatch");
+                    se_usb_debug_puts("TLS failed: user key mismatch");
                     se_tls_abort();
                     break;
                 }
-                se_usb_debug_printf("handshake ok, manage");
+                se_usb_debug_puts("handshake ok, manage");
                 s_manage_got = 0U;
                 s_state = TLS_ST_READ_MANAGE;
                 break;
@@ -700,24 +688,24 @@ void se_tls_service_once(void)
                                                               NULL, 0, 0);
                 wolfSSL_FreeArrays(s_ssl);
                 if (exported != WOLFSSL_SUCCESS) {
-                    se_usb_debug_printf("TLS exporter failed");
+                    se_usb_debug_puts("TLS exporter failed");
                     se_tls_abort();
                     break;
                 }
             }
             if ((s_mode != SECURE_TLS_MODE_PROVISION) && (se_tls_user_pin_peer(s_ssl) != 0)) {
-                se_usb_debug_printf("TLS failed: user key mismatch");
+                se_usb_debug_puts("TLS failed: user key mismatch");
                 se_tls_abort();
                 break;
             }
             if (s_mode == SECURE_TLS_MODE_PROVISION) {
-                se_usb_debug_printf("handshake ok, provision");
+                se_usb_debug_puts("handshake ok, provision");
                 s_state = TLS_ST_WRITE_UPLINK;
             } else if (s_mode == SECURE_TLS_MODE_ENCRYPT) {
-                se_usb_debug_printf("handshake ok, waiting plaintext");
+                se_usb_debug_puts("handshake ok, waiting plaintext");
                 s_state = TLS_ST_READ_OTP;
             } else if (s_mode == SECURE_TLS_MODE_DECRYPT) {
-                se_usb_debug_printf("handshake ok, waiting ciphertext");
+                se_usb_debug_puts("handshake ok, waiting ciphertext");
                 s_state = TLS_ST_READ_OTP;
             } else {
                 se_tls_abort();
@@ -735,7 +723,7 @@ void se_tls_service_once(void)
             se_tls_abort();
             break;
         }
-        se_usb_debug_printf("report sent, reading response");
+        se_usb_debug_puts("report sent, reading response");
         s_state = TLS_ST_READ_RESP;
         break;
 
@@ -748,7 +736,7 @@ void se_tls_service_once(void)
             st = secure_qkd_ingest(chunk, (uint32_t)n, SECURE_QKD_INGEST_CHUNK, NULL);
             wc_ForceZero(chunk, sizeof(chunk));
             if (st != SECURE_QKD_OK) {
-                tls_qkd_status(st, 0U);
+                tls_qkd_status(st);
                 se_tls_abort();
                 break;
             }
@@ -770,11 +758,11 @@ void se_tls_service_once(void)
     }
 
     case TLS_ST_WRITE_ACK:
-        if (tls_write_se_ok(s_qkd_key_bytes) != 0) {
+        if (tls_write_se_ok() != 0) {
             se_tls_abort();
             break;
         }
-        se_usb_debug_printf("SE_OK sent");
+        se_usb_debug_puts("SE_OK sent");
         s_state = TLS_ST_SHUTDOWN;
         break;
 
@@ -812,7 +800,7 @@ void se_tls_service_once(void)
         if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
             break;
         }
-        se_usb_debug_printf("OTP closed early");
+        se_usb_debug_puts("OTP closed early");
         se_tls_abort();
         break;
     }
@@ -832,7 +820,7 @@ void se_tls_service_once(void)
         s_otp_tx_off = 0U;
         secure_otp_pad_done();
         if ((s_otp_err != 0U) || (se_tropic_otp_xor_bytes_left() == 0U)) {
-            se_usb_debug_printf((s_otp_err != 0U) ? "otp err sent" : "otp sent");
+            se_usb_debug_puts((s_otp_err != 0U) ? "otp err sent" : "otp sent");
             tls_wipe_otp();
             s_state = TLS_ST_SHUTDOWN;
         } else {
@@ -928,11 +916,11 @@ void se_tls_service_once(void)
             if ((now - s_shutdown_tick) < TLS_SHUTDOWN_MS) {
                 break;
             }
-            se_usb_debug_printf("TLS shutdown timeout");
+            se_usb_debug_puts("TLS shutdown timeout");
             tls_session_close();
             break;
         }
-        se_usb_debug_printf("TLS shutdown failed");
+        se_usb_debug_puts("TLS shutdown failed");
         se_tls_abort();
         break;
 
