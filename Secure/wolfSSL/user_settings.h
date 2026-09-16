@@ -442,8 +442,8 @@ extern "C" {
     #define HAVE_AESGCM
     #define HAVE_AES_DECRYPT
     /* Bitsliced AES: S-box is a boolean circuit, no Te/Td/Tsbox in FLASH.
-     * HAVE_AES_ECB is required by wolfSSL for that implementation (GCM still
-     * uses CTR). 32-bit slices match Cortex-M; 64-bit would bloat Aes.bs_key. */
+     * HAVE_AES_ECB is required by wolfSSL for that implementation.
+     * 32-bit slices match Cortex-M; 64-bit would bloat Aes.bs_key. */
     #define WC_AES_BITSLICED
     #define HAVE_AES_ECB
     #define WC_AES_BS_WORD_SIZE 32
@@ -627,7 +627,7 @@ extern "C" {
 #define NO_MAIN_DRIVER
 #define NO_DEV_RANDOM
 #define NO_OLD_TLS
-#define NO_WOLFSSL_SERVER         /* TLS client only; NO_SERVER is a no-op */
+#define NO_WOLFSSL_SERVER         /* TLS client only;
 
 #define NO_DSA
 #define NO_RC4
