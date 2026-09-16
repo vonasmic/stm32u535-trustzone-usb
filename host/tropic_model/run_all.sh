@@ -1,31 +1,43 @@
 #!/usr/bin/env bash
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FW_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LIBTROPIC="$FW_ROOT/libtropic"
+MODEL_SCRIPTS="$LIBTROPIC/scripts/tropic01_model"
+BUILD_DIR="$SCRIPT_DIR/build"
+TESTS=(
+  test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter
+  test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers
+  test_k_owner brick_lab
+)
+
 # Kill leftovers without killing this script
-for p in model_server model_runner test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab se_host; do
+for p in model_server model_runner "${TESTS[@]}" se_host; do
   pkill -x "$p" 2>/dev/null || true
 done
 sleep 1
 
-cd /mnt/c/tmp/SE_firmware/host/tropic_model/build
-make -j$(nproc) test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab se_host
+cd "$BUILD_DIR"
+make -j"$(nproc)" "${TESTS[@]}" se_host
 EC_BUILD=$?
 if [ "$EC_BUILD" -ne 0 ]; then
   echo "BUILD FAIL"
   exit 1
 fi
 
-source /mnt/c/tmp/SE_firmware/libtropic/scripts/tropic01_model/.venv/bin/activate
+# shellcheck disable=SC1091
+source "$MODEL_SCRIPTS/.venv/bin/activate"
 export PATH="$VIRTUAL_ENV/bin:$PATH"
-export PYTHONPATH=/mnt/c/tmp/SE_firmware/libtropic/scripts/tropic01_model
+export PYTHONPATH="$MODEL_SCRIPTS"
 mkdir -p run_logs
 
-# Increase wait in model_runner by wrapping: start model ourselves for reliability
 run_one() {
   local name="$1"
   echo "======== $name ========"
   pkill -x model_server 2>/dev/null || true
   sleep 1
-  model_server tcp -c /mnt/c/tmp/SE_firmware/libtropic/scripts/tropic01_model/model_cfg.yml \
+  model_server tcp -c "$MODEL_SCRIPTS/model_cfg.yml" \
     >/tmp/model_${name}.log 2>&1 &
   local mpid=$!
   local up=0
@@ -55,7 +67,7 @@ run_one() {
 }
 
 FAIL=0
-for t in test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers brick_lab; do
+for t in "${TESTS[@]}"; do
   run_one "$t" || FAIL=1
 done
 

@@ -9,10 +9,10 @@
  * Three keys/AAD bindings share that frame and are easy to confuse:
  *
  *   MCU sealed      Key from secure_dwk (MCU flash); binding = slot LE.
- *                   PIN NVM and other data bound to this board only.
+ *                   PIN NVM / kem_ct bound to this board only. MCU NV is not AEAD'd.
  *   kem_ct          Same device key; binding = slot LE || fill_id.
  *                   Bound to the MCU-committed fill so old ct cannot decrypt.
- *   KEK wrap        Key from HKDF(PIN final_key, salt=device key);
+ *   KEK wrap        Key from HKDF-SHA384(PIN final_key 48 B, salt=device key);
  *                   binding = seed label. Slot 510. Needs the PIN path and this MCU.
  *   Pad image       Per-slot key from ML-KEM ss + fill_id; binding = slot LE.
  *                   SAE-sealed keystream pads; write via qkd_store, decrypt on consume.
@@ -86,7 +86,7 @@ extern "C" {
 #define SE_TROPIC_RMEM_SLOT_MAX      475u
 #define SE_TROPIC_RMEM_PLAIN_MAX     (SE_TROPIC_RMEM_SLOT_MAX - SE_TROPIC_RMEM_OVERHEAD)
 #define SE_TROPIC_RMEM_BLOB_MAX      SE_TROPIC_RMEM_SLOT_MAX
-/** Generic storage-blob plaintext (MCU NV v6 is one FLASH page minus dwk+overhead). */
+/** Generic storage-blob plaintext cap (R-MEM slot minus AEAD overhead). */
 #define SE_TROPIC_STORAGE_PLAIN_MAX  8096u
 
 /**

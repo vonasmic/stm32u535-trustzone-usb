@@ -41,7 +41,7 @@ extern "C" {
  * and the "No cipher suites available" guard, even though KE is ML-KEM. */
 #define WOLF_CONF_ECC             1
 #define WOLF_CONF_DH              0
-#define WOLF_CONF_AESGCM          1
+#define WOLF_CONF_AESGCM          2   /* GCM_TABLE_4BIT: no GMULT bit-branch on H */
 #define WOLF_CONF_AESCBC          0
 #define WOLF_CONF_CHAPOLY         0
 #define WOLF_CONF_EDCURVE25519    0
@@ -441,8 +441,7 @@ extern "C" {
 #if defined(WOLF_CONF_AESGCM) && WOLF_CONF_AESGCM >= 1
     #define HAVE_AESGCM
     #define HAVE_AES_DECRYPT
-    /* Te/Td T-tables are 8KB; S-box only fits Secure FLASH with libtropic. */
-    #define WOLFSSL_AES_SMALL_TABLES
+    /* Full AES Te/Td T-tables (~8 KiB); trim elsewhere if Secure FLASH overflows. */
     #if WOLF_CONF_AESGCM == 2
         #define GCM_TABLE_4BIT
     #else
@@ -568,11 +567,10 @@ extern "C" {
  * ========================================================================= */
 #define BENCH_EMBEDDED
 
-/* ML-KEM / ML-DSA TLS client size cuts */
+/* ML-KEM TLS client size cuts; ML-DSA uses full tables (no WOLFSSL_MLDSA_SMALL). */
 #define WOLFSSL_SHA3_SMALL
 #define WOLFSSL_MLKEM_SMALL
 #define WOLFSSL_MLKEM_NO_ENCAPSULATE
-#define WOLFSSL_MLDSA_SMALL
 #define USE_SLOW_SHA256           /* smaller SHA-256 (libtropic HMAC + TLS) */
 #define USE_SLOW_SHA512           /* SHA-384 via sha512.c — smaller, slower */
 

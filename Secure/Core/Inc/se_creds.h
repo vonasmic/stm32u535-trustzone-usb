@@ -22,7 +22,7 @@ lt_ret_t se_creds_set_sae_ca(const uint8_t *der, uint16_t len);
 lt_ret_t se_creds_set_device_cert(const uint8_t *der, uint16_t len);
 lt_ret_t se_creds_clear(void);
 
-/** 1 when owner + device cert + wrapped SK are present (ENCRYPT/DECRYPT). */
+/** 1 when owner + device cert + device SK are present (ENCRYPT/DECRYPT). */
 int se_ready_encrypt(void);
 /** 1 when encrypt-ready plus SAE CA and ML-KEM pk (PROVISION). */
 int se_ready_provision(void);

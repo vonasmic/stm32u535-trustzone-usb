@@ -21,7 +21,7 @@ TROPIC01 has 512 user-data slots. This project:
 | **0–2** | ML-KEM-768 `kem_ct` (1088 B split across 3 slots) | MCU device AEAD; AAD = `slot LE \|\| fill_id` |
 | **3–255** | Keystream pads, logical **0–252** (253 pads) | `HKDF-SHA384(ML-KEM ss, "SE_tropic_qkd_slot_v3" \|\| fill_id \|\| slot_index LE)`; blob binding = `slot_index LE` |
 | **256–509** | Keystream pads, logical **253–506** (254 pads) | Same. Odd pad count → extra pad in the second half |
-| **510** | ML-KEM generation **seed** (64 B, KEK-wrapped) | `KEK = HKDF-SHA384(PIN final_key, salt=device_key, "SE_tropic_mlkem_kek_v3")`; AAD = `"SE_tropic_mlkem_seed_v2"` |
+| **510** | ML-KEM generation **seed** (64 B, KEK-wrapped) | `KEK = HKDF-SHA384(PIN final_key 48 B, salt=device_key, "SE_tropic_mlkem_kek_v4")`; AAD = `"SE_tropic_mlkem_seed_v2"` |
 | **511** | MAC-and-Destroy **PIN NVM** | MCU device AEAD; binding = `511 LE` |
 
 Constants: `SE_TROPIC_PAD_FIRST = 3`, `SE_TROPIC_PAD_COUNT = 507`, `SE_TROPIC_PAD_HALF = 253`, `SE_TROPIC_QKD_SLOT_LAST = 509`.
@@ -44,7 +44,7 @@ Overhead **29** bytes. Max slot **475** B (FW ≥ 2.0.0) → plaintext max **446
 | --- | --- | --- |
 | ECC P-256 | `TR01_ECC_SLOT_0` | Session uplink signature, `TROPIC SIGN` |
 | Pairing X25519 | 0 = factory **SH0**; **1–3** = host | L3 session keys |
-| MAC-and-Destroy | hardware slots `0 .. PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 8) |
+| MAC-and-Destroy | hardware slots `0 .. 2*PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 16 slots / 8 tries) |
 | Mcounters | index 0 = encrypt cursor, index 1 = decrypt | Mirror of MCU OTP pointers |
 
 ---
@@ -83,13 +83,15 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 ---
 
-## MCU NV (not duplicated in flash)
+## MCU NV (not duplicated in Tropic)
 
-One AES-256-GCM blob, **663** bytes (`29 + 634` plaintext), AAD `"SE_nv_v5"`. Erase-then-write on Secure flash **page 22** (`0x0C02C000`). Host model: 1024-byte RAM page.
+Plaintext record on Secure flash **page 22** (`0x0C02C000`). The page is **8 KB** (same size in the host RAM model). Bytes `[0,32)` are generate-once `secure_dwk` (Tropic AEAD / PIN pepper / pw hash only — **not** an NV seal). The record starts at offset 32 (`SE_NV_REC_OFF`).
 
-Load tries v5 first. If that MAC/length fails, it tries v4 (`29 + 506` plaintext, AAD `"SE_nv_v4"`, SHA-256 peer hashes), then v3 (`29 + 113` plaintext, AAD `"SE_nv_v3"`, no peers). Both older layouts copy fill/OTP/TIME/pairing and set `peer_count = 0`, so peers are re-added with `PEER ADD` after a hash-width change. The next store writes v5. Empty/erased page is still flags 0. Any other MAC/length error → `DEVICE_TAMPERED`.
+Magic `SENV` (`0x53454E56`) + version **7**. Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Sealed v3–v6 blobs are **not** migrated; re-enroll. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
 
-Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
+Reads copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. Writes erase the whole 8 KB page (RMW work buffer, then `ForceZero`).
+
+Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER sit at the end of the record.
 
 | Field | Size | Meaning |
 | --- | --- | --- |
@@ -99,9 +101,14 @@ Key: device AEAD from `HKDF-SHA384(secure_dwk, "SE_tropic_rmem_aes_v1")`.
 | `time_floor` | u32 | Monotonic Unix floor for wolfSSL |
 | `flags` | u32 | `FILL`, `TIME`, `PAIRING`, `OTP` |
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |
-| `pairing_priv` / `pairing_pub` | 32 B × 2 | X25519 host key (also printed once on USB for `pairing.key`) |
+| `pairing_pub` | 32 B | X25519 host public |
 | `peer_count` | 1 B | Occupied peers, 0–8 |
 | 8 × `{name_len, name[16], hash[48]}` | 65 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
+| `owner_len` + owner SPKI | u16 + 1312 B | Enrolled owner (`OWNER SET`) |
+| `mlkem_len` + ML-KEM pk | u16 + 1184 B | NV copy from `KEM INIT` |
+| `pw_hash` | 48 B | `SHA-384(secure_dwk \|\| password)` |
+| `pairing_priv` | 32 B | X25519 host private (also printed once on USB for `pairing.key`) |
+| `sk_len` + device SK DER | u16 + 3072 B | ML-DSA-44 PKCS#8/SEC1 (`CREDS DEVICE`); loaded only for mTLS |
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
 
@@ -111,30 +118,34 @@ Flags: `SE_NV_FLAG_FILL 0x1`, `TIME 0x2`, `PAIRING 0x4`, `OTP 0x8`.
 
 ## MAC-and-Destroy PIN
 
-Silicon: **8** rounds (`SE_TROPIC_PIN_ROUNDS`). Host model: **4** (`host_libtropic_config.h`). Chip maximum is 128; this firmware does not use the rest.
+Silicon: **8** tries (`SE_TROPIC_PIN_ROUNDS`) using **16** hardware M&D slots (`2i` and `2i+1` per try). Host model: **4** tries / 8 slots (`host_libtropic_config.h`). Chip maximum is 128; this firmware does not use the rest.
 
 PIN length **4–8** bytes.
 
+MCU KDF is **HMAC-SHA384**. Each try concatenates two independent 32-byte M&D outputs as a 64-byte HMAC key so the MAC is a 192-bit PQ primitive (NIST SHA-384). `master_secret`, wrap blocks `ci[]`, tag `t`, and `final_key` are 48 bytes.
+
 **Pepper** (MCU-only): `HKDF-SHA384(device_key, "SE_tropic_pin_pepper_v2")`. Tropic never sees it. `kdf_in = PIN || add || pepper`. Changing `secure_dwk` invalidates PIN NVM — re-run `KEM INIT`.
 
-NVM blob in slot **511** (MCU-sealed): remaining attempts `i`, wrapped `ci[]`, auth tag `t`.
+NVM blob in slot **511** (MCU-sealed): remaining attempts `i` (1 B), wrapped `ci[ROUNDS][48]`, auth tag `t` (48 B). Silicon size `1 + 8*48 + 48 = 433` B (fits FW ≥ 2.0.0 plaintext max 446).
 
 ### Setup (`MANAGE` KEM INIT)
 
 This is the **user** path to create the PIN and wrap the ML-KEM seed (slot 510). There is no factory PIN. USB `TROPIC KEM INIT` only prints `use MANAGE <unix>`. The unsigned MANAGE request carries the ASCII PIN and runs setup in one step:
 
-1. Random 32-byte `master_secret`.
-2. Init chip M&D slots `0 .. ROUNDS-1`.
-3. Store wrapped `ci` and tag `t` in slot 511.
-4. `final_key = HMAC(master_secret, "2")` → ML-KEM KEK input.
+1. Random 48-byte `master_secret`.
+2. Init chip M&D slot pairs `0&1, 2&3, …, 14&15` (host: `0&1 … 6&7`).
+3. For each try `i`: `S1,S2 = M&D(2i), M&D(2i+1)`; `K = S1||S2`; `ci[i] = master XOR HMAC-SHA384(K, kdf_in)`.
+4. Store wrapped `ci` and tag `t = HMAC-SHA384(master, 0x00)` in slot 511.
+5. `final_key = HMAC-SHA384(master, "2")` → ML-KEM KEK input (48 B).
 
 ### Check (OTP / later KEM use)
 
 1. Decrypt slot 511. `i == 0` → exhausted; seed 510 is unrecoverable without re-provision.
 2. **Decrement `i` and persist** before verify (attempt spent even if the rest fails).
-3. `lt_mac_and_destroy(slot=i, …)` **destroys that hardware slot**.
-4. Success: restore `i = ROUNDS`, re-init remaining M&D slots, return `final_key`.
-5. Wrong PIN: slot stays consumed, no `final_key`.
+3. `lt_mac_and_destroy` on slots `2i` and `2i+1` **destroys that hardware pair**.
+4. Unwrap with `HMAC-SHA384(S1||S2, kdf_in)`; compare `HMAC-SHA384(s, 0x00)` to `t`.
+5. Success: restore `i = ROUNDS`, re-init remaining M&D slots `[2i, 2*ROUNDS)`, return `final_key`.
+6. Wrong PIN: both slots of the pair stay consumed, no `final_key`.
 
 Eight wrong PINs on silicon (four on the host model) lock ML-KEM forever until a new `KEM INIT` (slot 510 must be empty first — it will not be).
 
@@ -165,12 +176,11 @@ After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start 
 
 | Derived | HKDF | Used for |
 | --- | --- | --- |
-| Device AEAD (silicon) | SHA-384(`secure_dwk`, `"SE_tropic_rmem_aes_v1"`) | MCU NV, kem_ct, PIN NVM |
+| Device AEAD (silicon) | SHA-384(`secure_dwk`, `"SE_tropic_rmem_aes_v1"`) | kem_ct, PIN NVM |
 | PIN pepper | SHA-384(device AEAD, `"SE_tropic_pin_pepper_v2"`) | M&D `kdf_in` |
-| ML-KEM KEK | SHA-384(PIN `final_key`, salt=device AEAD, `"SE_tropic_mlkem_kek_v3"`) | Slot 510 |
-| TLS client key wrap | SHA-384(`secure_dwk`, `"SE_firmware_wrap_v2"`) | ML-DSA private key (CREDS DEVICE) |
+| ML-KEM KEK | SHA-384(PIN `final_key` 48 B, salt=device AEAD, `"SE_tropic_mlkem_kek_v4"`) | Slot 510 |
 
-Host model **does not** use `secure_dwk` for Tropic AEAD: [port_posix.c](../host/tropic_model/port_posix.c) has a fixed 32-byte test key. Host still stores dwk in the NV header for password hash + wrap. `OWNER REPLACE` does not rotate dwk. Pairing slots survive that wipe.
+Host model **does not** use `secure_dwk` for Tropic AEAD: [port_posix.c](../host/tropic_model/port_posix.c) has a fixed 32-byte test key. Host still stores dwk in the NV header for the password hash. `OWNER REPLACE` does not rotate dwk. Pairing slots survive that wipe. MCU NV itself is plaintext.
 
 Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`). `KEM INIT` writes that copy; no reflash.
 
@@ -189,7 +199,7 @@ Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`).
 | Occupied pad refuse | `qkd_store` will not overwrite |
 | New `kem_ct` wipes 0–509 | Fresh fill cannot mix with old pads |
 | PIN pepper | SPI/L3 cannot offline-hash the PIN |
-| M&D budget | Wrong PIN destroys a chip slot |
+| M&D budget | Wrong PIN destroys a chip slot pair |
 | KEK salt = MCU device key | PIN-only HKDF cannot open slot 510 |
 | TIME floor in NV | Wall clock will not go backwards |
 | SH0 invalidate + pairing priv on MCU | Factory L3 key gone; dump of Tropic pub is not enough |
@@ -203,7 +213,7 @@ Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`).
 | L3 session | **X25519** | Tropic pairing slots; **priv in MCU NV** after pairing (host `pairing.key` backup) |
 | Session attest | **P-256 ECDSA** | Tropic ECC slot 0 (classical) |
 | R-MEM at rest | AES-256-GCM | Ciphertext on Tropic |
-| M&D | HMAC-SHA256 + destroy | Tropic hardware slots + slot 511 |
+| M&D | HMAC-SHA384 (MCU KDF, 64-byte key from two M&D outputs) + KMAC M&D (chip) | Tropic hardware slots + slot 511 NVM |
 | Pad keys | **ML-KEM-768** SS + `fill_id` HKDF | SS from decapsulation; sk never stored — seed in 510 |
 | Anti-rollback | `fill_id`, dual cursors | **MCU NV only** |
 | Device seal / pepper | `secure_dwk` HKDF | **MCU flash only** |
@@ -220,7 +230,7 @@ A PQC attacker who “gets Tropic contents” therefore gets **classical chip st
 
 ### If the attacker dumps **Tropic + MCU flash** (including `secure_dwk` and page 22)
 
-Gains: device AEAD → kem_ct bytes, PIN NVM structure, `fill_id`, cursors, pairing **priv**, TLS wrap key.
+Gains: device AEAD → kem_ct bytes, PIN NVM structure, `fill_id`, cursors, pairing **priv**, ML-DSA SK in the clear.
 
 Still needs the **PIN** (and surviving M&D slots) to unwrap slot 510 and decapsulate. Erased pads are gone.
 

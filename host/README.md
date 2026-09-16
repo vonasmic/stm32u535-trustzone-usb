@@ -15,7 +15,7 @@ Restarting the model restores a fresh chip. A real TROPIC01 does not.
 
 ## 1. Prepare (once)
 
-From the **repo root** (`SE_firmware/`):
+From this firmware tree (`stm32u535-trustzone-usb/`; CubeIDE project name `SE_firmware`):
 
 ```bash
 # TROPIC01 model_server + Python venv (tvl wheel)
@@ -68,7 +68,7 @@ Or from `host/tropic_model/build` after `make`:
 bash ../run_all.sh
 ```
 
-`run_all.sh` (and `run_one.sh` / `run_direct.sh` / `run_cd.sh`) currently hardcode `/mnt/c/tmp/SE_firmware`. Prefer `cmake` + `ctest` if your checkout is elsewhere.
+`run_all.sh` (and `run_one.sh` / `run_direct.sh` / `run_cd.sh`) resolve the firmware tree from the script location. `run_all.sh` rebuilds and runs groups A–K plus `brick_lab`.
 
 | Group | Binary | What it gates |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ bash ../run_all.sh
 | G | `test_g_ingest` | QKD ingest / pad store |
 | H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key, LOAD after NV wipe |
 | I | `test_i_post_tls` | Encrypt TLS body / OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
-| J | `test_j_peers` | PEER NV add/remove/list, v3→v4 migrate, uplink item count `7+2n` |
+| J | `test_j_peers` | PEER NV add/remove/list, uplink item count `7+2n` |
 | K | `test_k_owner` | First-wins owner, REPLACE, unsigned MANAGE CREDS stream, NV ML-KEM |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
 
@@ -103,7 +103,7 @@ bash ../run_with_model.sh ./test_a_session \
 - TROPIC01 **model** at `127.0.0.1:28992` (hardcoded in `port_posix.c`)
 - Host apps over a PTY, same console + TLS pipe as USB CDC on silicon
 
-It does **not** open TCP to the SAE. Lab cable ownership is a JSON file plus
+It does **not** open TCP to SAE or USER. Lab cable ownership is a JSON file plus
 `scripts/lab-run.py` in the existing tmux `terminal` / `userapp` panes (restart
 with new `USB_SERIAL_PORT` / `NODE_*`). Silicon uses one `/dev/ttyACM0`. The lab
 stack runs **two** `se_host` processes:
@@ -163,6 +163,7 @@ ENCRYPT <unix>
 DECRYPT <unix>
 MANAGE <unix>
 PEER LIST
+TROPIC OTP LEFT
 ```
 
 Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB blob. PIN-gated and identity-changing commands stream unsigned over `MANAGE <unix>` (no ML-DSA):
@@ -176,11 +177,7 @@ MANAGE <unix>    # PEER ADD
 
 Leave TerminalBridge running with `USB_BRIDGE=1` and `USB_SERIAL_PORT` pointing
 at the device PTY. In `./run-all.sh` the terminal pane wrapper starts that only
-while lab owner is SAE. Or:
-
-```bash
-python3 tls_native/usb_tcp_bridge.py /tmp/ttyACM-se1 127.0.0.1 11111
-```
+while lab owner is SAE.
 
 Do not use plain `socat` (it forwards `DEBUG:<text>:DEBUG` into the TLS server). **Encrypt/decrypt**
 is UserApp on the selected client PTY (`USER` in LabSwitchApp). PIN is
@@ -192,7 +189,7 @@ On host, `TROPIC KEM INIT` persists the ML-KEM pub into NV. Tests may also fill 
 
 ## 5. TLS framing (what Java must speak)
 
-Uplink is **v3**. Item 6 (0-based) is the 1184-byte ML-KEM-768 public key. Java should encapsulate from that item, not from a file such as `SE_MLKEM_PK_PATH`.
+Uplink is **v4**. Item 6 (0-based) is the 1184-byte ML-KEM-768 public key. Java encapsulates from that item.
 
 QKD downlink is **v2**: item 0 is `kem_ct` (1088 B), item 1 is `decrypt_half` (1 byte: 0 = first pad half for decrypt, 1 = second), then pad images.
 
@@ -208,7 +205,7 @@ After mTLS:
 
 Shared Secure + NonSecure sources (linked into `se_host`):
 
-`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_rmem.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `secure_wrap.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
+`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_rmem.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `se_creds.c`, `se_owner.c`, `se_auth.c`, `se_manage.c`, `se_cert_spki.c`, `se_tls_user.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
 
 Host-only (do not exist on silicon):
 
@@ -217,11 +214,11 @@ Host-only (do not exist on silicon):
 | Tropic transport | SPI1 (`se_tropic_port_stm32.c`) | TCP `127.0.0.1` (`port_posix.c`, `--tropic-port`) |
 | Device AEAD key | HKDF from `secure_dwk` | Fixed 32-byte test key |
 | ML-KEM pub | NV (KEM INIT) | NV first, else RAM `host_fw_mlkem_pk[]` |
-| NV page | Secure flash page 22 (8 KB, dwk + v6) | 8 KB RAM |
+| NV page | Secure flash page 22 (8 KB, dwk + plaintext) | 8 KB RAM |
 | Creds page | Secure flash page 21 | 8 KB RAM |
 | CDC bytes | USBX CDC ACM | PTY `--tty` (lab: `/tmp/ttyACM-se1` / `se2`) |
 | SH0 | eng-sample unless `SE_TROPIC_SH0_PROD` | Forced prod0 (`host_libtropic_config.h`) |
-| PIN rounds | silicon default | 4 (`SE_TROPIC_PIN_ROUNDS`) |
+| PIN rounds | silicon default 8 tries / 16 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |
 
 TLS I/O, console parsing, NSC veneers, and wall-clock floor are the firmware sources. Host wolfSSL still uses the process clock (`TIME_OVERRIDES` is firmware-only).
 
@@ -238,13 +235,13 @@ host/
     CMakeLists.txt        Shared runtime + tests + se_host
     download_deps.sh      Fetch wolfSSL / ed25519 into _deps/
     run_with_model.sh     CTest helper: model_server + one exe
-    run_all.sh            Lab: rebuild + A–J + brick (hardcoded checkout path)
+    run_all.sh            Rebuild + A–K + brick (script-relative firmware tree)
     port_posix.c          Platform hooks (TCP, RAM NV, test AEAD key)
     host_fw_mlkem.c       RAM stand-in for fw_mlkem_pk
-    host_usb_debug_stub.c stdout DEBUG for A–J tests
+    host_usb_debug_stub.c stdout DEBUG for A–K tests
     host_cdc/             USBX stubs + PTY CDC for se_host
     se_host_main.c        Device main (`--tty`)
-    test_a_session.c …    Groups A–J
+    test_a_session.c …    Groups A–K
     brick_lab.c           Irreversible config writes (model only)
     sae_qkd.c             SAE-side pad seal helper for tests
 ```

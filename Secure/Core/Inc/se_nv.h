@@ -1,9 +1,10 @@
 /**
  * @file    se_nv.h
- * @brief   MCU-only sealed NV: fill_id, dual OTP cursors, TIME floor, pairing, peers
+ * @brief   MCU NV: fill_id, OTP cursors, TIME floor, pairing, peers, identity
  *
- * Tropic R-MEM / mcounter are not the source of truth under a broken ECC L3
- * session. This record lives in Secure flash (device) or process RAM (host model).
+ * Page 22 is plaintext at fixed offsets (no NV AEAD). Tropic R-MEM / PIN /
+ * ML-KEM KEK still use generate-once secure_dwk. Reads copy only the fields
+ * needed; pairing priv and the device SK are not loaded on OTP/peer paths.
  */
 #ifndef SE_NV_H
 #define SE_NV_H
@@ -29,7 +30,7 @@ extern "C" {
 
 #define SE_NV_OWNER_SPKI_MAX 1312u
 #define SE_NV_PW_HASH_LEN    48u
-#define SE_NV_WRAP_MAX       3072u
+#define SE_NV_SK_MAX         3072u
 #define SE_NV_MLKEM_MAX      1184u
 
 /**
@@ -55,6 +56,7 @@ typedef struct {
     uint8_t hash[SE_NV_PEER_HASH_LEN];
 } se_nv_peer_t;
 
+/** Operational NV (no pairing priv, no device SK). */
 typedef struct {
     uint8_t fill_id[SE_NV_FILL_ID_LEN];
     uint16_t cursor_encrypt;
@@ -64,16 +66,15 @@ typedef struct {
     uint32_t time_floor;
     uint32_t flags;
     uint8_t pairing_slot;
-    uint8_t pairing_priv[SE_NV_PAIRING_KEY_LEN];
     uint8_t pairing_pub[SE_NV_PAIRING_KEY_LEN];
     uint8_t peer_count; /* 0..SE_NV_PEER_MAX; occupied slots are compact 0..count-1 */
     se_nv_peer_t peers[SE_NV_PEER_MAX];
 } se_nv_state_t;
 
-/** Load sealed record. Empty/erased page => flags 0, LT_OK. Bad MAC => TAMPERED. */
+/** Load operational fields. Empty/erased/unknown magic => flags 0, LT_OK. */
 lt_ret_t se_nv_load(se_nv_state_t *out);
 
-/** Seal and persist the full record (erase-then-write). */
+/** Persist operational fields (RMW; pairing priv / SK / owner stay put). */
 lt_ret_t se_nv_store(const se_nv_state_t *in);
 
 /** Non-zero when a committed fill_id is present. */
@@ -155,18 +156,18 @@ int se_nv_pending_fill_take(uint8_t fill_id[SE_NV_FILL_ID_LEN]);
 void se_nv_pending_fill_clear(void);
 
 int se_nv_has_owner(void);
-int se_nv_has_wrap(void);
+int se_nv_has_device_sk(void);
 int se_nv_has_mlkem(void);
 lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len);
 lt_ret_t se_nv_set_owner(const uint8_t *spki, uint16_t spki_len,
                          const uint8_t pw_hash[SE_NV_PW_HASH_LEN]);
 lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN]);
-lt_ret_t se_nv_get_wrap(uint8_t *out, uint16_t *len, uint16_t cap);
-lt_ret_t se_nv_set_wrap(const uint8_t *wrap, uint16_t len);
+lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap);
+lt_ret_t se_nv_set_device_sk(const uint8_t *der, uint16_t len);
 lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len);
 lt_ret_t se_nv_set_mlkem_pk(const uint8_t *pk, uint16_t len);
 
-/** Clear fill/OTP/peers/TIME/owner/wrap/mlkem; keep pairing + dwk. */
+/** Clear fill/OTP/peers/TIME/owner/SK/mlkem; keep pairing + dwk. */
 lt_ret_t se_nv_clear_except_pairing(void);
 
 #ifdef __cplusplus

@@ -91,7 +91,6 @@ set(SE_TROPIC_RUNTIME
     ${PATH_SECURE_CORE}/Src/se_owner.c
     ${PATH_SECURE_CORE}/Src/se_auth.c
     ${PATH_SECURE_CORE}/Src/se_manage.c
-    ${PATH_SECURE_CORE}/Src/secure_wrap.c
     ${PATH_SECURE_CORE}/Src/se_cert_spki.c
     ${PATH_SECURE_CORE}/Src/se_tls_user.c
     ${PATH_SECURE_CORE}/Src/secure_qkd_ingest.c

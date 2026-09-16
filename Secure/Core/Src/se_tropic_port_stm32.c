@@ -203,6 +203,16 @@ lt_ret_t se_tropic_port_nv_page_read(uint8_t dst[SE_NV_PAGE_SIZE])
     return LT_OK;
 }
 
+lt_ret_t se_tropic_port_nv_slice_read(uint16_t off, uint8_t *dst, uint16_t len)
+{
+    if ((dst == NULL) || (len == 0U) ||
+        ((uint32_t)off + (uint32_t)len > SE_NV_PAGE_SIZE)) {
+        return LT_PARAM_ERR;
+    }
+    (void)memcpy(dst, (const void *)(SE_NV_FLASH_ADDR + off), len);
+    return LT_OK;
+}
+
 lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE])
 {
     return flash_program_page(SE_NV_FLASH_ADDR, SE_NV_FLASH_PAGE, src);

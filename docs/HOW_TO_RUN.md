@@ -111,16 +111,18 @@ That writes a new X25519 host key to pairing slot 1–3, stores the private half
 TROPIC PAIRING 1 LOAD <64-hex-priv> <64-hex-pub>
 ```
 
-### 7. First SAE session
+### 7. First USER peers, then first SAE provision
 
-Need a live Java SAE TLS server. Then:
+`PEER ADD` is optional and runs over **USER** MANAGE TLS (unsigned), not SAE.
+Need a live UserApp for that step. Then a live SAE TLS server (TerminalBridge USB
+relay) for `PROVISION`.
 
 ```text
-PEER ADD <name> <96-hex>
-PROVISION <unix>
+PEER ADD <name> <96-hex>     # USER / MANAGE
+PROVISION <unix>             # SAE
 ```
 
-`PEER ADD` is optional and runs over MANAGE TLS (unsigned). With an empty NV peer list the uplink has 7 items (no peer pairs). `<96-hex>` is SHA384 of the peer SPKI (96 hex digits), the same hash SAE already receives as uplink items 7+. Cap 8 nicknames; see [COMMANDS.md](COMMANDS.md).
+With an empty NV peer list the uplink has 7 items (no peer pairs). `<96-hex>` is SHA384 of the peer SPKI (96 hex digits), the same hash SAE already receives as uplink items 7+. Cap 8 nicknames; see [COMMANDS.md](COMMANDS.md).
 
 `<unix>` is decimal Unix UTC seconds, non-zero. Secure also requires it in `[2024-01-01, 2038-01-01]`. If it is behind the stored TIME floor, firmware keeps the floor. PIN is **not** a console argument; ENCRYPT/DECRYPT take it inside mTLS, MANAGE takes it in the unsigned request when the command is PIN-gated.
 
@@ -136,20 +138,22 @@ No option-byte rewrite unless the flash map changed. Re-flash ELFs only when fir
 
 1. Power-cycle or reopen the serial port.
 2. Skip `KEYGEN` / `KEM INIT` if ECC slot 0 and R-MEM slot 510 already hold keys (`TROPIC slot occupied` / occupied 510). Replace the P-256 key with `TROPIC KEYGEN` then unsigned PIN on MANAGE.
-3. Arm one TLS session:
+3. Arm one TLS session (only one host owns CDC):
 
 ```text
-PROVISION <unix>
-ENCRYPT <unix>
-DECRYPT <unix>
+PROVISION <unix>    # SAE
+ENCRYPT <unix>      # USER
+DECRYPT <unix>      # USER
+MANAGE <unix>       # USER
 ```
 
 
-| Command     | When                                                                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROVISION` | New QKD fill from the SAE. Wipes R-MEM slots **0–509**, commits `fill_id`, arms encrypt/decrypt pad halves. Keeps PIN NVM (511) and ML-KEM seed (510). |
-| `ENCRYPT`   | XOR-consume the **encrypt** pad half; SAE sends PIN + plaintext on TLS.                                                                                |
-| `DECRYPT`   | XOR-consume the **decrypt** pad half; SAE sends PIN + the encrypt reply.                                                                               |
+| Command     | Peer | When                                                                                                                                                   |
+| ----------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROVISION` | SAE  | New QKD fill. Wipes R-MEM slots **0–509**, commits `fill_id`, arms encrypt/decrypt pad halves. Keeps PIN NVM (511) and ML-KEM seed (510). |
+| `ENCRYPT`   | USER | XOR-consume the **encrypt** pad half; UserApp sends PIN + plaintext on TLS.                                                                                |
+| `DECRYPT`   | USER | XOR-consume the **decrypt** pad half; UserApp sends PIN + the encrypt reply.                                                                               |
+| `MANAGE`    | USER | Unsigned enroll / peer / creds / owner-replace command. PIN when the command is PIN-gated. |
 
 
 Pads are one-shot. When a half is exhausted, ENCRYPT/DECRYPT reply with OTP error code **1** (`EXHAUSTED`) until a new `PROVISION`. Cursor mismatch or fill_id mismatch returns `DEVICE_TAMPERED`.
@@ -160,7 +164,7 @@ There is no `TIME=` command. Disconnect, DTR off, TLS error, or session end retu
 
 
 
-## Lab extras (not the SAE path)
+## Lab extras (not a USER or SAE TLS session)
 
 - `TROPIC SIGN <64-hex>` — ECDSA over a 32-byte hash.
 - `TROPIC PUB` / `CLIENT HASH` / `TROPIC KEM PUB` — dump P-256 pub, device `client_hash`, or ML-KEM public key.

@@ -8,12 +8,10 @@
 #include "se_owner.h"
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
-#include "secure_client_key.h"
 #include "wolfssl/wolfcrypt/memory.h"
 #include <string.h>
 
 static uint8_t s_buf[SE_MANAGE_BUF_MAX];
-static uint8_t s_wrap[SE_NV_WRAP_MAX];
 
 uint8_t *se_manage_buf(void)
 {
@@ -82,32 +80,23 @@ static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok)
 uint32_t se_manage_store_device(const uint8_t *cert, uint16_t cert_len,
                                 const uint8_t *key, uint16_t key_len)
 {
-    word32 wrap_len = 0U;
-
     if ((cert == NULL) || (key == NULL) || (cert_len == 0U) || (key_len == 0U) ||
-        (cert_len > SE_CREDS_DER_MAX) || (key_len > SE_MANAGE_KEY_DER_MAX)) {
+        (cert_len > SE_CREDS_DER_MAX) || (key_len > SE_MANAGE_KEY_DER_MAX) ||
+        (key_len > SE_NV_SK_MAX)) {
         return SE_MANAGE_PARSE;
     }
-    if (secure_wrap_wrap_client_key(key, (word32)key_len, s_wrap, &wrap_len,
-                                    (word32)sizeof(s_wrap)) != 0) {
-        wc_ForceZero(s_wrap, sizeof(s_wrap));
-        return SE_MANAGE_ERR;
-    }
     if (se_creds_set_device_cert(cert, cert_len) != LT_OK) {
-        wc_ForceZero(s_wrap, sizeof(s_wrap));
         return SE_MANAGE_ERR;
     }
-    if (se_nv_set_wrap(s_wrap, (uint16_t)wrap_len) != LT_OK) {
-        wc_ForceZero(s_wrap, sizeof(s_wrap));
+    if (se_nv_set_device_sk(key, key_len) != LT_OK) {
         return SE_MANAGE_ERR;
     }
-    wc_ForceZero(s_wrap, sizeof(s_wrap));
     return SE_MANAGE_OK;
 }
 
 static uint32_t peer_pin_gate(const uint8_t *pin, uint8_t pin_len)
 {
-    uint8_t final_key[TR01_MAC_AND_DESTROY_DATA_SIZE];
+    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     lt_handle_t *h;
     lt_ret_t ret;
 

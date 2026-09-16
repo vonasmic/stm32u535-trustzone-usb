@@ -48,7 +48,6 @@ extern "C" {
  * key (64 B), client hash (48 B), R-MEM slot size (u16 LE), pad slot count
  * (u16 LE), pending fill_id (32 B), ML-KEM-768 public key (1184 B), then
  * alternating peer hash (48 B) / peer name from MCU NV (PEER ADD).
- * v4 widened both hashes from SHA-256 to SHA-384.
  * count = SECURE_LV_UPLINK_FIXED_ITEMS + 2 * se_nv_peer_count().
  *
  * Downlink v2 items: kem_ct (1088 B), decrypt_half (1 B, 0 or 1), then pad

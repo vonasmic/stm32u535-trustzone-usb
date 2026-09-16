@@ -9,7 +9,8 @@ Boot path: Secure init → jump to NonSecure at `0x08030000` → USB enumerates 
 
 ```mermaid
 flowchart LR
-    Host["Host / Java SAE"]
+    User["USER / UserApp"]
+    Sae["SAE / TerminalBridge"]
     USB["USB terminal"]
     CDC["shared USB (CDC ACM)"]
     NS["NonSecure (command parse)"]
@@ -21,10 +22,14 @@ flowchart LR
     NS -->|NSC| Secure
     Secure -->|SPI1| Tropic
 
-    Host -.->|"TLS 1.3 mTLS"| USB
+    User -.->|"ENCRYPT / DECRYPT / MANAGE TLS"| USB
+    Sae -.->|"PROVISION TLS"| USB
     USB -.-> CDC
     CDC -.->|"shared CDC buffers"| Secure
 ```
+
+Only one host process owns CDC at a time. **USER** (UserApp) is encrypt / decrypt / manage.
+**SAE** (SaeNode via TerminalBridge) is provision. UserApp is not an SAE.
 
 PIN for provisioned OTP never appears on USB. The console only arms a mode and a Unix time; PIN and payloads ride inside TLS after the handshake.
 

@@ -26,7 +26,7 @@ Non-secure view base `0x08000000`. Secure linker uses alias `0x0C000000` for the
 | --- | --- | --- | --- | --- | --- |
 | Secure code | `0x08000000` | `0x0C000000` | 168 KB | **0–20** | `FLASH` |
 | Creds (runtime) | `0x0802A000` | `0x0C02A000` | 8 KB | **21** | `FLASH_CREDS`, SAE CA + device cert |
-| MCU NV (runtime) | `0x0802C000` | `0x0C02C000` | 8 KB | **22** | `FLASH_NV`, dwk header + sealed v6 |
+| MCU NV (runtime) | `0x0802C000` | `0x0C02C000` | 8 KB | **22** | `FLASH_NV`, dwk header + plaintext record |
 | NSC veneers | `0x0802E000` | `0x0C02E000` | 8 KB | **23** | `FLASH_NSC`, `.gnu.sgstubs` |
 | NonSecure app | `0x08030000` | — | 64 KB | **24–31** | NS `FLASH` |
 

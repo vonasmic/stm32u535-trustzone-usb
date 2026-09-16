@@ -135,8 +135,8 @@ int main(void)
 
     /* PIN-gated reroll: erase + new P-256. */
     {
-        uint8_t master[TR01_MAC_AND_DESTROY_DATA_SIZE];
-        uint8_t final_key[TR01_MAC_AND_DESTROY_DATA_SIZE];
+        uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
+        uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
         uint8_t pub2[64];
         const uint8_t pin[] = {9, 8, 7, 6};
         const uint8_t pin_bad[] = {0, 8, 7, 6};

@@ -64,7 +64,7 @@
 #define WOLF_CONF_DH      0
 
 /*---------- WOLF_CONF_AESGCM -----------*/
-#define WOLF_CONF_AESGCM      1
+#define WOLF_CONF_AESGCM      2
 
 /*---------- WOLF_CONF_AESCBC -----------*/
 #define WOLF_CONF_AESCBC      0

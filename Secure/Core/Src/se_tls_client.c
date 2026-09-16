@@ -244,7 +244,7 @@ static int tls_start(void)
             return -1;
         }
         if (secure_client_key_load(s_ctx) != 0) {
-            se_usb_debug_printf("TLS setup: unwrap/load key failed");
+            se_usb_debug_printf("TLS setup: load key failed");
             return -1;
         }
     }

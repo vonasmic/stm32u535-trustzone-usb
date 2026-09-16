@@ -11,9 +11,9 @@
 int main(void)
 {
     lt_handle_t *h;
-    uint8_t master[TR01_MAC_AND_DESTROY_DATA_SIZE];
-    uint8_t final_setup[TR01_MAC_AND_DESTROY_DATA_SIZE];
-    uint8_t final_check[TR01_MAC_AND_DESTROY_DATA_SIZE];
+    uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
+    uint8_t final_setup[SE_TROPIC_PIN_HMAC_LEN];
+    uint8_t final_check[SE_TROPIC_PIN_HMAC_LEN];
     const uint8_t pin[] = {1, 2, 3, 4};
     const uint8_t pin_wrong[] = {2, 2, 3, 4};
     const uint8_t add[] = {0x11, 0x22, 0x33, 0x44};
@@ -45,8 +45,8 @@ int main(void)
     ret = se_tropic_pin_check(h, pin_wrong, sizeof(pin_wrong), add, sizeof(add), final_check);
     TEST_ASSERT_EQ(ret, LT_FAIL, "wrong PIN fails");
     {
-        uint8_t zeros[32] = {0};
-        TEST_ASSERT(memcmp(final_check, zeros, 32) == 0, "final_key wiped on fail");
+        uint8_t zeros[SE_TROPIC_PIN_HMAC_LEN] = {0};
+        TEST_ASSERT(memcmp(final_check, zeros, sizeof(zeros)) == 0, "final_key wiped on fail");
     }
 
     ret = se_tropic_pin_check(h, pin, sizeof(pin), add, sizeof(add), final_check);

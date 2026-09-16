@@ -10,8 +10,6 @@
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_tropic.h"
-#include "se_tropic_port.h"
-#include "se_tropic_rmem.h"
 #include "se_tropic_session.h"
 #include "secure_lv.h"
 #include <string.h>
@@ -45,37 +43,6 @@ static void fill_hash(uint8_t hash[SE_NV_PEER_HASH_LEN], uint8_t tag)
     }
 }
 
-static lt_ret_t write_v3_blob(uint32_t time_floor)
-{
-    uint8_t key[SE_TROPIC_RMEM_AES_KEY_LEN];
-    uint8_t plain[113];
-    uint8_t nonce[SE_TROPIC_RMEM_NONCE_LEN];
-    uint8_t blob[SE_TROPIC_RMEM_OVERHEAD + 113u];
-    uint16_t blob_len = (uint16_t)sizeof(blob);
-    static const uint8_t aad[] = "SE_nv_v3";
-    lt_ret_t ret;
-    unsigned int i;
-
-    (void)memset(plain, 0, sizeof(plain));
-    se_put_u32le(plain + 32u + 8u, time_floor);
-    se_put_u32le(plain + 32u + 8u + 4u, SE_NV_FLAG_TIME);
-    for (i = 0U; i < sizeof(nonce); i++) {
-        nonce[i] = (uint8_t)(0xC0u + (uint8_t)i);
-    }
-    ret = se_tropic_port_device_aead_key(key);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    ret = se_tropic_encrypt_storage_blob(key, aad, (uint16_t)(sizeof(aad) - 1u), plain,
-                                         (uint16_t)sizeof(plain), nonce, blob, &blob_len);
-    (void)memset(key, 0, sizeof(key));
-    if (ret != LT_OK) {
-        return ret;
-    }
-    return se_tropic_port_nv_raw_write(blob, blob_len);
-}
-
-/** Minimal Certificate DER so uplink client_hash can walk a device-cert SPKI. */
 static const uint8_t k_dummy_cert[] = {
     0x30, 0x18, 0x30, 0x16, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
     0x30, 0x09, 0x30, 0x00, 0x03, 0x05, 0x00, 0xaa, 0xbb, 0xcc, 0xdd
@@ -116,6 +83,8 @@ int main(void)
     const uint8_t alice[] = "Alice";
     const uint8_t bob[] = "Bob";
     uint16_t items;
+    uint16_t cursor = 0xFFFFu;
+    uint8_t fill_id[SE_NV_FILL_ID_LEN];
 
     setvbuf(stdout, NULL, _IONBF, 0);
     if (host_crypto_init() != 0) {
@@ -183,23 +152,30 @@ int main(void)
         TEST_ASSERT_EQ(ret, LT_OK, "remove slot");
     }
 
-    ret = write_v3_blob(1700000000U);
-    TEST_ASSERT_EQ(ret, LT_OK, "write v3 blob");
+    ret = se_nv_set_time_floor(1700000000U);
+    TEST_ASSERT_EQ(ret, LT_OK, "set time floor");
     ret = se_nv_get_time_floor(&floor, &present);
-    TEST_ASSERT_EQ(ret, LT_OK, "load v3 time");
-    TEST_ASSERT_EQ(present, 1, "v3 time present");
-    TEST_ASSERT_EQ(floor, 1700000000U, "v3 time value");
+    TEST_ASSERT_EQ(ret, LT_OK, "load time");
+    TEST_ASSERT_EQ(present, 1, "time present");
+    TEST_ASSERT_EQ(floor, 1700000000U, "time value");
     ret = se_nv_peer_count(&count);
-    TEST_ASSERT_EQ(ret, LT_OK, "count after v3");
-    TEST_ASSERT_EQ(count, 0U, "v3 migrates with empty peers");
+    TEST_ASSERT_EQ(ret, LT_OK, "count after time");
+    TEST_ASSERT_EQ(count, 0U, "time-only has empty peers");
     ret = se_nv_peer_add(alice, 5U, hash_a);
-    TEST_ASSERT_EQ(ret, LT_OK, "add after v3 (store v5)");
+    TEST_ASSERT_EQ(ret, LT_OK, "add after time");
     ret = se_nv_get_time_floor(&floor, &present);
-    TEST_ASSERT_EQ(ret, LT_OK, "time after v5 store");
-    TEST_ASSERT_EQ(present, 1, "time kept on v5 store");
+    TEST_ASSERT_EQ(ret, LT_OK, "time after peer store");
+    TEST_ASSERT_EQ(present, 1, "time kept on peer store");
     TEST_ASSERT_EQ(floor, 1700000000U, "time value kept");
     ret = se_nv_peer_remove(alice, 5U);
-    TEST_ASSERT_EQ(ret, LT_OK, "cleanup migrated Alice");
+    TEST_ASSERT_EQ(ret, LT_OK, "cleanup Alice");
+
+    (void)memset(fill_id, 0x11, sizeof(fill_id));
+    TEST_ASSERT_EQ(se_nv_commit_fill(fill_id), LT_OK, "commit fill");
+    TEST_ASSERT_EQ(se_nv_arm_otp_cursors(0U, 253U), LT_OK, "arm otp");
+    TEST_ASSERT(se_nv_has_device_sk() == 0, "cursor path needs no device SK");
+    TEST_ASSERT_EQ(se_nv_get_cursor(SE_NV_OTP_ENCRYPT, &cursor), LT_OK, "get cursor");
+    TEST_ASSERT_EQ(cursor, 0U, "encrypt cursor at base");
 
     st = se_tropic_init_session();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "init_session");

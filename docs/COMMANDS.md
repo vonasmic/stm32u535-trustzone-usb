@@ -4,6 +4,8 @@ Authoritative tables live in [NonSecure/Core/Src/tls_usb_io.c](../NonSecure/Core
 
 TLS framing after arming: **[COMMUNICATION.md](COMMUNICATION.md)**. Tropic slots: **[TROPIC.md](TROPIC.md)**. How to run: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
 
+The device is a TLS client. **SAE** is the peer for `PROVISION`. **USER** (UserApp) is the peer for `ENCRYPT` / `DECRYPT` / `MANAGE`. UserApp is not an SAE.
+
 ---
 
 ## Parsing
@@ -52,10 +54,10 @@ Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 
 | --- | --- | --- | --- | --- |
 | `HELP` | yes | yes | — | Print `commands:` plus all usage lines |
 | `?` | alias | alias | — | Same as HELP |
-| `PROVISION <unix>` | yes | yes | decimal Unix UTC, ≠ 0 | Arm TLS mode **1**. Refuses until owner + device cert + wrapped SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v4, then QKD downlink v2 into R-MEM. **mTLS** (device cert). |
-| `ENCRYPT <unix>` | yes | yes | same | Arm TLS mode **2**. Refuses until owner + device cert + wrapped SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots. |
-| `DECRYPT <unix>` | yes | yes | same | Arm TLS mode **3**. Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots). |
-| `MANAGE <unix>` | yes | yes | same | Arm TLS mode **4**. Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command (see above), status reply, shutdown. |
+| `PROVISION <unix>` | yes | yes | decimal Unix UTC, ≠ 0 | Arm TLS mode **1** (**SAE** peer). Refuses until owner + device cert + device SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v4, then QKD downlink v2 into R-MEM. **mTLS** (device cert). |
+| `ENCRYPT <unix>` | yes | yes | same | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots. |
+| `DECRYPT <unix>` | yes | yes | same | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots). |
+| `MANAGE <unix>` | yes | yes | same | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command (see above), status reply, shutdown. |
 | `OWNER SET` | yes | yes | then unsigned blob | First USB wins if the owner slot is empty; else refuse. Blob may include device cert/key and SAE CA. |
 | `PEER LIST` | yes | yes | — | Print each NV peer, or `PEER list empty` |
 | `CLIENT HASH` | yes | yes | — | Print `client hash:` + 96 hex digits: `SHA384(device_cert_spki \|\| ecc_pub)`, same as provision uplink item 2 |
@@ -74,7 +76,7 @@ TLS arm failure: `TLS start failed`.
 
 ## `PEER` commands
 
-Runtime nickname + `SHA384(peer SPKI)` list in sealed MCU NV. Provision uplink items 7+ are this table (hash then name per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
+Runtime nickname + `SHA384(peer SPKI)` list in MCU NV. Provision uplink items 7+ are this table (hash then name per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
 
 USB line max is **144** chars. Certs and PIN-gated commands use MANAGE TLS application data, not the ASCII line.
 

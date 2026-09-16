@@ -54,7 +54,8 @@ void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id);
 
 #define SE_NV_PAGE_SIZE    8192u
 #define SE_NV_DWK_LEN      32u
-#define SE_NV_BLOB_OFF     32u
+#define SE_NV_REC_OFF      32u
+#define SE_NV_BLOB_OFF     SE_NV_REC_OFF
 #define SE_CREDS_PAGE_SIZE 8192u
 #define SE_DEVICE_ID_LEN   12u
 
@@ -69,17 +70,20 @@ lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len);
  */
 lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len);
 
-/** Read/write the full 8 KB NV page (dwk header + sealed blob). */
+/** Read/write the full 8 KB NV page (dwk header + plaintext record). */
 lt_ret_t se_tropic_port_nv_page_read(uint8_t dst[SE_NV_PAGE_SIZE]);
 lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE]);
+
+/** Copy @p len bytes at @p off from the NV page (no 8 KB work buffer). */
+lt_ret_t se_tropic_port_nv_slice_read(uint16_t off, uint8_t *dst, uint16_t len);
 
 /** Public cert page (SAE CA + device cert). Secure-only writes. */
 lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE]);
 lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE]);
 
 /**
- * 32-byte device wrap/seal root. Generate-once when the NV header is erased.
- * Not AEAD'd with itself. STM32 AEAD HKDF uses this; host AEAD stays a test key.
+ * 32-byte Tropic-seal root. Generate-once when the NV header is erased.
+ * Not used to encrypt NV. STM32 R-MEM AEAD HKDF uses this; host AEAD stays a test key.
  */
 lt_ret_t se_tropic_port_dwk(uint8_t out[SE_NV_DWK_LEN]);
 

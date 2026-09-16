@@ -37,7 +37,7 @@ extern "C" {
 #define SE_MANAGE_PARSE          11u
 #define SE_MANAGE_PW_FAIL        12u
 
-/** PKCS#8 / SEC1 device SK; wrap overhead must still fit SE_NV_WRAP_MAX. */
+/** PKCS#8 / SEC1 device SK; must fit SE_NV_SK_MAX. */
 #define SE_MANAGE_KEY_DER_MAX 3000u
 #define SE_MANAGE_BODY_MAX    (2u + SE_CREDS_DER_MAX + 2u + SE_MANAGE_KEY_DER_MAX)
 #define SE_MANAGE_REQ_MAX \
@@ -74,7 +74,7 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
 uint32_t se_manage_apply_buf(const uint8_t *buf, uint32_t len, char *msg,
                              uint16_t msg_cap);
 
-/** Wrap device SK with secure_dwk and store cert + wrap. */
+/** Store device cert (creds page) and SK DER (NV). */
 uint32_t se_manage_store_device(const uint8_t *cert, uint16_t cert_len,
                                 const uint8_t *key, uint16_t key_len);
 

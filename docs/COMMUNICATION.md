@@ -1,10 +1,14 @@
 # Communication
 
-How the host, USB console, Secure TLS client, and SAE talk. Tropic slot contents: **[TROPIC.md](TROPIC.md)**. Console commands that *arm* these paths: **[COMMANDS.md](COMMANDS.md)**.
+How the host, USB console, Secure TLS client, **USER** (UserApp), and **SAE**
+(SaeNode) talk. The device is a TLS client and connects to **two** applications:
+SAE for `PROVISION`, USER for `ENCRYPT` / `DECRYPT` / `MANAGE`. Tropic slot
+contents: **[TROPIC.md](TROPIC.md)**. Console commands that *arm* these paths:
+**[COMMANDS.md](COMMANDS.md)**.
 
 ```text
 USB ASCII commands  →  NonSecure parser  →  NSC  →  Secure
-USB TLS bytes       →  16 KiB RX / 8 KiB TX rings →  wolfSSL 1.3 client  →  SAE (provision), UserApp (encrypt/decrypt), or UserApp (manage)
+USB TLS bytes       →  16 KiB RX / 8 KiB TX rings →  wolfSSL 1.3 client  →  SAE (provision) or USER (encrypt / decrypt / manage)
 SPI                 →  TROPIC01 L2/L3
 ```
 
@@ -42,7 +46,7 @@ PIN is never on the ASCII pipe for the TLS modes. Occupied KEYGEN / KEM INIT / P
 | Cipher             | `TLS13-AES256-GCM-SHA384`                                        |
 | Group              | **ML-KEM-768** (`WOLFSSL_ML_KEM_768`)                            |
 | Client cert        | ENCRYPT/DECRYPT/PROVISION: device cert from FLASH_CREDS. MANAGE: none (not mTLS) |
-| Client private key | ENCRYPT/DECRYPT/PROVISION: NV wrap, HKDF(`secure_dwk`, `"SE_firmware_wrap_v2"`). MANAGE: none |
+| Client private key | ENCRYPT/DECRYPT/PROVISION: NV device SK DER (loaded only for mTLS). MANAGE: none |
 | Peer verify        | `WOLFSSL_VERIFY_PEER | WOLFSSL_VERIFY_FAIL_IF_NO_PEER_CERT`      |
 
 
@@ -51,15 +55,15 @@ PIN is never on the ASCII pipe for the TLS modes. Occupied KEYGEN / KEM INIT / P
 ### CA per mode
 
 
-| Mode      | Constant                        | Verify blob                           |
-| --------- | ------------------------------- | ------------------------------------- |
-| Provision | `SECURE_TLS_MODE_PROVISION` = 1 | SAE CA from FLASH_CREDS                          |
-| Encrypt   | `SECURE_TLS_MODE_ENCRYPT` = 2   | no CA; pin peer leaf SPKI to enrolled owner key  |
-| Decrypt   | `SECURE_TLS_MODE_DECRYPT` = 3   | no CA; pin peer leaf SPKI to enrolled owner key  |
-| Manage    | `SECURE_TLS_MODE_MANAGE` = 4    | no CA; pin peer leaf SPKI to enrolled owner key; no device client cert |
+| Mode      | Peer | Constant                        | Verify blob                           |
+| --------- | ---- | ------------------------------- | ------------------------------------- |
+| Provision | SAE  | `SECURE_TLS_MODE_PROVISION` = 1 | SAE CA from FLASH_CREDS                          |
+| Encrypt   | USER | `SECURE_TLS_MODE_ENCRYPT` = 2   | no CA; pin peer leaf SPKI to enrolled owner key  |
+| Decrypt   | USER | `SECURE_TLS_MODE_DECRYPT` = 3   | no CA; pin peer leaf SPKI to enrolled owner key  |
+| Manage    | USER | `SECURE_TLS_MODE_MANAGE` = 4    | no CA; pin peer leaf SPKI to enrolled owner key; no device client cert |
 
 
-TLS refuses until ready: ENCRYPT/DECRYPT need owner SPKI + device cert + wrapped SK; PROVISION needs those plus SAE CA and NV ML-KEM pk; MANAGE needs owner SPKI only.
+TLS refuses until ready: ENCRYPT/DECRYPT need owner SPKI + device cert + device SK; PROVISION needs those plus SAE CA and NV ML-KEM pk; MANAGE needs owner SPKI only.
 
 ### Exporter (session binding)
 
@@ -73,15 +77,15 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 ### Post-handshake
 
 
-| Mode      | Device sends              | Device reads                            |
-| --------- | ------------------------- | --------------------------------------- |
-| Provision | LV **uplink v4**          | LV **downlink v2** (QKD ingest)         |
-| Encrypt   | nothing until SAE request | PIN + plaintext; replies OTP ciphertext |
-| Decrypt   | nothing until SAE request | PIN + encrypt reply; replies plaintext  |
-| Manage    | nothing until request     | unsigned cmd + optional PIN + body; replies status |
+| Mode      | Peer | Device sends              | Device reads                            |
+| --------- | ---- | ------------------------- | --------------------------------------- |
+| Provision | SAE  | LV **uplink v4**          | LV **downlink v2** (QKD ingest)         |
+| Encrypt   | USER | nothing until USER request | PIN + plaintext; replies OTP ciphertext |
+| Decrypt   | USER | nothing until USER request | PIN + encrypt reply; replies plaintext  |
+| Manage    | USER | nothing until request     | unsigned cmd + optional PIN + body; replies status |
 
 
-Then bidirectional TLS shutdown: the device sends {@code close_notify} and stays in TLS until the SAE (or UserApp) close_notify arrives, then returns to ASCII. A 3 s timeout still disarms if the peer never closes.
+Then bidirectional TLS shutdown: the device sends {@code close_notify} and stays in TLS until the peer (SAE on provision, USER otherwise) close_notify arrives, then returns to ASCII. A 3 s timeout still disarms if the peer never closes.
 
 ---
 
@@ -177,11 +181,11 @@ Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.
 
 ## OTP over TLS (encrypt / decrypt)
 
-Not an LV envelope. [secure_otp.h](../Secure/Core/Inc/secure_otp.h).
+Not an LV envelope. Device ↔ **USER** (UserApp), not SAE. [secure_otp.h](../Secure/Core/Inc/secure_otp.h).
 
 PIN length **4–8** bytes (`SE_TROPIC_PIN_SIZE_MIN` / `MAX`).
 
-### ENCRYPT (SAE → SE)
+### ENCRYPT (USER → SE)
 
 ```text
 u8  pin_len
@@ -192,7 +196,7 @@ u8  plaintext[msg_len]
 
 
 
-### ENCRYPT reply (SE → SAE)
+### ENCRYPT reply (SE → USER)
 
 ```text
 u32 n_pads LE
@@ -202,7 +206,7 @@ repeat n_pads times:
   u8  chunk[chunk_len]
 ```
 
-Last chunk may be short. Cap is remaining pads in the **encrypt** half. `logical_slot` is SAE pad index (0 = first pad), not the physical R-MEM index.
+Last chunk may be short. Cap is remaining pads in the **encrypt** half. `logical_slot` is the logical pad index (0 = first pad), not the physical R-MEM index.
 
 If the request needs more pads than remain, the device replies with an error instead of ciphertext:
 
@@ -213,7 +217,7 @@ u32 err_code LE
 
 UserApp prints `OTP error <code> (<name>): …`. Codes: **1** exhausted, **3** parse, **4** PIN, **5** tampered, **255** fail.
 
-### DECRYPT (SAE → SE)
+### DECRYPT (USER → SE)
 
 ```text
 u8  pin_len
@@ -223,7 +227,7 @@ u8  pin[pin_len]
 
 If the requested logical slot is ahead of the decrypt cursor, intermediate pads are **burned** (erased, no XOR). Rewind is refused.
 
-### DECRYPT reply (SE → SAE)
+### DECRYPT reply (SE → USER)
 
 ```text
 u32 n_pads LE
@@ -232,7 +236,7 @@ repeat n_pads times:
   u8  chunk[chunk_len]
 ```
 
-No slot IDs. SAE concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
+No slot IDs. UserApp concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
 
 OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`). Remaining/capacity pad kilobytes (no PIN, no consume) are `TROPIC OTP LEFT` on the USB console.
 

@@ -13,7 +13,7 @@
 #include <wolfssl/wolfcrypt/hmac.h>
 #include <wolfssl/wolfcrypt/wc_mlkem.h>
 
-static const uint8_t k_mlkem_kek_info[] = "SE_tropic_mlkem_kek_v3";
+static const uint8_t k_mlkem_kek_info[] = "SE_tropic_mlkem_kek_v4";
 static const uint8_t k_seed_aad[] = "SE_tropic_mlkem_seed_v2";
 
 /* Large key material lives in BSS, not on the USB/TLS task stack. */
@@ -22,7 +22,7 @@ static uint8_t s_mlkem_open;
 static uint8_t s_pk_cache[SE_TROPIC_MLKEM_PK_LEN];
 static uint8_t s_pk_cache_valid;
 
-static lt_ret_t mlkem_derive_kek(const uint8_t final_key[32], uint8_t kek[32])
+static lt_ret_t mlkem_derive_kek(const uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN], uint8_t kek[32])
 {
     uint8_t dwk[32];
     int ret;
@@ -32,7 +32,7 @@ static lt_ret_t mlkem_derive_kek(const uint8_t final_key[32], uint8_t kek[32])
     if (lret != LT_OK) {
         return lret;
     }
-    ret = wc_HKDF(WC_SHA384, final_key, 32U, dwk, 32U, k_mlkem_kek_info,
+    ret = wc_HKDF(WC_SHA384, final_key, SE_TROPIC_PIN_HMAC_LEN, dwk, 32U, k_mlkem_kek_info,
                   (word32)(sizeof(k_mlkem_kek_info) - 1U), kek, 32U);
     wc_ForceZero(dwk, sizeof(dwk));
     return (ret == 0) ? LT_OK : LT_CRYPTO_ERR;
@@ -136,9 +136,9 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
                                    const uint8_t *add, uint8_t add_len, uint8_t *pk_out,
                                    uint16_t pk_max, uint16_t *pk_len)
 {
-    uint8_t master[32];
+    uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t seed[SE_TROPIC_MLKEM_SEED_LEN];
-    uint8_t final_key[32];
+    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t kek[32];
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint16_t got = 0U;
@@ -320,7 +320,7 @@ uint32_t se_tropic_kem_pub_dump(void)
 lt_ret_t se_tropic_mlkem_key_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
                                   const uint8_t *add, uint8_t add_len)
 {
-    uint8_t final_key[32];
+    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t kek[32];
     uint8_t seed[SE_TROPIC_MLKEM_SEED_LEN];
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];

@@ -396,7 +396,7 @@ static uint32_t peer_lt_to_nsc(lt_ret_t ret)
 
 static uint32_t peer_require_pin(const uint8_t *pin, uint32_t pin_len)
 {
-    uint8_t final_key[TR01_MAC_AND_DESTROY_DATA_SIZE];
+    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     lt_handle_t *h;
     lt_ret_t ret;
 

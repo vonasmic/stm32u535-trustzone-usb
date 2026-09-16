@@ -333,7 +333,7 @@ static uint32_t se_tropic_slot_occupied(void)
 uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len)
 {
     lt_handle_t *h;
-    uint8_t final_key[32];
+    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     lt_ret_t ret;
 
     if (se_tropic_init_session() != SE_TROPIC_OK) {

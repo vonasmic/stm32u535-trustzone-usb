@@ -3,10 +3,10 @@
  * @brief   ML-KEM-768 provisioning and PIN-gated private-key recovery
  *
  * The private key never exists at rest: a 64-byte generation seed is wrapped
- * under HKDF(PIN final_key, salt=device-seal key) in slot 510. Opening it
- * needs both a surviving MAC-and-Destroy PIN check and this MCU. The public
- * key is sent in the TLS uplink (v4) and persisted in MCU NV by KEM INIT
- * (no reflash).
+ * under HKDF-SHA384(PIN final_key 48 B, salt=device-seal key) in slot 510.
+ * Opening it needs both a surviving MAC-and-Destroy PIN check and this MCU.
+ * The public key is sent in the TLS uplink (v4) and persisted in MCU NV by
+ * KEM INIT (no reflash).
  */
 #ifndef SE_TROPIC_MLKEM_H
 #define SE_TROPIC_MLKEM_H

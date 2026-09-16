@@ -296,19 +296,20 @@ int main(void)
 
     /* Slot 510 must not open with PIN-only HKDF (no MCU device-key salt). */
     {
-        uint8_t final_key[32];
+        uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
         uint8_t kek[32];
         uint8_t dwk[32];
         uint8_t seed[SE_TROPIC_MLKEM_SEED_LEN];
         uint16_t got = 0;
         static const uint8_t info_v2[] = "SE_tropic_mlkem_kek_v2";
         static const uint8_t info_v3[] = "SE_tropic_mlkem_kek_v3";
+        static const uint8_t info_v4[] = "SE_tropic_mlkem_kek_v4";
         static const uint8_t aad_v2[] = "SE_tropic_mlkem_seed_v2";
 
         ret = se_tropic_pin_check(h, pin, sizeof(pin), add, sizeof(add), final_key);
         TEST_ASSERT_EQ(ret, LT_OK, "pin_check for kek bind");
 
-        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, 32U, NULL, 0, info_v3,
+        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, SE_TROPIC_PIN_HMAC_LEN, NULL, 0, info_v3,
                                (word32)(sizeof(info_v3) - 1U), kek, 32U),
                        0, "hkdf v3 no salt");
         ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
@@ -323,9 +324,16 @@ int main(void)
                                         (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
         TEST_ASSERT(ret != LT_OK, "SHA-256 kek_v2 cannot open seed");
 
-        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, 32U, dwk, 32U, info_v3,
+        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, SE_TROPIC_PIN_HMAC_LEN, dwk, 32U, info_v3,
                                (word32)(sizeof(info_v3) - 1U), kek, 32U),
                        0, "hkdf v3 dwk");
+        ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
+                                        (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
+        TEST_ASSERT(ret != LT_OK, "kek_v3 dwk cannot open seed");
+
+        TEST_ASSERT_EQ(wc_HKDF(WC_SHA384, final_key, SE_TROPIC_PIN_HMAC_LEN, dwk, 32U, info_v4,
+                               (word32)(sizeof(info_v4) - 1U), kek, 32U),
+                       0, "hkdf v4 dwk");
         ret = se_tropic_read_and_decrypt_from_rmem(h, SE_TROPIC_MLKEM_SEED_SLOT, kek, aad_v2,
                                         (uint16_t)(sizeof(aad_v2) - 1U), seed, sizeof(seed), &got);
         TEST_ASSERT_EQ(ret, LT_OK, "PIN+MCU kek opens seed");
