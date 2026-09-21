@@ -74,7 +74,7 @@ static lt_ret_t write_fill_arm_encrypt_first(lt_handle_t *h, const uint8_t ct[SE
 int main(void)
 {
     lt_handle_t *h;
-    const uint8_t pin[] = {9, 8, 7, 6};
+    const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
     const uint8_t pin_bad[] = {0, 8, 7, 6};
     const uint8_t add[] = {0xde, 0xad};
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
@@ -176,8 +176,8 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "store second pad for multi-slot");
 
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used);
     TEST_ASSERT_EQ(ret, LT_OK, "otp consume correct PIN");
     TEST_ASSERT_EQ(slot_used, phys0, "otp from first pad");
     for (i = 0; i < (int)sizeof(msg); i++) {
@@ -199,8 +199,8 @@ int main(void)
 
     /* Multi-slot: consume remaining pad with a short message. */
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 16u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 16u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used);
     TEST_ASSERT_EQ(ret, LT_OK, "otp second pad");
     TEST_ASSERT_EQ(slot_used, (uint16_t)(phys0 + 1u), "otp from second pad");
     for (i = 0; i < 16; i++) {
@@ -223,8 +223,8 @@ int main(void)
     ret = lt_r_mem_data_write(h, phys0, old_image, old_image_len);
     TEST_ASSERT_EQ(ret, LT_OK, "plant old pad image");
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
     TEST_ASSERT_EQ(ret, SE_TROPIC_LT_TAMPERED, "old fill image is tamper");
 
     /* Fresh fill + pad, then rewind Tropic mcounter while MCU stays advanced. */
@@ -232,13 +232,13 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "fill for cursor rewind");
     ret = store_pad_slot(h, ss, slot0, pad, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "store for cursor rewind");
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
     TEST_ASSERT_EQ(ret, LT_OK, "consume before rewind");
     ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_ENCRYPT, (uint32_t)phys0);
     TEST_ASSERT_EQ(ret, LT_OK, "rewind Tropic cursor");
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
     TEST_ASSERT_EQ(ret, SE_TROPIC_LT_TAMPERED, "Tropic rewind is tamper");
 
     /* Restore aligned state for remaining tests. */
@@ -248,8 +248,8 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "store after tamper tests");
 
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin_bad, sizeof(pin_bad), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin_bad, sizeof(pin_bad), add, sizeof(add), msg, 8u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
     TEST_ASSERT(ret == LT_FAIL, "wrong PIN fails");
     for (i = 0; i < 8; i++) {
         TEST_ASSERT(out[i] == 0xEE, "wrong PIN leaves out untouched");
@@ -264,8 +264,8 @@ int main(void)
         tamper[0] ^= 0x01u;
         TEST_ASSERT_EQ(se_nv_set_mlkem_pk(tamper, tlen), LT_OK, "tamper nv mlkem");
         (void)memset(out, 0xEE, sizeof(out));
-        ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                         SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+        ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                         SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
         TEST_ASSERT(ret == LT_FAIL, "pk mismatch refuses before pad");
         tamper[0] ^= 0x01u;
         TEST_ASSERT_EQ(se_nv_set_mlkem_pk(tamper, tlen), LT_OK, "restore nv mlkem");
@@ -281,8 +281,8 @@ int main(void)
             break;
         }
     }
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, 8u, out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
     TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "exhausted cursor refuses");
 
     se_tropic_deinit_session();

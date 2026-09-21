@@ -42,7 +42,7 @@ Overhead **29** bytes. Max slot **475** B (FW ≥ 2.0.0) → plaintext max **446
 
 | Resource | Slot | Use |
 | --- | --- | --- |
-| ECC P-256 | `TR01_ECC_SLOT_0` | Session uplink signature, `TROPIC SIGN` |
+| ECC P-256 | `TR01_ECC_SLOT_0` | Session uplink signature |
 | Pairing X25519 | 0 = factory **SH0**; **1–3** = host | L3 session keys |
 | MAC-and-Destroy | hardware slots `0 .. 2*PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 16 slots / 8 tries) |
 | Mcounters | index 0 = encrypt cursor, index 1 = decrypt | Mirror of MCU OTP pointers |
@@ -107,8 +107,8 @@ Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER
 | `owner_len` + owner SPKI | u16 + 1312 B | Enrolled owner (`OWNER SET`) |
 | `mlkem_len` + ML-KEM pk | u16 + 1184 B | NV copy from `KEM INIT` |
 | `pw_hash` | 48 B | `SHA-384(secure_dwk \|\| password)` |
-| `pairing_priv` | 32 B | X25519 host private (also printed once on USB for `pairing.key`) |
-| `sk_len` + device SK DER | u16 + 3072 B | ML-DSA-44 PKCS#8/SEC1 (`CREDS DEVICE`); loaded only for mTLS |
+| `pairing_priv` | 32 B | X25519 host private (MCU NV only; never printed) |
+| `sk_len` + device SK DER | u16 + 4096 B | ML-DSA-44 PKCS#8 with public key (`CLIENT CSR` / mTLS); loaded only for mTLS |
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
 
@@ -120,7 +120,7 @@ Flags: `SE_NV_FLAG_FILL 0x1`, `TIME 0x2`, `PAIRING 0x4`, `OTP 0x8`.
 
 Silicon: **8** tries (`SE_TROPIC_PIN_ROUNDS`) using **16** hardware M&D slots (`2i` and `2i+1` per try). Host model: **4** tries / 8 slots (`host_libtropic_config.h`). Chip maximum is 128; this firmware does not use the rest.
 
-PIN length **4–8** bytes.
+PIN length **8–16** printable ASCII bytes.
 
 MCU KDF is **HMAC-SHA384**. Each try concatenates two independent 32-byte M&D outputs as a 64-byte HMAC key so the MAC is a 192-bit PQ primitive (NIST SHA-384). `master_secret`, wrap blocks `ci[]`, tag `t`, and `final_key` are 48 bytes.
 
@@ -130,7 +130,7 @@ NVM blob in slot **511** (MCU-sealed): remaining attempts `i` (1 B), wrapped `ci
 
 ### Setup (`MANAGE` KEM INIT)
 
-This is the **user** path to create the PIN and wrap the ML-KEM seed (slot 510). There is no factory PIN. USB `TROPIC KEM INIT` only prints `use MANAGE <unix>`. The unsigned MANAGE request carries the ASCII PIN and runs setup in one step:
+The unsigned MANAGE request carries the ASCII PIN and, in one step, creates the PIN, wraps the ML-KEM seed (slot 510), and persists the public key in NV:
 
 1. Random 48-byte `master_secret`.
 2. Init chip M&D slot pairs `0&1, 2&3, …, 14&15` (host: `0&1 … 6&7`).
@@ -155,18 +155,18 @@ Eight wrong PINs on silicon (four on the host model) lock ML-KEM forever until a
 
 Until paired, L3 uses factory **SH0** (pairing slot 0). Firmware default is **eng-sample** SH0 unless `SE_TROPIC_SH0_PROD` (host model always prod0).
 
-`TROPIC PAIRING n y` (`n` = 1–3):
+MANAGE PAIRING (PIN + slot 1–3):
 
 1. Generate X25519 (priv from MCU RNG).
 2. Write **public** to Tropic pairing slot `n`.
 3. Persist priv+pub in MCU NV.
 4. `lt_pairing_key_invalidate(slot 0)` — factory SH0 **burned**.
 5. Re-open L3 with the new slot.
-6. Print `TROPIC PAIRING KEY n <priv-hex> <pub-hex>` on USB so UserApp can save `pairing.key` next to the device cert.
+6. Log pairing **pub** only. The private key is never printed or saved on the host.
 
-Irreversible on silicon. The pairing **private** key is in MCU NV (and, after INIT, in the host `pairing.key`) so a Tropic-only dump cannot impersonate L3 after SH0 is gone.
+Irreversible on silicon. The pairing **private** key is in MCU NV so a Tropic-only dump cannot impersonate L3 after SH0 is gone.
 
-After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start from factory keys. `TROPIC PAIRING n LOAD <priv> <pub>` writes the saved key back into MCU NV (no Tropic write) and re-opens L3. UserApp INIT does this automatically when `pairing.key` is present.
+After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start from factory keys. See [PRODUCTION.md](PRODUCTION.md).
 
 ---
 
@@ -182,7 +182,7 @@ After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start 
 
 Host model **does not** use `secure_dwk` for Tropic AEAD: [port_posix.c](../host/tropic_model/port_posix.c) has a fixed 32-byte test key. Host still stores dwk in the NV header for the password hash. `OWNER REPLACE` does not rotate dwk. Pairing slots survive that wipe. MCU NV itself is plaintext.
 
-Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`). `KEM INIT` writes that copy; no reflash.
+Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`). `KEM INIT` writes that copy.
 
 ---
 
@@ -210,7 +210,7 @@ Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`).
 
 | Function | Algorithm | Where |
 | --- | --- | --- |
-| L3 session | **X25519** | Tropic pairing slots; **priv in MCU NV** after pairing (host `pairing.key` backup) |
+| L3 session | **X25519** | Tropic pairing slots; **priv in MCU NV** after pairing |
 | Session attest | **P-256 ECDSA** | Tropic ECC slot 0 (classical) |
 | R-MEM at rest | AES-256-GCM | Ciphertext on Tropic |
 | M&D | HMAC-SHA384 (MCU KDF, 64-byte key from two M&D outputs) + KMAC M&D (chip) | Tropic hardware slots + slot 511 NVM |
@@ -224,7 +224,7 @@ Readable: ciphertext of kem_ct, pads, wrapped seed, PIN NVM, consumed M&D state,
 
 Not decryptable without MCU secrets: kem_ct and PIN NVM (`secure_dwk`), slot 510 (PIN + MCU salt), pads (ML-KEM SS **and** `fill_id` from MCU NV).
 
-Post-pairing L3: pairing **private** is in MCU NV (and the host `pairing.key` backup); SH0 is invalid. Dump + broken X25519 still does not yield pad plaintext.
+Post-pairing L3: pairing **private** is in MCU NV; SH0 is invalid. Dump + broken X25519 still does not yield pad plaintext.
 
 A PQC attacker who “gets Tropic contents” therefore gets **classical chip state and AES-GCM blobs**, not the QKD pads. Pads need ML-KEM sk (PIN path) plus MCU `fill_id`.
 

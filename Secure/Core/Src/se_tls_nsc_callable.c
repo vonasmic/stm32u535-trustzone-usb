@@ -12,11 +12,10 @@
 #include "se_time.h"
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
-#include "se_tropic_pin.h"
-#include "se_nv.h"
 #include "se_tropic_session.h"
+#include "se_nv.h"
 #include "se_auth.h"
-#include "wolfssl/wolfcrypt/memory.h"
+#include "se_device_id.h"
 #if defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U)
 #include <arm_cmse.h>
 #endif
@@ -70,6 +69,23 @@ static void *ns_sanitize_out(void *p, uint32_t len)
     (void)base;
     return p;
 #endif
+}
+
+/** Collapsed USB Tropic status: ok, empty occupancy, or err. */
+static uint32_t tropic_nsc_ok_err(uint32_t st)
+{
+    return (st == SE_TROPIC_OK) ? SECURE_TROPIC_OK : SECURE_TROPIC_ERR;
+}
+
+static uint32_t tropic_nsc_dump(uint32_t st)
+{
+    if (st == SE_TROPIC_OK) {
+        return SECURE_TROPIC_OK;
+    }
+    if (st == SE_TROPIC_NOT_READY) {
+        return SECURE_USB_DUMP_EMPTY;
+    }
+    return SECURE_TROPIC_ERR;
 }
 
 uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
@@ -193,11 +209,6 @@ uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
     if (rc < 0) {
         return SECURE_USB_ERR;
     }
-    if (rc > 0) {
-        se_usb_debug_puts("TIME behind floor");
-    } else {
-        se_usb_debug_puts("time synced");
-    }
 
     return (se_tls_arm(mode) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
 }
@@ -208,11 +219,6 @@ uint32_t CSME_NSE_API SECURE_SetUnixTime_nsc_call(uint32_t unix_utc)
 
     if (rc < 0) {
         return SECURE_USB_ERR;
-    }
-    if (rc > 0) {
-        se_usb_debug_puts("TIME behind floor");
-    } else {
-        se_usb_debug_puts("time synced");
     }
     return SECURE_USB_OK;
 }
@@ -240,14 +246,30 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len)
     return SECURE_USB_OK;
 }
 
+uint32_t CSME_NSE_API SECURE_UsbDump_nsc_call(uint8_t status, const uint8_t *body, uint32_t len)
+{
+    const uint8_t *ns_body = NULL;
+
+    if (len > SE_USB_DUMP_BODY_MAX) {
+        return SECURE_USB_ERR;
+    }
+    if (len > 0U) {
+        ns_body = (const uint8_t *)ns_sanitize_in(body, len);
+        if (ns_body == NULL) {
+            return SECURE_USB_ERR;
+        }
+    }
+    return (se_usb_dump(status, ns_body, (uint16_t)len) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
+}
+
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void)
 {
-    return se_tropic_ping();
+    return tropic_nsc_ok_err(se_tropic_ping());
 }
 
 uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void)
 {
-    return se_tropic_info();
+    return tropic_nsc_ok_err(se_tropic_info());
 }
 
 uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64)
@@ -258,118 +280,92 @@ uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64)
     if (ns_out == NULL) {
         return SECURE_TROPIC_ERR;
     }
-    return se_tropic_pub_read(ns_out);
+    return tropic_nsc_dump(se_tropic_pub_read(ns_out));
 }
 
-uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(void)
-{
-    return se_tropic_client_hash_dump();
-}
-
-uint32_t CSME_NSE_API SECURE_TropicKeygen_nsc_call(const uint8_t *pin, uint32_t pin_len)
-{
-    const uint8_t *ns_pin;
-    uint8_t local[SE_TROPIC_PIN_SIZE_MAX];
-    uint32_t st;
-
-    if (pin_len == 0U) {
-        return se_tropic_keygen(NULL, 0U);
-    }
-    if (pin_len < SE_TROPIC_PIN_SIZE_MIN || pin_len > SE_TROPIC_PIN_SIZE_MAX) {
-        return SECURE_TROPIC_ERR;
-    }
-    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
-    if (ns_pin == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
-    (void)memcpy(local, ns_pin, pin_len);
-    st = se_tropic_keygen(local, (uint8_t)pin_len);
-    wc_ForceZero(local, sizeof(local));
-    return st;
-}
-
-uint32_t CSME_NSE_API SECURE_TropicSign_nsc_call(const uint8_t *hash32, uint8_t *rs64_out)
-{
-    const uint8_t *ns_hash;
-    uint8_t *ns_rs;
-
-    ns_hash = (const uint8_t *)ns_sanitize_in(hash32, 32U);
-    ns_rs = (uint8_t *)ns_sanitize_out(rs64_out, 64U);
-    if (ns_hash == NULL || ns_rs == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
-    return se_tropic_sign_hash(ns_hash, ns_rs);
-}
-
-uint32_t CSME_NSE_API SECURE_TropicKemInit_nsc_call(const uint8_t *pin, uint32_t pin_len,
-                                                    uint32_t confirm)
-{
-    const uint8_t *ns_pin;
-
-    if (pin_len < SE_TROPIC_PIN_SIZE_MIN || pin_len > SE_TROPIC_PIN_SIZE_MAX) {
-        return SECURE_TROPIC_ERR;
-    }
-    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
-    if (ns_pin == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
-    if (confirm != 0U) {
-        return se_tropic_kem_init_confirm(ns_pin, (uint8_t)pin_len, NULL, 0U);
-    }
-    return se_tropic_kem_init_probe();
-}
-
-uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void)
-{
-    return se_tropic_kem_pub_dump();
-}
-
-uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(void)
-{
-    return se_tropic_otp_left_dump();
-}
-
-uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot, uint8_t *out64)
+uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(uint8_t *out48)
 {
     uint8_t *ns_out;
-    uint32_t st;
 
-    if (slot > 255U) {
-        return SECURE_TROPIC_ERR;
-    }
-    ns_out = (uint8_t *)ns_sanitize_out(out64, 64U);
+    ns_out = (uint8_t *)ns_sanitize_out(out48, SE_TROPIC_CLIENT_HASH_LEN);
     if (ns_out == NULL) {
         return SECURE_TROPIC_ERR;
     }
-    st = se_create_pairing_key_to_tropic((uint8_t)slot);
-    if (st != SECURE_TROPIC_OK) {
-        (void)memset(ns_out, 0, 64U);
-        return st;
-    }
-    st = se_tropic_pairing_export(NULL, ns_out, ns_out + 32U);
-    if (st != SECURE_TROPIC_OK) {
-        (void)memset(ns_out, 0, 64U);
-    }
-    return st;
+    return tropic_nsc_ok_err(se_tropic_client_hash_read(ns_out));
 }
 
-uint32_t CSME_NSE_API SECURE_TropicPairingLoad_nsc_call(uint32_t slot, const uint8_t *in64)
+uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(uint8_t *out, uint32_t *len_inout)
 {
-    const uint8_t *ns_in;
-    uint8_t local[64];
-    uint32_t st;
+    uint8_t *ns_out;
+    uint32_t *ns_len;
+    uint16_t n = 0U;
+    uint32_t cap;
+    lt_ret_t ret;
 
-    if (slot > 255U) {
+    ns_len = (uint32_t *)ns_sanitize_out(len_inout, (uint32_t)sizeof(uint32_t));
+    if (ns_len == NULL) {
         return SECURE_TROPIC_ERR;
     }
-    ns_in = (const uint8_t *)ns_sanitize_in(in64, 64U);
-    if (ns_in == NULL) {
+    cap = *ns_len;
+    if ((cap < 1U) || (cap > SE_USB_DUMP_BODY_MAX)) {
         return SECURE_TROPIC_ERR;
     }
-    (void)memcpy(local, ns_in, sizeof(local));
-    st = se_tropic_pairing_load((uint8_t)slot, local, local + 32U);
-    wc_ForceZero(local, sizeof(local));
-    return st;
+    ns_out = (uint8_t *)ns_sanitize_out(out, cap);
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    if (se_device_id_ensure() != LT_OK) {
+        return SECURE_TROPIC_ERR;
+    }
+    n = (uint16_t)cap;
+    ret = se_device_id_export_pub(ns_out, &n, (uint16_t)cap);
+    if (ret != LT_OK) {
+        return SECURE_TROPIC_ERR;
+    }
+    *ns_len = (uint32_t)n;
+    return SECURE_TROPIC_OK;
+}
+
+uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(uint8_t *out, uint32_t *len_inout)
+{
+    uint8_t *ns_out;
+    uint32_t *ns_len;
+    uint16_t n = 0U;
+    uint32_t cap;
+
+    ns_len = (uint32_t *)ns_sanitize_out(len_inout, (uint32_t)sizeof(uint32_t));
+    if (ns_len == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    cap = *ns_len;
+    if ((cap < 1U) || (cap > SE_TROPIC_MLKEM_PK_LEN)) {
+        return SECURE_TROPIC_ERR;
+    }
+    ns_out = (uint8_t *)ns_sanitize_out(out, cap);
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    n = 0U;
+    {
+        uint32_t st = tropic_nsc_dump(se_tropic_mlkem_pub_read(ns_out, (uint16_t)cap, &n));
+
+        if (st != SECURE_TROPIC_OK) {
+            return st;
+        }
+        *ns_len = (uint32_t)n;
+        return SECURE_TROPIC_OK;
+    }
+}
+
+uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4])
+{
+    uint32_t *ns_out;
+
+    ns_out = (uint32_t *)ns_sanitize_out(out_quotas, (uint32_t)(4U * sizeof(uint32_t)));
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    return tropic_nsc_ok_err(se_tropic_otp_left(ns_out));
 }
 
 static uint32_t peer_lt_to_nsc(lt_ret_t ret)
@@ -377,108 +373,10 @@ static uint32_t peer_lt_to_nsc(lt_ret_t ret)
     if (ret == LT_OK) {
         return SECURE_PEER_OK;
     }
-    if (ret == SE_NV_PEER_EXISTS) {
-        return SECURE_PEER_EXISTS;
-    }
     if (ret == SE_NV_PEER_NOT_FOUND) {
         return SECURE_PEER_NOT_FOUND;
     }
-    if (ret == SE_NV_PEER_FULL) {
-        return SECURE_PEER_FULL;
-    }
-    if (ret == SE_TROPIC_LT_TAMPERED) {
-        return SECURE_TROPIC_TAMPERED;
-    }
     return SECURE_PEER_ERR;
-}
-
-static uint32_t peer_require_pin(const uint8_t *pin, uint32_t pin_len)
-{
-    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
-    lt_handle_t *h;
-    lt_ret_t ret;
-
-    if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) ||
-        (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-        return SECURE_PEER_ERR;
-    }
-    if (se_tropic_init_session() != SE_TROPIC_OK) {
-        return SECURE_PEER_ERR;
-    }
-    h = se_tropic_handle();
-    if (h == NULL) {
-        return SECURE_PEER_ERR;
-    }
-    ret = se_tropic_pin_check(h, pin, (uint8_t)pin_len, NULL, 0U, final_key);
-    wc_ForceZero(final_key, sizeof(final_key));
-    if (ret != LT_OK) {
-        return SECURE_PEER_PIN_FAIL;
-    }
-    return SECURE_PEER_OK;
-}
-
-uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const SECURE_PeerAddArgs *args)
-{
-    const SECURE_PeerAddArgs *ns_args;
-    SECURE_PeerAddArgs local;
-    const uint8_t *ns_name;
-    const uint8_t *ns_hash;
-    const uint8_t *ns_pin;
-    uint8_t local_pin[SE_TROPIC_PIN_SIZE_MAX];
-    uint32_t st;
-
-    ns_args = (const SECURE_PeerAddArgs *)ns_sanitize_in(args, (uint32_t)sizeof(*args));
-    if (ns_args == NULL) {
-        return SECURE_PEER_ERR;
-    }
-    (void)memcpy(&local, ns_args, sizeof(local));
-    if ((local.name_len < 1U) || (local.name_len > SECURE_PEER_NAME_MAX)) {
-        return SECURE_PEER_ERR;
-    }
-    if ((local.pin_len < SE_TROPIC_PIN_SIZE_MIN) || (local.pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-        return SECURE_PEER_ERR;
-    }
-    ns_name = (const uint8_t *)ns_sanitize_in(local.name, local.name_len);
-    ns_hash = (const uint8_t *)ns_sanitize_in(local.hash48, SECURE_PEER_HASH_LEN);
-    ns_pin = (const uint8_t *)ns_sanitize_in(local.pin, local.pin_len);
-    if ((ns_name == NULL) || (ns_hash == NULL) || (ns_pin == NULL)) {
-        return SECURE_PEER_ERR;
-    }
-    (void)memcpy(local_pin, ns_pin, local.pin_len);
-    st = peer_require_pin(local_pin, local.pin_len);
-    wc_ForceZero(local_pin, sizeof(local_pin));
-    if (st != SECURE_PEER_OK) {
-        return st;
-    }
-    return peer_lt_to_nsc(se_nv_peer_add(ns_name, (uint8_t)local.name_len, ns_hash));
-}
-
-uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len,
-                                                 const uint8_t *pin, uint32_t pin_len)
-{
-    const uint8_t *ns_name;
-    const uint8_t *ns_pin;
-    uint8_t local_pin[SE_TROPIC_PIN_SIZE_MAX];
-    uint32_t st;
-
-    if ((name_len < 1U) || (name_len > SECURE_PEER_NAME_MAX)) {
-        return SECURE_PEER_ERR;
-    }
-    if ((pin_len < SE_TROPIC_PIN_SIZE_MIN) || (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-        return SECURE_PEER_ERR;
-    }
-    ns_name = (const uint8_t *)ns_sanitize_in(name, name_len);
-    ns_pin = (const uint8_t *)ns_sanitize_in(pin, pin_len);
-    if ((ns_name == NULL) || (ns_pin == NULL)) {
-        return SECURE_PEER_ERR;
-    }
-    (void)memcpy(local_pin, ns_pin, pin_len);
-    st = peer_require_pin(local_pin, pin_len);
-    wc_ForceZero(local_pin, sizeof(local_pin));
-    if (st != SECURE_PEER_OK) {
-        return st;
-    }
-    return peer_lt_to_nsc(se_nv_peer_remove(ns_name, (uint8_t)name_len));
 }
 
 uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
@@ -486,9 +384,6 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
     uint8_t n = 0U;
     lt_ret_t ret = se_nv_peer_count(&n);
 
-    if (ret == SE_TROPIC_LT_TAMPERED) {
-        return SECURE_TROPIC_TAMPERED;
-    }
     if (ret != LT_OK) {
         return 0x80u;
     }

@@ -2,16 +2,17 @@
  * @file    test_i_post_tls.c
  * @brief   Group I: encrypt-mode PIN+plaintext body and OTP reply slots
  *
- * No wolfSSL client. After a G-style QKD load, parse the TLS encrypt header
- * (u8 pin_len | pin | u32 LE msg_len) then plaintext; reply is n_pads + records.
- * XOR each pad, and encode the OTP pad-record reply. Also covers leftover
- * TLS bytes, a two-pad Tropic XOR, a 100 KiB encrypt, remaining-byte query,
+ * No wolfSSL client. After a G-style QKD load, drive the production
+ * secure_otp_session_feed path (PIN + plaintext / decrypt stream) and collect
+ * the encoded OTP reply. XOR each pad on the device, leftover TLS bytes,
+ * a two-pad Tropic XOR, a 100 KiB encrypt, remaining-byte query,
  * decrypt skip-ahead, and encrypt/decrypt refuse when the request needs more
- * pads than remain (fail-early, no partial ciphertext).
+ * pads than remain (fail-early, no partial ciphertext). Codec-only pad
+ * framing stays in test_otp_parse_pads().
  */
 #include "test_harness.h"
 #include "secure_qkd_ingest.h"
-#include "secure_otp.h"
+#include "host_secure_otp_test.h"
 #include "secure_lv.h"
 #include "se_le.h"
 #include "se_tropic.h"
@@ -90,38 +91,6 @@ static uint32_t feed_qkd(const uint8_t *blob, uint32_t blob_len)
         }
         st = secure_qkd_ingest(blob + off, take, SECURE_QKD_INGEST_CHUNK, NULL);
         off += take;
-    }
-    return st;
-}
-
-/** Parse PIN + length field from @p blob in CHUNK_SIZE slices. */
-static uint32_t parse_request_in_chunks(const uint8_t *blob, uint32_t blob_len, uint8_t decrypt)
-{
-    uint32_t off = 0U;
-    uint32_t st = SECURE_OTP_REQ_OK;
-
-    while (off < blob_len) {
-        uint32_t take = blob_len - off;
-        uint32_t consumed = 0U;
-
-        if (take > CHUNK_SIZE) {
-            take = CHUNK_SIZE;
-        }
-        if (decrypt != 0U) {
-            st = secure_otp_decrypt_parse_request(blob + off, take, &consumed);
-        } else {
-            st = secure_otp_encrypt_parse_request(blob + off, take, &consumed);
-        }
-        if (consumed == 0U) {
-            return SECURE_OTP_REQ_PARSE;
-        }
-        off += consumed;
-        if (st == SECURE_OTP_REQ_COMPLETE) {
-            return st;
-        }
-        if (st != SECURE_OTP_REQ_OK) {
-            return st;
-        }
     }
     return st;
 }
@@ -223,6 +192,83 @@ static uint32_t parse_until_pad_ready(const uint8_t **p, uint32_t *left)
     return st;
 }
 
+static int session_append_tx(uint8_t *out, uint32_t cap, uint32_t *out_len)
+{
+    uint16_t n = 0U;
+    const uint8_t *p = secure_otp_session_tx(&n);
+
+    if ((p == NULL) || (n == 0U) || (out == NULL) || (out_len == NULL)) {
+        return -1;
+    }
+    if ((*out_len + (uint32_t)n) > cap) {
+        return -1;
+    }
+    (void)memcpy(out + *out_len, p, n);
+    *out_len += (uint32_t)n;
+    secure_otp_session_tx_consumed(n);
+    return 0;
+}
+
+static int session_drain_tx(uint8_t *out, uint32_t cap, uint32_t *out_len)
+{
+    int rc;
+
+    if (session_append_tx(out, cap, out_len) != 0) {
+        return -1;
+    }
+    rc = secure_otp_session_tx_complete();
+    while (rc == SECURE_OTP_SESSION_REPLY) {
+        if (session_append_tx(out, cap, out_len) != 0) {
+            return -1;
+        }
+        rc = secure_otp_session_tx_complete();
+    }
+    return rc;
+}
+
+/**
+ * Feed @p in in CHUNK_SIZE slices through the production session path.
+ * @return 0 need more input, 1 session done, -1 fail.
+ */
+static int pump_otp_session(const uint8_t *in, uint32_t in_len, uint8_t *out, uint32_t cap,
+                            uint32_t *out_len)
+{
+    uint32_t off = 0U;
+
+    if (out_len == NULL) {
+        return -1;
+    }
+    *out_len = 0U;
+    while ((off < in_len) || (secure_otp_session_has_in() != 0)) {
+        int rc;
+
+        if (secure_otp_session_has_in() != 0) {
+            rc = secure_otp_session_feed(NULL, 0U);
+        } else {
+            uint32_t take = in_len - off;
+
+            if (take > CHUNK_SIZE) {
+                take = CHUNK_SIZE;
+            }
+            rc = secure_otp_session_feed(in + off, take);
+            off += take;
+        }
+        if (rc < 0) {
+            return -1;
+        }
+        if (rc == SECURE_OTP_SESSION_REPLY) {
+            rc = session_drain_tx(out, cap, out_len);
+            if (rc < 0) {
+                return -1;
+            }
+            if (rc == SECURE_OTP_SESSION_DONE) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void pattern_keystream(uint8_t *out, uint16_t len, uint16_t slot)
 {
     uint16_t i;
@@ -260,7 +306,6 @@ static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
     uint32_t left_before = 0U;
     uint32_t left_after = 0U;
     uint32_t hdr_len = 0U;
-    uint32_t st;
     uint32_t off = 0U;
     uint32_t cursor_before = 0U;
     uint32_t cursor_after = 0U;
@@ -307,48 +352,64 @@ static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
     (void)memcpy(hdr + hdr_len, pin, pin_len);
     hdr_len += (uint32_t)pin_len;
     se_append_u32le(hdr, &hdr_len, LONG_MSG_LEN);
-    secure_otp_reset();
-    st = parse_request_in_chunks(hdr, hdr_len, 0U);
-    TEST_ASSERT_EQ(st, SECURE_OTP_REQ_COMPLETE, "100 KiB header complete");
-    TEST_ASSERT_EQ(secure_otp_encrypt_msg_len(), LONG_MSG_LEN, "100 KiB msg_len");
-    TEST_ASSERT(secure_otp_request_pin(NULL) != NULL, "100 KiB pin ptr");
+    secure_otp_session_reset();
+    secure_otp_session_begin(0U);
+    {
+        uint8_t rec[4u + 4u + SE_TROPIC_RMEM_PLAIN_MAX];
+        uint32_t rec_len = 0U;
+        uint16_t rec_i = 0U;
+        uint8_t hdr_done = 0U;
+        int rc;
 
-    /* Quota is decided from PIN+msg_len, before any plaintext or pad erase. */
-    ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, SE_NV_OTP_ENCRYPT, LONG_MSG_LEN, 0U);
-    TEST_ASSERT_EQ(ret, LT_OK, "100 KiB xor open");
-    TEST_ASSERT_EQ(se_tropic_otp_xor_pads_needed(), n_need, "100 KiB pad count");
-    secure_otp_encrypt_begin_plaintext(plain_max, LONG_MSG_LEN);
+        rc = pump_otp_session(hdr, hdr_len, rec, (uint32_t)sizeof(rec), &rec_len);
+        TEST_ASSERT_EQ(rc, 0, "100 KiB header needs plaintext");
+        TEST_ASSERT_EQ(rec_len, 0u, "100 KiB no reply on header");
+        TEST_ASSERT_EQ(secure_otp_session_err(), 0u, "100 KiB open ok");
 
-    while (off < LONG_MSG_LEN) {
-        uint32_t consumed = 0U;
-        uint16_t take;
-        uint16_t logical = 0U;
-        uint8_t *chunk;
-        uint16_t got = 0U;
+        while (off < LONG_MSG_LEN) {
+            uint16_t take;
+            uint32_t pos;
+            uint16_t slot;
+            uint16_t clen;
 
-        take = plain_max;
-        if (((uint32_t)take + off) > LONG_MSG_LEN) {
-            take = (uint16_t)(LONG_MSG_LEN - off);
+            take = plain_max;
+            if (((uint32_t)take + off) > LONG_MSG_LEN) {
+                take = (uint16_t)(LONG_MSG_LEN - off);
+            }
+            pattern_plaintext(pt, take, off);
+            rec_len = 0U;
+            rc = pump_otp_session(pt, (uint32_t)take, rec, (uint32_t)sizeof(rec), &rec_len);
+            TEST_ASSERT(rec_len > 4U, "100 KiB pad reply");
+            pos = 0U;
+            if (hdr_done == 0U) {
+                TEST_ASSERT_EQ(se_u32le(rec), n_need, "100 KiB n_pads");
+                pos = 4U;
+                hdr_done = 1U;
+            }
+            TEST_ASSERT((pos + 4U) <= rec_len, "100 KiB rec hdr");
+            slot = se_u16le(rec + pos);
+            clen = se_u16le(rec + pos + 2U);
+            pos += 4U;
+            TEST_ASSERT_EQ(slot, rec_i, "100 KiB logical");
+            TEST_ASSERT_EQ(clen, take, "100 KiB chunk len");
+            TEST_ASSERT_EQ(pos + (uint32_t)clen, rec_len, "100 KiB one record");
+            pattern_keystream(pad, take, slot);
+            for (i = 0; i < (int)take; i++) {
+                TEST_ASSERT(rec[pos + (uint32_t)i] == (uint8_t)(pt[i] ^ pad[i]),
+                            "100 KiB xor byte");
+            }
+            rec_i = (uint16_t)(rec_i + 1u);
+            off += (uint32_t)take;
+            if (off >= LONG_MSG_LEN) {
+                TEST_ASSERT_EQ(rc, 1, "100 KiB session done");
+            } else {
+                TEST_ASSERT_EQ(rc, 0, "100 KiB more pads");
+            }
         }
-        pattern_plaintext(pt, take, off);
-        st = secure_otp_read_pad(pt, (uint32_t)take, &consumed);
-        TEST_ASSERT_EQ(st, SECURE_OTP_PAD_READY, "100 KiB pad ready");
-        TEST_ASSERT_EQ(consumed, (uint32_t)take, "100 KiB consumed pad");
-        chunk = secure_otp_pad_payload(&got);
-        TEST_ASSERT(chunk != NULL, "100 KiB chunk");
-        TEST_ASSERT_EQ(got, take, "100 KiB take");
-        ret = se_tropic_otp_xor_pad(h, NULL, chunk, take, chunk, &logical, NULL);
-        TEST_ASSERT_EQ(ret, LT_OK, "100 KiB xor pad");
-        TEST_ASSERT_EQ(logical, (uint16_t)(off / (uint32_t)plain_max), "100 KiB logical");
-        pattern_keystream(pad, take, logical);
-        for (i = 0; i < (int)take; i++) {
-            TEST_ASSERT(chunk[i] == (uint8_t)(pt[i] ^ pad[i]), "100 KiB xor byte");
-        }
-        secure_otp_pad_done();
-        off += (uint32_t)take;
+        TEST_ASSERT_EQ(rec_i, n_pads_u16, "100 KiB all pads");
+        TEST_ASSERT_EQ(secure_otp_session_err(), 0u, "100 KiB no err");
     }
-    TEST_ASSERT_EQ(se_tropic_otp_xor_bytes_left(), 0u, "100 KiB stream done");
-    se_tropic_otp_xor_close();
+    secure_otp_session_reset();
 
     ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_after);
     TEST_ASSERT_EQ(ret, LT_OK, "remaining after 100 KiB");
@@ -357,16 +418,33 @@ static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
 
     ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor_before);
     TEST_ASSERT_EQ(ret, LT_OK, "cursor after 100 KiB");
-    ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, SE_NV_OTP_ENCRYPT, left_after + 1U, 0U);
-    TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "oversize after 100 KiB refuses");
-    se_tropic_otp_xor_close();
+    {
+        uint8_t over[1u + SE_TROPIC_PIN_SIZE_MAX + 4u];
+        uint8_t err_reply[8];
+        uint32_t over_len = 0U;
+        uint32_t err_len = 0U;
+        int rc;
+
+        over[over_len++] = pin_len;
+        (void)memcpy(over + over_len, pin, pin_len);
+        over_len += (uint32_t)pin_len;
+        se_append_u32le(over, &over_len, left_after + 1U);
+        secure_otp_session_reset();
+        secure_otp_session_begin(0U);
+        rc = pump_otp_session(over, over_len, err_reply, (uint32_t)sizeof(err_reply), &err_len);
+        TEST_ASSERT_EQ(rc, 1, "oversize session done");
+        TEST_ASSERT_EQ(secure_otp_session_err(), SECURE_OTP_ERR_EXHAUSTED, "oversize err");
+        TEST_ASSERT_EQ(err_len, 8u, "oversize err reply");
+        TEST_ASSERT_EQ(se_u32le(err_reply), 0u, "oversize n_pads");
+        TEST_ASSERT_EQ(se_u32le(err_reply + 4U), SECURE_OTP_ERR_EXHAUSTED, "oversize code");
+        secure_otp_session_reset();
+    }
     ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor_after);
     TEST_ASSERT_EQ(ret, LT_OK, "cursor after oversize refuse");
     TEST_ASSERT_EQ(cursor_after, cursor_before, "refuse does not burn pads");
 
     wc_ForceZero(ss, sizeof(ss));
     wc_ForceZero(kem_ct, sizeof(kem_ct));
-    secure_otp_reset();
     return 0;
 }
 
@@ -556,7 +634,7 @@ static int test_otp_parse_pads(void)
 int main(void)
 {
     lt_handle_t *h;
-    const uint8_t pin[] = {9, 8, 7, 6};
+    const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint8_t kem_ct[SE_TROPIC_KEM_CT_LEN];
     uint8_t ss[SE_TROPIC_MLKEM_SS_LEN];
@@ -585,13 +663,9 @@ int main(void)
     uint32_t blob_len = 0U;
     uint32_t body_len = 0U;
     uint16_t pk_len = 0U;
-    uint16_t slot_used = 0U;
-    uint16_t logical_slots[4];
-    uint16_t slots_n = 0U;
     uint32_t st;
     uint32_t count = 0U;
     uint32_t cursor = 0U;
-    uint8_t pin_len = 0U;
     uint32_t reply_off;
     lt_ret_t ret;
     int i;
@@ -719,64 +793,29 @@ int main(void)
     (void)memcpy(body + body_len, msg, sizeof(msg));
     body_len += (uint32_t)sizeof(msg);
 
-    secure_otp_reset();
-    st = parse_request_in_chunks(body, body_len, 0U);
-    TEST_ASSERT_EQ(st, SECURE_OTP_REQ_COMPLETE, "encrypt header complete");
-    TEST_ASSERT(secure_otp_request_pin(&pin_len) != NULL, "pin ptr");
-    TEST_ASSERT_EQ(pin_len, (uint8_t)sizeof(pin), "pin len");
-    TEST_ASSERT_EQ(secure_otp_encrypt_msg_len(), (uint32_t)sizeof(msg), "msg_len");
-
-    ret = se_tropic_otp_xor_open(h, secure_otp_request_pin(&pin_len), pin_len, NULL, 0U,
-                                     SE_NV_OTP_ENCRYPT, (uint32_t)sizeof(msg), 0U);
-    TEST_ASSERT_EQ(ret, LT_OK, "stream begin");
-    TEST_ASSERT_EQ(se_tropic_otp_xor_pads_needed(), 1u, "one pad needed");
-    secure_otp_encrypt_begin_plaintext(se_tropic_otp_xor_pad_max(), (uint32_t)sizeof(msg));
+    secure_otp_session_reset();
+    secure_otp_session_begin(0U);
     {
-        const uint8_t *p = body + 1U + sizeof(pin) + 4U;
-        uint32_t left = (uint32_t)sizeof(msg);
-        uint8_t *chunk;
-        uint16_t take = 0U;
-        uint16_t logical = 0U;
+        int rc = pump_otp_session(body, body_len, reply, (uint32_t)sizeof(reply), &reply_off);
 
-        st = parse_until_pad_ready(&p, &left);
-        TEST_ASSERT_EQ(st, SECURE_OTP_PAD_READY, "32 B pad ready");
-        TEST_ASSERT_EQ(left, 0u, "single pad leftover empty");
-        chunk = secure_otp_pad_payload(&take);
-        TEST_ASSERT(chunk != NULL, "payload chunk");
-        TEST_ASSERT_EQ(take, (uint16_t)sizeof(msg), "take 32");
-        ret = se_tropic_otp_xor_pad(h, NULL, chunk, take, chunk, &logical, &slot_used);
-        TEST_ASSERT_EQ(ret, LT_OK, "stream pad");
-        TEST_ASSERT_EQ(slot_used, SE_TROPIC_PAD_FIRST, "first physical pad");
-        TEST_ASSERT_EQ(logical, 0u, "logical 0");
-        logical_slots[0] = logical;
-        slots_n = 1U;
-        (void)memcpy(out, chunk, take);
-        for (i = 0; i < (int)sizeof(msg); i++) {
-            TEST_ASSERT(out[i] == (uint8_t)(msg[i] ^ pad0[i]), "otp xor pad0");
-        }
-
-        reply_off = 0U;
-        TEST_ASSERT(secure_otp_encode_n_pads(1u, reply) == 0, "otp count");
-        reply_off = 4U;
-        TEST_ASSERT(otp_append(reply, (uint32_t)sizeof(reply), &reply_off, 0U, logical, chunk,
-                               take) == 0,
-                    "otp record");
-        secure_otp_pad_done();
-        TEST_ASSERT_EQ(se_tropic_otp_xor_bytes_left(), 0u, "stream done");
-        se_tropic_otp_xor_close();
+        TEST_ASSERT_EQ(rc, 1, "32 B session done");
+        TEST_ASSERT_EQ(secure_otp_session_err(), 0u, "32 B no err");
     }
-    TEST_ASSERT_EQ(slots_n, 1u, "one logical slot");
+    secure_otp_session_reset();
     TEST_ASSERT(reply_off == (4U + 4U + sizeof(out)), "otp stream size");
     TEST_ASSERT_EQ(se_u32le(reply), 1u, "n_pads");
     TEST_ASSERT_EQ(se_u16le(reply + 4), 0u, "slot 0");
-    TEST_ASSERT_EQ(se_u16le(reply + 6), (uint16_t)sizeof(out),
-                   "chunk length");
-    TEST_ASSERT(memcmp(reply + 8, out, sizeof(out)) == 0, "ct bytes");
+    TEST_ASSERT_EQ(se_u16le(reply + 6), (uint16_t)sizeof(out), "chunk length");
+    (void)memcpy(out, reply + 8, sizeof(out));
+    for (i = 0; i < (int)sizeof(msg); i++) {
+        TEST_ASSERT(out[i] == (uint8_t)(msg[i] ^ pad0[i]), "otp xor pad0");
+    }
     {
         uint16_t decoded_slots[4];
         uint16_t decoded_n = 0U;
         uint8_t decoded_ct[32];
         uint32_t decoded_ct_len = 0U;
+        uint32_t cursor_after = 0U;
 
         TEST_ASSERT(encrypt_parse_reply(reply, reply_off, decoded_slots,
                                         (uint16_t)(sizeof(decoded_slots) / sizeof(decoded_slots[0])),
@@ -787,6 +826,9 @@ int main(void)
         TEST_ASSERT_EQ(decoded_slots[0], 0u, "decoded slot 0");
         TEST_ASSERT_EQ(decoded_ct_len, (uint32_t)sizeof(out), "decoded ct len");
         TEST_ASSERT(memcmp(decoded_ct, out, sizeof(out)) == 0, "decoded ct bytes");
+        ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_ENCRYPT, &cursor_after);
+        TEST_ASSERT_EQ(ret, LT_OK, "cursor after 32 B");
+        TEST_ASSERT_EQ(cursor_after, (uint32_t)SE_TROPIC_PAD_FIRST + 1U, "burned first pad");
     }
 
     /* Two Tropic pads: leftover ingest, two reply records. */
@@ -837,51 +879,27 @@ int main(void)
     for (i = 0; i < (int)msg2_len; i++) {
         msg2[i] = (uint8_t)(0x80u + (uint8_t)i);
     }
-    ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_ENCRYPT, msg2_len, 0U);
-    TEST_ASSERT_EQ(ret, LT_OK, "two-pad begin");
-    TEST_ASSERT_EQ(se_tropic_otp_xor_pads_needed(), 2u, "two pads needed");
-    TEST_ASSERT_EQ(se_tropic_otp_xor_pad_max(), plain_max, "stream plain_max");
-    secure_otp_encrypt_begin_plaintext(plain_max, msg2_len);
     {
-        const uint8_t *p = msg2;
-        uint32_t left = msg2_len;
-        uint16_t rec = 0U;
-        uint32_t msg_off = 0U;
+        uint8_t req2[1u + 8u + 4u + SE_TROPIC_RMEM_PLAIN_MAX + 16u];
+        uint32_t req2_len = 0U;
+        int rc;
 
-        reply_off = 0U;
-        TEST_ASSERT(secure_otp_encode_n_pads(2u, reply2) == 0, "two-pad count");
-        reply_off = 4U;
+        req2[req2_len++] = (uint8_t)sizeof(pin);
+        (void)memcpy(req2 + req2_len, pin, sizeof(pin));
+        req2_len += (uint32_t)sizeof(pin);
+        se_append_u32le(req2, &req2_len, msg2_len);
+        (void)memcpy(req2 + req2_len, msg2, msg2_len);
+        req2_len += msg2_len;
+        TEST_ASSERT(req2_len <= (uint32_t)sizeof(req2), "two-pad request fits");
 
-        while (left > 0U) {
-            uint8_t *chunk;
-            uint16_t take = 0U;
-            uint16_t logical = 0U;
-            uint16_t j;
-
-            st = parse_until_pad_ready(&p, &left);
-            TEST_ASSERT_EQ(st, SECURE_OTP_PAD_READY, "two-pad ready");
-            chunk = secure_otp_pad_payload(&take);
-            TEST_ASSERT(chunk != NULL, "two-pad chunk");
-            ret = se_tropic_otp_xor_pad(h, NULL, chunk, take, chunk, &logical, NULL);
-            TEST_ASSERT_EQ(ret, LT_OK, "two-pad xor");
-            TEST_ASSERT_EQ(logical, rec, "two-pad logical");
-            for (j = 0U; j < take; j++) {
-                uint8_t expect = (uint8_t)(msg2[msg_off + j] ^ ((rec == 0U) ? pad_a[j] : pad_b[j]));
-
-                TEST_ASSERT(chunk[j] == expect, "two-pad xor byte");
-            }
-            TEST_ASSERT(otp_append(reply2, (uint32_t)sizeof(reply2), &reply_off, 0U, logical, chunk,
-                                   take) == 0,
-                        "two-pad record");
-            (void)memcpy(out2 + msg_off, chunk, take);
-            msg_off += take;
-            rec = (uint16_t)(rec + 1u);
-            secure_otp_pad_done();
-        }
-        TEST_ASSERT_EQ(rec, 2u, "two records");
-        TEST_ASSERT_EQ(se_tropic_otp_xor_bytes_left(), 0u, "two-pad remaining");
+        secure_otp_session_reset();
+        secure_otp_session_begin(0U);
+        rc = pump_otp_session(req2, req2_len, reply2, (uint32_t)sizeof(reply2), &reply_off);
+        TEST_ASSERT_EQ(rc, 1, "two-pad session done");
+        TEST_ASSERT_EQ(secure_otp_session_err(), 0u, "two-pad no err");
+        secure_otp_session_reset();
         TEST_ASSERT(reply_off <= (uint32_t)sizeof(reply2), "two-pad reply fits");
-        se_tropic_otp_xor_close();
+        TEST_ASSERT_EQ(se_u32le(reply2), 2u, "two-pad n_pads");
     }
     {
         uint16_t decoded_slots[4];
@@ -896,6 +914,15 @@ int main(void)
         TEST_ASSERT_EQ(decoded_slots[0], 0u, "decoded slot 0");
         TEST_ASSERT_EQ(decoded_slots[1], 1u, "decoded slot 1");
         TEST_ASSERT_EQ(decoded_ct_len, msg2_len, "decoded two-pad len");
+        {
+            uint16_t j;
+
+            for (j = 0U; j < (uint16_t)msg2_len; j++) {
+                uint8_t ks = (j < plain_max) ? pad_a[j] : pad_b[j - plain_max];
+
+                TEST_ASSERT(out2[j] == (uint8_t)(msg2[j] ^ ks), "two-pad xor byte");
+            }
+        }
     }
     {
         const uint8_t *p = reply2 + 4U;
@@ -956,26 +983,35 @@ int main(void)
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "skip FINISH");
 
     {
-        uint16_t req_slot = 2U;
-        uint16_t logical = 0U;
-        uint16_t phys = 0U;
-        uint8_t ct[32];
+        uint8_t dreq[1u + 8u + 4u + 4u + 32u];
+        uint8_t drep[4u + 2u + 32u];
+        uint32_t dreq_len = 0U;
+        uint32_t drep_len = 0U;
         uint32_t skip_cur = 0U;
+        int rc;
 
+        dreq[dreq_len++] = (uint8_t)sizeof(pin);
+        (void)memcpy(dreq + dreq_len, pin, sizeof(pin));
+        dreq_len += (uint32_t)sizeof(pin);
+        se_append_u32le(dreq, &dreq_len, 1U);
+        se_append_u16le(dreq, &dreq_len, 2U);
+        se_append_u16le(dreq, &dreq_len, 32U);
         for (i = 0; i < 32; i++) {
-            ct[i] = (uint8_t)(0x5Au ^ pad_b[i]);
+            dreq[dreq_len++] = (uint8_t)(0x5Au ^ pad_b[i]);
         }
-        /* Decrypt counts pads from n_pads; a leftover msg_len (TLS union) is ignored. */
-        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_DECRYPT, 17U, 1U);
-        TEST_ASSERT_EQ(ret, LT_OK, "decrypt skip open");
-        ret = se_tropic_otp_xor_pad(h, &req_slot, ct, 32u, ct, &logical, &phys);
-        TEST_ASSERT_EQ(ret, LT_OK, "decrypt skip xor");
-        TEST_ASSERT_EQ(logical, 2u, "skipped to logical 2");
-        TEST_ASSERT_EQ(phys, (uint16_t)(SE_TROPIC_PAD_FIRST + 2u), "skipped to physical 5");
+
+        secure_otp_session_reset();
+        secure_otp_session_begin(1U);
+        rc = pump_otp_session(dreq, dreq_len, drep, (uint32_t)sizeof(drep), &drep_len);
+        TEST_ASSERT_EQ(rc, 1, "decrypt skip session done");
+        TEST_ASSERT_EQ(secure_otp_session_err(), 0u, "decrypt skip no err");
+        secure_otp_session_reset();
+        TEST_ASSERT_EQ(drep_len, 4U + 2U + 32U, "decrypt skip reply size");
+        TEST_ASSERT_EQ(se_u32le(drep), 1u, "decrypt skip n_pads");
+        TEST_ASSERT_EQ(se_u16le(drep + 4), 32u, "decrypt skip chunk");
         for (i = 0; i < 32; i++) {
-            TEST_ASSERT(ct[i] == (uint8_t)(0x5Au), "skip xor recovered pad2");
+            TEST_ASSERT(drep[6 + i] == (uint8_t)(0x5Au), "skip xor recovered pad2");
         }
-        se_tropic_otp_xor_close();
         ret = se_tropic_qkd_cursor_get(h, SE_NV_OTP_DECRYPT, &skip_cur);
         TEST_ASSERT_EQ(ret, LT_OK, "cursor after skip");
         TEST_ASSERT_EQ(skip_cur, (uint32_t)(SE_TROPIC_PAD_FIRST + 3u), "cursor past burned pads");
@@ -1022,13 +1058,40 @@ int main(void)
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left);
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining one pad");
         TEST_ASSERT_EQ(left, (uint32_t)pmax, "encrypt almost empty");
-        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_ENCRYPT, two, 0U);
-        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "encrypt over-consume");
-        se_tropic_otp_xor_close();
-        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_ENCRYPT,
-                                     LONG_MSG_LEN, 0U);
-        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "100 KiB over one pad refuses");
-        se_tropic_otp_xor_close();
+        {
+            uint8_t req[1u + 8u + 4u];
+            uint8_t err_reply[8];
+            uint32_t req_len;
+            uint32_t err_len;
+            int rc;
+
+            req_len = 0U;
+            req[req_len++] = (uint8_t)sizeof(pin);
+            (void)memcpy(req + req_len, pin, sizeof(pin));
+            req_len += (uint32_t)sizeof(pin);
+            se_append_u32le(req, &req_len, two);
+            secure_otp_session_reset();
+            secure_otp_session_begin(0U);
+            rc = pump_otp_session(req, req_len, err_reply, (uint32_t)sizeof(err_reply), &err_len);
+            TEST_ASSERT_EQ(rc, 1, "encrypt over-consume done");
+            TEST_ASSERT_EQ(secure_otp_session_err(), SECURE_OTP_ERR_EXHAUSTED, "encrypt over-consume");
+            TEST_ASSERT_EQ(err_len, 8u, "encrypt over-consume reply");
+            TEST_ASSERT_EQ(se_u32le(err_reply + 4U), SECURE_OTP_ERR_EXHAUSTED, "encrypt over code");
+            secure_otp_session_reset();
+
+            req_len = 0U;
+            req[req_len++] = (uint8_t)sizeof(pin);
+            (void)memcpy(req + req_len, pin, sizeof(pin));
+            req_len += (uint32_t)sizeof(pin);
+            se_append_u32le(req, &req_len, LONG_MSG_LEN);
+            secure_otp_session_begin(0U);
+            err_len = 0U;
+            rc = pump_otp_session(req, req_len, err_reply, (uint32_t)sizeof(err_reply), &err_len);
+            TEST_ASSERT_EQ(rc, 1, "100 KiB over one pad done");
+            TEST_ASSERT_EQ(secure_otp_session_err(), SECURE_OTP_ERR_EXHAUSTED,
+                           "100 KiB over one pad refuses");
+            secure_otp_session_reset();
+        }
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left);
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after 100 KiB refuse");
         TEST_ASSERT_EQ(left, (uint32_t)pmax, "refuse left the last pad");
@@ -1038,12 +1101,27 @@ int main(void)
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left);
         TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining one pad");
         TEST_ASSERT_EQ(left, (uint32_t)pmax, "decrypt almost empty");
-        ret = se_tropic_otp_xor_open(h, pin, sizeof(pin), NULL, 0U, SE_NV_OTP_DECRYPT, 0U, 2U);
-        TEST_ASSERT_EQ(ret, SE_TROPIC_LT_OTP_EXHAUSTED, "decrypt over-consume");
-        se_tropic_otp_xor_close();
+        {
+            uint8_t req[1u + 8u + 4u];
+            uint8_t err_reply[8];
+            uint32_t req_len = 0U;
+            uint32_t err_len = 0U;
+            int rc;
+
+            req[req_len++] = (uint8_t)sizeof(pin);
+            (void)memcpy(req + req_len, pin, sizeof(pin));
+            req_len += (uint32_t)sizeof(pin);
+            se_append_u32le(req, &req_len, 2U);
+            secure_otp_session_reset();
+            secure_otp_session_begin(1U);
+            rc = pump_otp_session(req, req_len, err_reply, (uint32_t)sizeof(err_reply), &err_len);
+            TEST_ASSERT_EQ(rc, 1, "decrypt over-consume done");
+            TEST_ASSERT_EQ(secure_otp_session_err(), SECURE_OTP_ERR_EXHAUSTED, "decrypt over-consume");
+            secure_otp_session_reset();
+        }
     }
 
-    secure_otp_reset();
+    secure_otp_session_reset();
     wc_ForceZero(ss, sizeof(ss));
     wc_ForceZero(kem_ct, sizeof(kem_ct));
     se_tropic_deinit_session();

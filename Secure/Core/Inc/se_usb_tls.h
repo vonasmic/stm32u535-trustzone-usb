@@ -14,11 +14,15 @@
 #define SE_USB_RX_RING_SIZE 16384u
 #define SE_USB_TX_RING_SIZE 8192u
 
-/** CDC status frame: DEBUG:<text>:DEBUG followed by CRLF. Host splits TLS at :DEBUG. */
-#define SE_USB_DEBUG_PREFIX     "DEBUG:"
-#define SE_USB_DEBUG_PREFIX_LEN 6u
-#define SE_USB_DEBUG_SUFFIX     ":DEBUG"
-#define SE_USB_DEBUG_SUFFIX_LEN 6u
+/** Typed dump on CDC TX. Host leftover splits on this magic (not TLS 0x16). */
+#define SE_USB_DUMP_MAGIC    0xB1u
+#define SE_USB_DUMP_OK       0u
+#define SE_USB_DUMP_ERR      1u
+#define SE_USB_DUMP_EMPTY    2u
+#define SE_USB_DUMP_REFUSED  3u
+#define SE_USB_DUMP_HDR_LEN  4u
+/** Largest dump body: raw ML-DSA-44 pub (CLIENT CSR). */
+#define SE_USB_DUMP_BODY_MAX 1312u
 
 typedef struct {
     uint8_t  buf[SE_USB_RX_RING_SIZE];
@@ -39,7 +43,7 @@ void se_usb_tls_init(void);
 void se_usb_tls_reset(void);
 void se_usb_tls_clear_rings(void);
 void se_usb_tls_clear_rx(void);
-/** Clear TX TLS bytes and allow DEBUG status lines again. */
+/** Clear TX TLS bytes and allow ASCII / dump frames again. */
 void se_usb_tls_end_tls_wire(void);
 
 void se_usb_tls_set_active(uint8_t active);
@@ -51,8 +55,12 @@ uint32_t se_usb_tls_rx_count(void);
 int se_usb_tls_rx_take(uint8_t *out, uint32_t max);
 uint8_t se_usb_tls_rx_overflow(void);
 
-/** Queue a framed DEBUG status line on the CDC TX ring for the host bridge. */
+/** Plain ASCII line (HELP / PING / INFO). Not used for errors. */
 void se_usb_debug_puts(const char *msg);
+/** USB / TLS / Tropic failure: the string {@code failed} only. */
+void se_usb_failed(void);
+/** Queue {@code 0xB1 | status | u16le len | body}. 0 on success, -1 if the ring is full. */
+int se_usb_dump(uint8_t status, const uint8_t *body, uint16_t len);
 
 void se_usb_tls_service_once(void);
 

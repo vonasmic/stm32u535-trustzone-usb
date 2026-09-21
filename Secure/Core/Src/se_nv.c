@@ -7,6 +7,7 @@
  * copied when those APIs run. The 8 KB work buffer is write-only.
  */
 #include "se_nv.h"
+#include "se_nv_internal.h"
 #include "se_le.h"
 #include "se_tropic_port.h"
 #include <string.h>
@@ -38,7 +39,7 @@
 #define SE_NV_OFF_P_PRIV    3188u
 #define SE_NV_OFF_SK_LEN    3220u
 #define SE_NV_OFF_SK        3222u
-#define SE_NV_REC_END       6294u
+#define SE_NV_REC_END       (SE_NV_OFF_SK + SE_NV_SK_MAX)
 #define SE_NV_OPS_LEN       (SE_NV_OFF_OWNER_LEN - SE_NV_OFF_FLAGS)
 
 #if SE_NV_REC_END > SE_NV_PAGE_SIZE
@@ -58,37 +59,6 @@ static int otp_dir_ok(se_nv_otp_dir_t dir)
 static uint16_t *cursor_field(se_nv_state_t *st, se_nv_otp_dir_t dir)
 {
     return (dir == SE_NV_OTP_DECRYPT) ? &st->cursor_decrypt : &st->cursor_encrypt;
-}
-
-static int peer_name_char_ok(uint8_t c)
-{
-    return ((c >= (uint8_t)'A') && (c <= (uint8_t)'Z')) ||
-           ((c >= (uint8_t)'a') && (c <= (uint8_t)'z')) ||
-           ((c >= (uint8_t)'0') && (c <= (uint8_t)'9')) || (c == (uint8_t)'_') ||
-           (c == (uint8_t)'.') || (c == (uint8_t)'-');
-}
-
-static int peer_name_ok(const uint8_t *name, uint8_t name_len)
-{
-    uint8_t i;
-
-    if ((name == NULL) || (name_len < 1u) || (name_len > SE_NV_PEER_NAME_MAX)) {
-        return 0;
-    }
-    for (i = 0U; i < name_len; i++) {
-        if (peer_name_char_ok(name[i]) == 0) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static int peer_names_equal(const uint8_t *a, uint8_t a_len, const uint8_t *b, uint8_t b_len)
-{
-    if (a_len != b_len) {
-        return 0;
-    }
-    return (memcmp(a, b, a_len) == 0) ? 1 : 0;
 }
 
 static int slice_blank(const uint8_t *p, uint16_t len)
@@ -222,7 +192,7 @@ static lt_ret_t unpack_ops(const uint8_t *ops, se_nv_state_t *out)
             return SE_TROPIC_LT_TAMPERED;
         }
         if (i < out->peer_count) {
-            if (peer_name_ok(p + 1u, nlen) == 0) {
+            if (se_nv_peer_name_ok(p + 1u, nlen) == 0) {
                 return SE_TROPIC_LT_TAMPERED;
             }
         } else if (nlen != 0U) {
@@ -279,6 +249,127 @@ static lt_ret_t nv_commit_write(void)
     return ret;
 }
 
+/** Begin, run @p fn against {@code s_nv_page}, commit. Wipes the page on @p fn failure. */
+static lt_ret_t nv_mutate(lt_ret_t (*fn)(void *), void *ctx)
+{
+    lt_ret_t ret;
+
+    ret = nv_begin_write();
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = fn(ctx);
+    if (ret != LT_OK) {
+        nv_work_wipe();
+        return ret;
+    }
+    return nv_commit_write();
+}
+
+static lt_ret_t nv_pack_ops_cb(void *ctx)
+{
+    pack_ops((const se_nv_state_t *)ctx, s_nv_page);
+    return LT_OK;
+}
+
+typedef struct {
+    const se_nv_state_t *st;
+    const uint8_t *priv;
+} nv_pairing_ctx_t;
+
+static lt_ret_t nv_pack_pairing_cb(void *ctx)
+{
+    const nv_pairing_ctx_t *c = ctx;
+
+    pack_ops(c->st, s_nv_page);
+    if (c->priv != NULL) {
+        (void)memcpy(s_nv_page + SE_NV_OFF_P_PRIV, c->priv, SE_NV_PAIRING_KEY_LEN);
+    } else {
+        wc_ForceZero(s_nv_page + SE_NV_OFF_P_PRIV, SE_NV_PAIRING_KEY_LEN);
+    }
+    return LT_OK;
+}
+
+typedef struct {
+    const uint8_t *spki;
+    uint16_t spki_len;
+    const uint8_t *pw_hash;
+} nv_owner_ctx_t;
+
+static lt_ret_t nv_set_owner_cb(void *ctx)
+{
+    const nv_owner_ctx_t *c = ctx;
+
+    (void)memset(s_nv_page + SE_NV_OFF_OWNER, 0, SE_NV_OWNER_SPKI_MAX);
+    se_put_u16le(s_nv_page + SE_NV_OFF_OWNER_LEN, c->spki_len);
+    (void)memcpy(s_nv_page + SE_NV_OFF_OWNER, c->spki, c->spki_len);
+    (void)memcpy(s_nv_page + SE_NV_OFF_PW, c->pw_hash, SE_NV_PW_HASH_LEN);
+    return LT_OK;
+}
+
+typedef struct {
+    const uint8_t *der;
+    uint16_t len;
+} nv_blob_ctx_t;
+
+static lt_ret_t nv_set_sk_cb(void *ctx)
+{
+    const nv_blob_ctx_t *c = ctx;
+
+    (void)memset(s_nv_page + SE_NV_OFF_SK, 0, SE_NV_SK_MAX);
+    se_put_u16le(s_nv_page + SE_NV_OFF_SK_LEN, c->len);
+    (void)memcpy(s_nv_page + SE_NV_OFF_SK, c->der, c->len);
+    return LT_OK;
+}
+
+static lt_ret_t nv_set_mlkem_cb(void *ctx)
+{
+    const nv_blob_ctx_t *c = ctx;
+
+    se_put_u16le(s_nv_page + SE_NV_OFF_MLKEM_LEN, c->len);
+    (void)memcpy(s_nv_page + SE_NV_OFF_MLKEM, c->der, SE_NV_MLKEM_MAX);
+    return LT_OK;
+}
+
+static lt_ret_t nv_clear_except_pairing_cb(void *ctx)
+{
+    uint8_t slot;
+    uint8_t pub[SE_NV_PAIRING_KEY_LEN];
+    uint8_t priv[SE_NV_PAIRING_KEY_LEN];
+    uint32_t flags;
+    int keep;
+
+    (void)ctx;
+    flags = se_u32le(s_nv_page + SE_NV_OFF_FLAGS);
+    keep = ((flags & SE_NV_FLAG_PAIRING) != 0U) ? 1 : 0;
+    slot = s_nv_page[SE_NV_OFF_P_SLOT];
+    (void)memcpy(pub, s_nv_page + SE_NV_OFF_P_PUB, sizeof(pub));
+    (void)memcpy(priv, s_nv_page + SE_NV_OFF_P_PRIV, sizeof(priv));
+    rec_init(s_nv_page);
+    if (keep != 0) {
+        s_nv_page[SE_NV_OFF_P_SLOT] = slot;
+        (void)memcpy(s_nv_page + SE_NV_OFF_P_PUB, pub, sizeof(pub));
+        (void)memcpy(s_nv_page + SE_NV_OFF_P_PRIV, priv, sizeof(priv));
+        se_put_u32le(s_nv_page + SE_NV_OFF_FLAGS, SE_NV_FLAG_PAIRING);
+    }
+    wc_ForceZero(priv, sizeof(priv));
+    return LT_OK;
+}
+
+static int nv_has_u16(uint16_t off, uint16_t min, uint16_t max)
+{
+    uint16_t len = 0U;
+    int present = 0;
+
+    if ((nv_rec_present(&present) != LT_OK) || (present == 0)) {
+        return 0;
+    }
+    if (nv_read_u16(off, &len) != LT_OK) {
+        return 0;
+    }
+    return ((len >= min) && (len <= max)) ? 1 : 0;
+}
+
 lt_ret_t se_nv_load(se_nv_state_t *out)
 {
     int present = 0;
@@ -307,17 +398,10 @@ lt_ret_t se_nv_load(se_nv_state_t *out)
 
 lt_ret_t se_nv_store(const se_nv_state_t *in)
 {
-    lt_ret_t ret;
-
     if (in == NULL) {
         return LT_PARAM_ERR;
     }
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    pack_ops(in, s_nv_page);
-    return nv_commit_write();
+    return nv_mutate(nv_pack_ops_cb, (void *)in);
 }
 
 int se_nv_have_fill(void)
@@ -546,13 +630,11 @@ lt_ret_t se_nv_set_pairing(uint8_t slot, const uint8_t priv[SE_NV_PAIRING_KEY_LE
     st.pairing_slot = slot;
     (void)memcpy(st.pairing_pub, pub, SE_NV_PAIRING_KEY_LEN);
     st.flags |= SE_NV_FLAG_PAIRING;
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
+    {
+        nv_pairing_ctx_t ctx = { &st, priv };
+
+        return nv_mutate(nv_pack_pairing_cb, &ctx);
     }
-    pack_ops(&st, s_nv_page);
-    (void)memcpy(s_nv_page + SE_NV_OFF_P_PRIV, priv, SE_NV_PAIRING_KEY_LEN);
-    return nv_commit_write();
 }
 
 lt_ret_t se_nv_get_pairing(uint8_t *slot, uint8_t priv[SE_NV_PAIRING_KEY_LEN],
@@ -613,153 +695,11 @@ lt_ret_t se_nv_clear_pairing(void)
     st.flags &= (uint32_t)~SE_NV_FLAG_PAIRING;
     st.pairing_slot = 0U;
     (void)memset(st.pairing_pub, 0, sizeof(st.pairing_pub));
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    pack_ops(&st, s_nv_page);
-    wc_ForceZero(s_nv_page + SE_NV_OFF_P_PRIV, SE_NV_PAIRING_KEY_LEN);
-    return nv_commit_write();
-}
+    {
+        nv_pairing_ctx_t ctx = { &st, NULL };
 
-lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
-                        const uint8_t hash48[SE_NV_PEER_HASH_LEN])
-{
-    se_nv_state_t st;
-    lt_ret_t ret;
-    uint8_t i;
-
-    if ((hash48 == NULL) || (peer_name_ok(name, name_len) == 0)) {
-        return LT_PARAM_ERR;
+        return nv_mutate(nv_pack_pairing_cb, &ctx);
     }
-    ret = se_nv_load(&st);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    for (i = 0U; i < st.peer_count; i++) {
-        if (peer_names_equal(st.peers[i].name, st.peers[i].name_len, name, name_len) != 0) {
-            return SE_NV_PEER_EXISTS;
-        }
-    }
-    if (st.peer_count >= SE_NV_PEER_MAX) {
-        return SE_NV_PEER_FULL;
-    }
-    i = st.peer_count;
-    st.peers[i].name_len = name_len;
-    (void)memset(st.peers[i].name, 0, SE_NV_PEER_NAME_MAX);
-    (void)memcpy(st.peers[i].name, name, name_len);
-    (void)memcpy(st.peers[i].hash, hash48, SE_NV_PEER_HASH_LEN);
-    st.peer_count = (uint8_t)(st.peer_count + 1u);
-    return se_nv_store(&st);
-}
-
-lt_ret_t se_nv_peer_remove(const uint8_t *name, uint8_t name_len)
-{
-    se_nv_state_t st;
-    lt_ret_t ret;
-    uint8_t i;
-    uint8_t found = SE_NV_PEER_MAX;
-
-    if (peer_name_ok(name, name_len) == 0) {
-        return LT_PARAM_ERR;
-    }
-    ret = se_nv_load(&st);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    for (i = 0U; i < st.peer_count; i++) {
-        if (peer_names_equal(st.peers[i].name, st.peers[i].name_len, name, name_len) != 0) {
-            found = i;
-            break;
-        }
-    }
-    if (found >= SE_NV_PEER_MAX) {
-        return SE_NV_PEER_NOT_FOUND;
-    }
-    for (i = found; i + 1u < st.peer_count; i++) {
-        st.peers[i] = st.peers[i + 1u];
-    }
-    st.peer_count = (uint8_t)(st.peer_count - 1u);
-    (void)memset(&st.peers[st.peer_count], 0, sizeof(st.peers[0]));
-    return se_nv_store(&st);
-}
-
-lt_ret_t se_nv_peer_count(uint8_t *count)
-{
-    uint8_t n = 0U;
-    int present = 0;
-    lt_ret_t ret;
-
-    if (count == NULL) {
-        return LT_PARAM_ERR;
-    }
-    *count = 0U;
-    ret = nv_rec_present(&present);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (present == 0) {
-        return LT_OK;
-    }
-    ret = se_tropic_port_nv_slice_read(SE_NV_OFF_NPEER, &n, 1U);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (n > SE_NV_PEER_MAX) {
-        return SE_TROPIC_LT_TAMPERED;
-    }
-    *count = n;
-    return LT_OK;
-}
-
-lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
-                        uint8_t hash48[SE_NV_PEER_HASH_LEN])
-{
-    uint8_t slot[SE_NV_PEER_SLOT_LEN];
-    uint8_t n = 0U;
-    uint8_t nlen;
-    uint8_t cap;
-    int present = 0;
-    lt_ret_t ret;
-
-    if ((name == NULL) || (name_len == NULL) || (hash48 == NULL)) {
-        return LT_PARAM_ERR;
-    }
-    cap = *name_len;
-    ret = nv_rec_present(&present);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (present == 0) {
-        return SE_NV_PEER_NOT_FOUND;
-    }
-    ret = se_tropic_port_nv_slice_read(SE_NV_OFF_NPEER, &n, 1U);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (n > SE_NV_PEER_MAX) {
-        return SE_TROPIC_LT_TAMPERED;
-    }
-    if (index >= n) {
-        return SE_NV_PEER_NOT_FOUND;
-    }
-    ret = se_tropic_port_nv_slice_read(
-        (uint16_t)(SE_NV_OFF_PEERS + ((uint16_t)index * SE_NV_PEER_SLOT_LEN)), slot,
-        SE_NV_PEER_SLOT_LEN);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    nlen = slot[0];
-    if ((nlen == 0U) || (nlen > SE_NV_PEER_NAME_MAX) || (peer_name_ok(slot + 1u, nlen) == 0)) {
-        return SE_TROPIC_LT_TAMPERED;
-    }
-    if (cap < nlen) {
-        return LT_PARAM_ERR;
-    }
-    (void)memcpy(name, slot + 1u, nlen);
-    (void)memcpy(hash48, slot + 1u + SE_NV_PEER_NAME_MAX, SE_NV_PEER_HASH_LEN);
-    *name_len = nlen;
-    return LT_OK;
 }
 
 void se_nv_pending_fill_set(const uint8_t fill_id[SE_NV_FILL_ID_LEN])
@@ -789,53 +729,17 @@ void se_nv_pending_fill_clear(void)
 
 int se_nv_has_owner(void)
 {
-    uint16_t len = 0U;
-    int present = 0;
-    lt_ret_t ret;
-
-    ret = nv_rec_present(&present);
-    if ((ret != LT_OK) || (present == 0)) {
-        return 0;
-    }
-    ret = nv_read_u16(SE_NV_OFF_OWNER_LEN, &len);
-    if (ret != LT_OK) {
-        return 0;
-    }
-    return (len > 0U) && (len <= SE_NV_OWNER_SPKI_MAX);
+    return nv_has_u16(SE_NV_OFF_OWNER_LEN, 1U, SE_NV_OWNER_SPKI_MAX);
 }
 
 int se_nv_has_device_sk(void)
 {
-    uint16_t len = 0U;
-    int present = 0;
-    lt_ret_t ret;
-
-    ret = nv_rec_present(&present);
-    if ((ret != LT_OK) || (present == 0)) {
-        return 0;
-    }
-    ret = nv_read_u16(SE_NV_OFF_SK_LEN, &len);
-    if (ret != LT_OK) {
-        return 0;
-    }
-    return (len > 0U) && (len <= SE_NV_SK_MAX);
+    return nv_has_u16(SE_NV_OFF_SK_LEN, 1U, SE_NV_SK_MAX);
 }
 
 int se_nv_has_mlkem(void)
 {
-    uint16_t len = 0U;
-    int present = 0;
-    lt_ret_t ret;
-
-    ret = nv_rec_present(&present);
-    if ((ret != LT_OK) || (present == 0)) {
-        return 0;
-    }
-    ret = nv_read_u16(SE_NV_OFF_MLKEM_LEN, &len);
-    if (ret != LT_OK) {
-        return 0;
-    }
-    return (len == SE_NV_MLKEM_MAX) ? 1 : 0;
+    return nv_has_u16(SE_NV_OFF_MLKEM_LEN, SE_NV_MLKEM_MAX, SE_NV_MLKEM_MAX);
 }
 
 lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len)
@@ -873,21 +777,16 @@ lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len)
 lt_ret_t se_nv_set_owner(const uint8_t *spki, uint16_t spki_len,
                          const uint8_t pw_hash[SE_NV_PW_HASH_LEN])
 {
-    lt_ret_t ret;
+    nv_owner_ctx_t ctx;
 
     if ((spki == NULL) || (pw_hash == NULL) || (spki_len == 0U) ||
         (spki_len > SE_NV_OWNER_SPKI_MAX)) {
         return LT_PARAM_ERR;
     }
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    (void)memset(s_nv_page + SE_NV_OFF_OWNER, 0, SE_NV_OWNER_SPKI_MAX);
-    se_put_u16le(s_nv_page + SE_NV_OFF_OWNER_LEN, spki_len);
-    (void)memcpy(s_nv_page + SE_NV_OFF_OWNER, spki, spki_len);
-    (void)memcpy(s_nv_page + SE_NV_OFF_PW, pw_hash, SE_NV_PW_HASH_LEN);
-    return nv_commit_write();
+    ctx.spki = spki;
+    ctx.spki_len = spki_len;
+    ctx.pw_hash = pw_hash;
+    return nv_mutate(nv_set_owner_cb, &ctx);
 }
 
 lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN])
@@ -953,19 +852,14 @@ lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap)
 
 lt_ret_t se_nv_set_device_sk(const uint8_t *der, uint16_t len)
 {
-    lt_ret_t ret;
+    nv_blob_ctx_t ctx;
 
     if ((der == NULL) || (len == 0U) || (len > SE_NV_SK_MAX)) {
         return LT_PARAM_ERR;
     }
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    (void)memset(s_nv_page + SE_NV_OFF_SK, 0, SE_NV_SK_MAX);
-    se_put_u16le(s_nv_page + SE_NV_OFF_SK_LEN, len);
-    (void)memcpy(s_nv_page + SE_NV_OFF_SK, der, len);
-    return nv_commit_write();
+    ctx.der = der;
+    ctx.len = len;
+    return nv_mutate(nv_set_sk_cb, &ctx);
 }
 
 lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len)
@@ -1002,45 +896,17 @@ lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len)
 
 lt_ret_t se_nv_set_mlkem_pk(const uint8_t *pk, uint16_t len)
 {
-    lt_ret_t ret;
+    nv_blob_ctx_t ctx;
 
     if ((pk == NULL) || (len != SE_NV_MLKEM_MAX)) {
         return LT_PARAM_ERR;
     }
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    se_put_u16le(s_nv_page + SE_NV_OFF_MLKEM_LEN, len);
-    (void)memcpy(s_nv_page + SE_NV_OFF_MLKEM, pk, SE_NV_MLKEM_MAX);
-    return nv_commit_write();
+    ctx.der = pk;
+    ctx.len = len;
+    return nv_mutate(nv_set_mlkem_cb, &ctx);
 }
 
 lt_ret_t se_nv_clear_except_pairing(void)
 {
-    uint8_t slot;
-    uint8_t pub[SE_NV_PAIRING_KEY_LEN];
-    uint8_t priv[SE_NV_PAIRING_KEY_LEN];
-    uint32_t flags;
-    int keep;
-    lt_ret_t ret;
-
-    ret = nv_begin_write();
-    if (ret != LT_OK) {
-        return ret;
-    }
-    flags = se_u32le(s_nv_page + SE_NV_OFF_FLAGS);
-    keep = ((flags & SE_NV_FLAG_PAIRING) != 0U) ? 1 : 0;
-    slot = s_nv_page[SE_NV_OFF_P_SLOT];
-    (void)memcpy(pub, s_nv_page + SE_NV_OFF_P_PUB, sizeof(pub));
-    (void)memcpy(priv, s_nv_page + SE_NV_OFF_P_PRIV, sizeof(priv));
-    rec_init(s_nv_page);
-    if (keep != 0) {
-        s_nv_page[SE_NV_OFF_P_SLOT] = slot;
-        (void)memcpy(s_nv_page + SE_NV_OFF_P_PUB, pub, sizeof(pub));
-        (void)memcpy(s_nv_page + SE_NV_OFF_P_PRIV, priv, sizeof(priv));
-        se_put_u32le(s_nv_page + SE_NV_OFF_FLAGS, SE_NV_FLAG_PAIRING);
-    }
-    wc_ForceZero(priv, sizeof(priv));
-    return nv_commit_write();
+    return nv_mutate(nv_clear_except_pairing_cb, NULL);
 }

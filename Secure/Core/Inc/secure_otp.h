@@ -1,12 +1,15 @@
 /**
  * @file    secure_otp.h
- * @brief   TLS OTP: parse SAE requests, assemble pads, encode SE replies
+ * @brief   TLS OTP consume session (parse / XOR / reply)
  *
- * ENCRYPT request  (SAE → SE):  u8 pin_len | pin | u32 msg_len LE | plaintext
- * ENCRYPT reply    (SE → SAE):  u32 n_pads LE | repeat: slot | chunk_len | ciphertext
+ * ENCRYPT request  (USER → SE):  u8 pin_len | pin | u32 msg_len LE | plaintext
+ * ENCRYPT reply    (SE → USER):  u32 n_pads LE | repeat: slot | chunk_len | ciphertext
  *
- * DECRYPT request  (SAE → SE):  u8 pin_len | pin | ENCRYPT reply (unchanged)
- * DECRYPT reply    (SE → SAE):  u32 n_pads LE | repeat: chunk_len | plaintext
+ * DECRYPT request  (USER → SE):  u8 pin_len | pin | ENCRYPT reply (unchanged)
+ * DECRYPT reply    (SE → USER):  u32 n_pads LE | repeat: chunk_len | plaintext
+ *
+ * TLS pumps bytes through {@code secure_otp_session_feed()}. Parse and encode
+ * stay inside secure_otp.c.
  */
 #ifndef SECURE_OTP_H
 #define SECURE_OTP_H
@@ -17,55 +20,36 @@
 extern "C" {
 #endif
 
-/** Return codes from secure_otp_*_parse_request() and secure_otp_read_pad(). */
-#define SECURE_OTP_REQ_OK       0u  /**< Need more bytes; keep feeding input (state kept). */
-#define SECURE_OTP_REQ_PARSE    3u  /**< Bad framing; parser reset — abort OTP/TLS session. */
-#define SECURE_OTP_REQ_COMPLETE 5u  /**< PIN + u32 length parsed — open XOR, then read pads. */
-#define SECURE_OTP_PAD_READY    6u  /**< One pad buffered — XOR, reply, secure_otp_pad_done(), continue. */
-
 /**
  * TLS error reply (SE → UserApp) when n_pads is 0:
  *   u32 n_pads LE = 0 | u32 err_code LE
  */
-#define SECURE_OTP_ERR_EXHAUSTED 1u  /**< Remaining pads cannot cover the request. */
-#define SECURE_OTP_ERR_PARSE     3u  /**< Same meaning as SECURE_OTP_REQ_PARSE. */
-#define SECURE_OTP_ERR_PIN       4u  /**< PIN / ML-KEM open failed. */
-#define SECURE_OTP_ERR_TAMPERED  5u  /**< Cursor or fill_id mismatch. */
+#define SECURE_OTP_ERR_EXHAUSTED 1u
+#define SECURE_OTP_ERR_PARSE     3u
+#define SECURE_OTP_ERR_PIN       4u
+#define SECURE_OTP_ERR_TAMPERED  5u
 #define SECURE_OTP_ERR_FAIL      255u
 
-void secure_otp_reset(void);
-void secure_otp_reset_pad(void);
+#define SECURE_OTP_SESSION_NEED_MORE 0
+#define SECURE_OTP_SESSION_REPLY     1
+#define SECURE_OTP_SESSION_DONE      2
 
-/* --- request header (PIN + length field) --- */
+#define SECURE_OTP_PHASE_IDLE 0u
+#define SECURE_OTP_PHASE_HDR  1u
+#define SECURE_OTP_PHASE_PAD  2u
+#define SECURE_OTP_PHASE_TX   3u
+#define SECURE_OTP_PHASE_DONE 4u
 
-uint32_t secure_otp_encrypt_parse_request(const uint8_t *chunk, uint32_t len,
-                                          uint32_t *consumed);
-uint32_t secure_otp_decrypt_parse_request(const uint8_t *chunk, uint32_t len,
-                                          uint32_t *consumed);
+void secure_otp_session_reset(void);
+void secure_otp_session_begin(uint8_t decrypt);
+uint8_t secure_otp_session_phase(void);
 
-const uint8_t *secure_otp_request_pin(uint8_t *pin_len);
-uint32_t secure_otp_encrypt_msg_len(void);
-uint32_t secure_otp_decrypt_n_pads(void);
-
-/* --- request body: fill one pad, then XOR it --- */
-/* @p slot_plaintext_max: max plaintext bytes per R-MEM pad (se_tropic_otp_xor_pad_max()). */
-
-void secure_otp_encrypt_begin_plaintext(uint16_t slot_plaintext_max, uint32_t msg_len);
-void secure_otp_decrypt_begin_ciphertext(uint16_t slot_plaintext_max, uint32_t n_pads);
-
-uint32_t secure_otp_read_pad(const uint8_t *chunk, uint32_t len, uint32_t *consumed);
-uint8_t *secure_otp_pad_payload(uint16_t *len);
-uint16_t secure_otp_decrypt_pad_slot(void);
-void secure_otp_pad_done(void);
-
-/* --- reply (SE → SAE): encode one n_pads header or pad record into @p out --- */
-
-int secure_otp_encode_n_pads(uint32_t n_pads, uint8_t out[4]);
-/** Error reply: n_pads = 0, then @p err_code. */
-int secure_otp_encode_err(uint32_t err_code, uint8_t out[8]);
-/** @p decrypt: 0 encrypt (u16 slot | u16 len | data), else decrypt (u16 len | data). */
-int secure_otp_encode_pad(uint8_t decrypt, uint16_t slot, const uint8_t *data, uint16_t len,
-                          uint8_t *out, uint32_t cap, uint32_t *written);
+int secure_otp_session_has_in(void);
+int secure_otp_session_feed(const uint8_t *data, uint32_t len);
+const uint8_t *secure_otp_session_tx(uint16_t *len);
+void secure_otp_session_tx_consumed(uint16_t n);
+int secure_otp_session_tx_complete(void);
+uint32_t secure_otp_session_err(void);
 
 #ifdef __cplusplus
 }

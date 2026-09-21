@@ -27,11 +27,12 @@ uint32_t se_tropic_port_attach(lt_handle_t *h);
 /** Debug line (USB CDC DEBUG on firmware and se_host). */
 void se_tropic_log(const char *msg);
 
-/** Two CDC DEBUG lines: @p what, then lt_ret_verbose(@p ret). */
+/** USB/host: one {@code failed} line. Does not leak Tropic status. */
 static inline void se_tropic_log_fail(const char *what, lt_ret_t ret)
 {
-    se_tropic_log(what);
-    se_tropic_log(lt_ret_verbose(ret));
+    (void)what;
+    (void)ret;
+    se_tropic_log("failed");
 }
 
 /** Hex-dump @p data via se_tropic_log (optional @p label line first). */

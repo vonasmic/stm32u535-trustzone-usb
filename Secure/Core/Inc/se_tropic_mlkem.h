@@ -6,7 +6,7 @@
  * under HKDF-SHA384(PIN final_key 48 B, salt=device-seal key) in slot 510.
  * Opening it needs both a surviving MAC-and-Destroy PIN check and this MCU.
  * The public key is sent in the TLS uplink (v4) and persisted in MCU NV by
- * KEM INIT (no reflash).
+ * KEM INIT.
  */
 #ifndef SE_TROPIC_MLKEM_H
 #define SE_TROPIC_MLKEM_H
@@ -26,7 +26,7 @@ extern "C" {
 lt_ret_t se_tropic_mlkem_seed_occupied(lt_handle_t *h, uint32_t *occupied);
 
 /**
- * User enrollment (TROPIC KEM INIT, unsigned PIN on MANAGE TLS). Consumes M&D slots for PIN setup
+ * User enrollment (MANAGE KEM INIT, unsigned PIN). Consumes M&D slots for PIN setup
  * and refuses when slot 510 is already occupied.
  * @param pk_out 1184-byte ML-KEM-768 public key on success
  */
@@ -50,7 +50,7 @@ uint32_t se_tropic_mlkem_pub_recover(const uint8_t *pin, uint8_t pin_len,
 /** Probe: refuse if slot 510 already holds a seed. */
 uint32_t se_tropic_kem_init_probe(void);
 
-/** Confirm provisioning with PIN (4..8 bytes). */
+/** Confirm provisioning with PIN (8–16 printable ASCII). */
 uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len,
                                     const uint8_t *add, uint8_t add_len);
 

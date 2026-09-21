@@ -15,6 +15,19 @@ void se_usb_debug_puts(const char *msg)
     (void)fflush(stdout);
 }
 
+void se_usb_failed(void)
+{
+    se_usb_debug_puts("failed");
+}
+
+int se_usb_dump(uint8_t status, const uint8_t *body, uint16_t len)
+{
+    (void)status;
+    (void)body;
+    (void)len;
+    return 0;
+}
+
 uint32_t se_usb_tls_rx_count(void)
 {
     return 0U;

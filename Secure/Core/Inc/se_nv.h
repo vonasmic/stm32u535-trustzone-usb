@@ -30,7 +30,8 @@ extern "C" {
 
 #define SE_NV_OWNER_SPKI_MAX 1312u
 #define SE_NV_PW_HASH_LEN    48u
-#define SE_NV_SK_MAX         3072u
+/** ML-DSA-44 PKCS#8 with public key (wolfSSL BOTH_KEY_DER is 3904). */
+#define SE_NV_SK_MAX         4096u
 #define SE_NV_MLKEM_MAX      1184u
 
 /**

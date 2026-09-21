@@ -132,6 +132,21 @@ static lt_ret_t pin_wrap_key(const uint8_t s1[TR01_MAC_AND_DESTROY_DATA_SIZE],
     return ret;
 }
 
+int se_tropic_pin_ascii_ok(const uint8_t *pin, uint8_t pin_len)
+{
+    uint8_t i;
+
+    if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) || (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
+        return 0;
+    }
+    for (i = 0U; i < pin_len; i++) {
+        if ((pin[i] < 0x20u) || (pin[i] > 0x7eu)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 lt_ret_t se_tropic_pin_setup(lt_handle_t *h, const uint8_t *master_secret, const uint8_t *pin,
                              uint8_t pin_len, const uint8_t *add, uint8_t add_len,
                              uint8_t *final_key)
@@ -267,12 +282,12 @@ lt_ret_t se_tropic_pin_check(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
         goto exit;
     }
     if (read_size < sizeof(nvm)) {
-        se_tropic_log("PIN check NVM short read");
+        se_tropic_log("failed");
         ret = LT_FAIL;
         goto exit;
     }
     if (nvm.i == 0u) {
-        se_tropic_log("PIN check: no attempts left");
+        se_tropic_log("failed");
         ret = LT_FAIL;
         goto exit;
     }
@@ -306,7 +321,7 @@ lt_ret_t se_tropic_pin_check(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
         goto exit;
     }
     if (memcmp(nvm.t, t_, sizeof(t_)) != 0) {
-        se_tropic_log("PIN check: tag mismatch (wrong PIN)");
+        se_tropic_log("failed");
         ret = LT_FAIL;
         goto exit;
     }

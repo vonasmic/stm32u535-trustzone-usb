@@ -21,10 +21,10 @@
 #define SE_TROPIC_CLIENT_HASH_LEN    48u
 
 /**
- * Print SHA384(device_cert_spki || tropic_p256_pub), the same 48-byte client_hash
- * sent as provision uplink item 2.
+ * SHA384(device_cert_spki || tropic_p256_pub), same 48-byte client_hash as
+ * provision uplink item 2.
  */
-uint32_t se_tropic_client_hash_dump(void);
+uint32_t se_tropic_client_hash_read(uint8_t out48[SE_TROPIC_CLIENT_HASH_LEN]);
 
 /**
  * Sign the session binding and stream the v4 uplink through @p write.

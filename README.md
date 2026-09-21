@@ -40,10 +40,11 @@ PIN for provisioned OTP never appears on USB. The console only arms a mode and a
 | Doc | Contents |
 | --- | --- |
 | [docs/HOW_TO_RUN.md](docs/HOW_TO_RUN.md) | First flash vs later sessions (silicon) |
-| [docs/COMMANDS.md](docs/COMMANDS.md) | USB console syntax, parameters, two-step flows |
+| [docs/COMMANDS.md](docs/COMMANDS.md) | USB console syntax and MANAGE commands |
 | [docs/COMMUNICATION.md](docs/COMMUNICATION.md) | USB/NSC pipe, TLS 1.3, LV uplink/downlink, OTP records |
 | [docs/TROPIC.md](docs/TROPIC.md) | R-MEM slots, dual cursors, MCU NV, M&D, classical vs PQC |
 | [docs/SECURITY.md](docs/SECURITY.md) | PQ attacker: surfaces, hardening, residuals |
+| [docs/PRODUCTION.md](docs/PRODUCTION.md) | Lab vs field: on-chip identity, pairing, RDP/HDP |
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Flash/RAM map, option bytes, pins, GTZC |
 | [host/README.md](host/README.md) | WSL2 TROPIC01 model tests and `se_host` |
 

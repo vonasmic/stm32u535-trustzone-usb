@@ -83,13 +83,17 @@ target_include_directories(tropic PUBLIC ${LT_HAL_INC_DIRS})
 set(SE_TROPIC_RUNTIME
     ${PATH_SECURE_CORE}/Src/se_tropic.c
     ${PATH_SECURE_CORE}/Src/se_tropic_pin.c
-    ${PATH_SECURE_CORE}/Src/se_tropic_rmem.c
+    ${PATH_SECURE_CORE}/Src/se_tropic_aead.c
+    ${PATH_SECURE_CORE}/Src/se_tropic_cursor.c
+    ${PATH_SECURE_CORE}/Src/se_tropic_otp_xor.c
     ${PATH_SECURE_CORE}/Src/se_tropic_mlkem.c
     ${PATH_SECURE_CORE}/Src/se_tropic_session.c
     ${PATH_SECURE_CORE}/Src/se_nv.c
+    ${PATH_SECURE_CORE}/Src/se_nv_peer.c
     ${PATH_SECURE_CORE}/Src/se_creds.c
     ${PATH_SECURE_CORE}/Src/se_owner.c
     ${PATH_SECURE_CORE}/Src/se_auth.c
+    ${PATH_SECURE_CORE}/Src/se_device_id.c
     ${PATH_SECURE_CORE}/Src/se_manage.c
     ${PATH_SECURE_CORE}/Src/se_cert_spki.c
     ${PATH_SECURE_CORE}/Src/se_tls_user.c

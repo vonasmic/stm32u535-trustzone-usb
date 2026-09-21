@@ -50,8 +50,8 @@ extern "C" {
 #define SE_TROPIC_PIN_NVM_SLOT 511u
 #endif
 
-#define SE_TROPIC_PIN_SIZE_MIN 4u
-#define SE_TROPIC_PIN_SIZE_MAX 8u
+#define SE_TROPIC_PIN_SIZE_MIN 8u
+#define SE_TROPIC_PIN_SIZE_MAX 16u
 #define SE_TROPIC_PIN_ADD_SIZE_MAX 128u
 /** MCU-only pepper appended to PIN||add; never sent to Tropic. */
 #define SE_TROPIC_PIN_PEPPER_SIZE 32u
@@ -67,6 +67,9 @@ extern "C" {
  * @param master_secret 48-byte entropy (e.g. from lt_random_value_get)
  * @param final_key     out: 48-byte PIN final_key; only on success
  */
+/** 1 when length is 8–16 and every byte is printable ASCII 0x20–0x7E. */
+int se_tropic_pin_ascii_ok(const uint8_t *pin, uint8_t pin_len);
+
 lt_ret_t se_tropic_pin_setup(lt_handle_t *h, const uint8_t *master_secret, const uint8_t *pin,
                              uint8_t pin_len, const uint8_t *add, uint8_t add_len,
                              uint8_t *final_key);

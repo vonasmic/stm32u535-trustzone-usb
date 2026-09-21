@@ -7,6 +7,7 @@
 #include "se_le.h"
 #include "se_manage.h"
 #include "se_nv.h"
+#include "se_device_id.h"
 #include "se_owner.h"
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
@@ -45,7 +46,7 @@ int main(void)
     uint8_t pairing_pub2[SE_NV_PAIRING_KEY_LEN];
     uint8_t hash48[SE_NV_PEER_HASH_LEN];
     uint8_t der[32];
-    uint8_t device_body[2U + 32U + 2U + 32U];
+    uint8_t device_body[2U + 32U];
     uint8_t req[8];
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint8_t pk2[SE_TROPIC_MLKEM_PK_LEN];
@@ -85,6 +86,19 @@ int main(void)
     TEST_ASSERT(se_nv_has_owner() != 0, "owner present");
     TEST_ASSERT_EQ(se_owner_set((const uint8_t *)"password2", 9U, pub_b, (uint16_t)pub_len_b),
                    LT_FAIL, "first-wins");
+    TEST_ASSERT_EQ(se_device_id_ensure(), LT_OK, "device ML-DSA");
+    TEST_ASSERT(se_nv_has_device_sk() != 0, "device SK");
+    {
+        uint8_t device_pub[SE_NV_OWNER_SPKI_MAX];
+        uint16_t device_pub_len = 0U;
+
+        TEST_ASSERT_EQ(se_device_id_export_pub(device_pub, &device_pub_len,
+                                               (uint16_t)sizeof(device_pub)),
+                       LT_OK, "CLIENT CSR pub");
+        TEST_ASSERT_EQ(device_pub_len, 1312U, "ML-DSA-44 pub len");
+        TEST_ASSERT(device_pub[0] != 0U || device_pub[1311U] != 0U, "CLIENT CSR pub not all-zero");
+    }
+    TEST_ASSERT(se_ready_encrypt() == 0, "encrypt needs device cert");
 
     for (i = 0U; i < SE_NV_PAIRING_KEY_LEN; i++) {
         pairing_priv[i] = (uint8_t)(0x11u + i);
@@ -113,17 +127,20 @@ int main(void)
     TEST_ASSERT(se_ready_encrypt() == 0, "encrypt not ready after replace");
     TEST_ASSERT(se_creds_has_sae_ca() == 0, "SAE CA cleared");
     TEST_ASSERT(se_nv_has_mlkem() == 0, "mlkem cleared");
+    TEST_ASSERT_EQ(se_device_id_ensure(), LT_OK, "device ML-DSA after replace");
+    TEST_ASSERT(se_nv_has_device_sk() != 0, "device SK after replace");
+    TEST_ASSERT(se_ready_encrypt() == 0, "encrypt still needs device cert");
 
     (void)memset(der, 0x33, sizeof(der));
     se_put_u16le(device_body, (uint16_t)sizeof(der));
     (void)memcpy(device_body + 2U, der, sizeof(der));
-    se_put_u16le(device_body + 2U + sizeof(der), (uint16_t)sizeof(der));
-    (void)memcpy(device_body + 4U + sizeof(der), der, sizeof(der));
     manage_msg[0] = '\0';
     TEST_ASSERT_EQ(se_manage_apply(SE_MANAGE_CREDS_DEVICE, NULL, 0U, device_body,
-                                   (uint16_t)sizeof(device_body), manage_msg,
+                                   (uint16_t)(2U + sizeof(der)), manage_msg,
                                    (uint16_t)sizeof(manage_msg)),
-                   SE_MANAGE_OK, "manage CREDS DEVICE");
+                   SE_MANAGE_ERR, "manage CREDS DEVICE rejects unmatched cert");
+    TEST_ASSERT_EQ(se_creds_set_device_cert(der, (uint16_t)sizeof(der)), LT_OK,
+                   "direct dummy cert for ready flags");
     TEST_ASSERT(se_ready_encrypt() != 0, "encrypt ready");
     TEST_ASSERT(se_creds_has_sae_ca() == 0, "user/client CA unused for encrypt");
     TEST_ASSERT(se_ready_provision() == 0, "provision needs SAE CA + mlkem");
@@ -148,6 +165,58 @@ int main(void)
     TEST_ASSERT_EQ(se_manage_req_need(req, 8U), 8U, "unsigned stream complete");
     TEST_ASSERT_EQ(se_manage_apply_buf(req, 8U, manage_msg, (uint16_t)sizeof(manage_msg)),
                    SE_MANAGE_OK, "apply unsigned stream");
+
+    {
+        uint8_t blob[1U + 8U + 2U + 4U + 2U + 3U];
+        uint8_t rsp[SE_MANAGE_RSP_MAX];
+        const uint8_t *pw;
+        const uint8_t *spki;
+        const uint8_t *ca;
+        uint8_t pw_len = 0U;
+        uint16_t spki_len = 0U;
+        uint16_t ca_len = 0U;
+        uint16_t rsp_n;
+        uint32_t off;
+
+        blob[0] = 8U;
+        (void)memcpy(blob + 1U, "password", 8U);
+        se_put_u16le(blob + 9U, 4U);
+        blob[11] = 1U;
+        blob[12] = 2U;
+        blob[13] = 3U;
+        blob[14] = 4U;
+        se_put_u16le(blob + 15U, 3U);
+        blob[17] = 9U;
+        blob[18] = 8U;
+        blob[19] = 7U;
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, 0U), 0U, "owner set need 0");
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, 1U), 0U, "owner set need prefix");
+        off = 1U + 8U + 2U + 4U;
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, off + 1U), 0U, "owner set need before ca_len");
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, off + 2U), (uint32_t)sizeof(blob),
+                       "owner set need after ca_len");
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, (uint32_t)sizeof(blob) - 1U),
+                       (uint32_t)sizeof(blob), "owner set need announced");
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, (uint32_t)sizeof(blob)),
+                       (uint32_t)sizeof(blob), "owner set complete");
+        blob[0] = 7U;
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, (uint32_t)sizeof(blob)), 0xffffffffu,
+                       "owner set short pw");
+        blob[0] = 8U;
+        TEST_ASSERT_EQ(se_manage_owner_set_parse(blob, (uint32_t)sizeof(blob), &pw, &pw_len, &spki,
+                                                &spki_len, &ca, &ca_len),
+                       SE_MANAGE_OK, "owner set parse");
+        TEST_ASSERT_EQ(pw_len, 8U, "pw len");
+        TEST_ASSERT(memcmp(pw, "password", 8U) == 0, "pw bytes");
+        TEST_ASSERT_EQ(spki_len, 4U, "spki len");
+        TEST_ASSERT_EQ(ca_len, 3U, "ca len");
+        TEST_ASSERT_EQ(ca[0], 9U, "ca0");
+        rsp_n = se_manage_rsp_encode(rsp, (uint16_t)sizeof(rsp), (uint8_t)SE_MANAGE_OK,
+                                     "CREDS DEVICE ok");
+        TEST_ASSERT_EQ(rsp_n, (uint16_t)(3U + 15U), "rsp len");
+        TEST_ASSERT_EQ(rsp[0], (uint8_t)SE_MANAGE_OK, "rsp status");
+        TEST_ASSERT_EQ((uint16_t)(rsp[1] | ((uint16_t)rsp[2] << 8)), 15U, "rsp msg len");
+    }
 
     wc_dilithium_free(&key_a);
     wc_dilithium_free(&key_b);

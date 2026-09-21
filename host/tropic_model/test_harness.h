@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "se_tropic.h"
+#include "se_tropic_rmem.h"
+#include "se_nv.h"
+#include <wolfssl/wolfcrypt/memory.h>
 
 #define TEST_ASSERT(cond, msg)                                                                     \
     do {                                                                                           \
@@ -28,5 +31,15 @@
 
 int host_crypto_init(void);
 void host_crypto_deinit(void);
+
+/**
+ * Open/pad/close loop used by model tests. ENCRYPT: @p req_slots NULL.
+ * DECRYPT: consecutive SAE indices in @p req_slots.
+ */
+lt_ret_t host_otp_xor_message(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
+                              const uint8_t *add, uint8_t add_len, const uint8_t *msg,
+                              uint16_t len, uint8_t *out, se_nv_otp_dir_t dir,
+                              const uint16_t *req_slots, uint16_t req_slots_n,
+                              uint16_t *slot_used);
 
 #endif /* TEST_HARNESS_H */

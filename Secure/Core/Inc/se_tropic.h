@@ -11,6 +11,7 @@
 #define SE_TROPIC_ERR         1u
 #define SE_TROPIC_BUSY        2u
 #define SE_TROPIC_SLOT_OCC    3u
+/** Empty ECC / ML-KEM occupancy (USB dump empty). Not a Tropic failure type. */
 #define SE_TROPIC_NOT_READY   4u
 #define SE_TROPIC_TAMPERED    5u
 
@@ -21,8 +22,10 @@ uint32_t se_tropic_init_session(void);
 void se_tropic_deinit_session(void);
 uint32_t se_tropic_ping(void);
 uint32_t se_tropic_info(void);
-/** USB: remaining/capacity encrypt and decrypt pad kilobytes (no PIN). */
+/** Remaining OTP bytes: out[0..3] = enc left, enc cap, dec left, dec cap. */
+uint32_t se_tropic_otp_left(uint32_t out_quotas[4]);
 uint32_t se_tropic_otp_left_dump(void);
+/** ECC slot 0 XY. NOT_READY if unoccupied (Tropic INVALID_KEY). */
 uint32_t se_tropic_pub_read(uint8_t *out_xy64);
 /** Empty slot: generate. Occupied: PIN required, then erase+generate. */
 uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len);

@@ -59,74 +59,53 @@ uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
 /** First-wins USB OWNER SET: wait for an unsigned binary blob. */
 uint32_t CSME_NSE_API SECURE_OwnerBegin_nsc_call(void);
 
-/** Queue a framed DEBUG:<text>:DEBUG status line on the CDC TX ring (ASCII, no TLS). */
+/** Queue a plain ASCII line on the CDC TX ring (HELP / PING / INFO). Errors use {@code failed}. */
 uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len);
+/** Dump frame: {@code 0xB1 | status | u16le len | body}. Status 0 ok, 1 err, 2 empty, 3 refused. */
+uint32_t CSME_NSE_API SECURE_UsbDump_nsc_call(uint8_t status, const uint8_t *body, uint32_t len);
 
-/** TROPIC01 host commands Status codes match SE_TROPIC_* in Secure. */
+/**
+ * USB-facing Tropic results. Failures are collapsed to ERR so NonSecure cannot
+ * tell Tropic / TLS / auth / tamper apart. Occupancy uses DUMP_EMPTY on PUB /
+ * KEM PUB (not a failure type).
+ */
 #define SECURE_TROPIC_OK       0u
 #define SECURE_TROPIC_ERR      1u
-#define SECURE_TROPIC_SLOT_OCC 3u
 
-#define SECURE_TROPIC_NOT_READY 4u
-#define SECURE_TROPIC_TAMPERED  5u
+#define SECURE_USB_DUMP_MAGIC    0xB1u
+#define SECURE_USB_DUMP_OK       0u
+#define SECURE_USB_DUMP_ERR      1u
+#define SECURE_USB_DUMP_EMPTY    2u
+#define SECURE_USB_DUMP_REFUSED  3u
+#define SECURE_USB_DUMP_BODY_MAX 1312u
+#define SE_TROPIC_MLKEM_PK_LEN   1184u
 
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64);
-uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(void);
-/**
- * Empty slot: generate. Occupied: PIN required, then erase+generate.
- * @param pin     unused on first generate; required to replace an occupied slot
- * @param pin_len 0 when unused; 4–8 for occupied replace
- */
-uint32_t CSME_NSE_API SECURE_TropicKeygen_nsc_call(const uint8_t *pin, uint32_t pin_len);
-uint32_t CSME_NSE_API SECURE_TropicSign_nsc_call(const uint8_t *hash32, uint8_t *rs64_out);
-
-uint32_t CSME_NSE_API SECURE_TropicKemInit_nsc_call(const uint8_t *pin, uint32_t pin_len,
-                                                    uint32_t confirm);
-uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
-/** Remaining OTP bytes for encrypt and decrypt (no PIN). */
-uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(void);
-
-/** Write pairing key to TROPIC slot 1–3 and invalidate factory SH0.
- *  On OK, @p out64 is priv[32] || pub[32] for host backup. */
-uint32_t CSME_NSE_API SECURE_TropicPairing_nsc_call(uint32_t slot, uint8_t *out64);
-/** Restore pairing priv||pub (64 B) into MCU NV; no Tropic write. */
-uint32_t CSME_NSE_API SECURE_TropicPairingLoad_nsc_call(uint32_t slot, const uint8_t *in64);
+/** SHA-384 client hash, 48 bytes. */
+uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(uint8_t *out48);
+/** Raw ML-DSA-44 pub. @p len_inout in: cap; out: actual length. */
+uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(uint8_t *out, uint32_t *len_inout);
+/** ML-KEM-768 pk. @p len_inout in: cap; out: actual length. */
+uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(uint8_t *out, uint32_t *len_inout);
+/** Four u32le: enc left, enc cap, dec left, dec cap. */
+uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4]);
 
 /**
- * PEER NV commands. ADD/REMOVE require a Tropic PIN. OK/ERR match Tropic;
- * EXISTS/NOT_FOUND/FULL/PIN_FAIL are PEER-only (do not reuse SLOT_OCC /
- * NOT_READY / TAMPERED).
+ * PEER LIST is the only PEER path on NSC. ADD/REMOVE mutate through MANAGE TLS.
+ * NOT_FOUND is end-of-list occupancy while walking indexes, not a Tropic failure.
  */
 #define SECURE_PEER_OK        0u
 #define SECURE_PEER_ERR       1u
-#define SECURE_PEER_EXISTS    6u
 #define SECURE_PEER_NOT_FOUND 7u
-#define SECURE_PEER_FULL      8u
-#define SECURE_PEER_PIN_FAIL  9u
 
 #define SECURE_PEER_NAME_MAX 16u
 #define SECURE_PEER_MAX      8u
 /** SHA-384 of the peer SPKI (mirrors SE_NV_PEER_HASH_LEN). */
 #define SECURE_PEER_HASH_LEN 48u
 
-/**
- * NSC entries may only pass arguments in r0–r3. Five scalars would put
- * pin_len on the stack, which GCC rejects for cmse_nonsecure_entry.
- */
-typedef struct {
-    const uint8_t *name;
-    uint32_t name_len;
-    const uint8_t *hash48;
-    const uint8_t *pin;
-    uint32_t pin_len;
-} SECURE_PeerAddArgs;
-
-uint32_t CSME_NSE_API SECURE_PeerAdd_nsc_call(const SECURE_PeerAddArgs *args);
-uint32_t CSME_NSE_API SECURE_PeerRemove_nsc_call(const uint8_t *name, uint32_t name_len,
-                                                 const uint8_t *pin, uint32_t pin_len);
-/** Occupied count 0..8 on success; >8 means load/store failed (see TAMPERED). */
+/** Occupied count 0..8 on success; >8 means the table could not be read. */
 uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
 /**
  * One occupied slot. @p name_len_inout in: buffer size; out: actual name length.

@@ -126,7 +126,7 @@ static lt_ret_t mlkem_check_pk(const uint8_t *pk, uint16_t pk_len)
         return LT_FAIL;
     }
     if (memcmp(pk, emb, SE_TROPIC_MLKEM_PK_LEN) != 0) {
-        se_tropic_log("ML-KEM pk mismatch vs NV");
+        se_tropic_log("failed");
         return LT_FAIL;
     }
     return LT_OK;
@@ -151,7 +151,7 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
 
     ret = se_tropic_mlkem_seed_occupied(h, &occ);
     if ((ret == LT_OK) && (occ != 0U)) {
-        se_tropic_log("KEM INIT refused: slot 510 occupied");
+        se_tropic_log("failed");
         return LT_FAIL;
     }
 
@@ -263,10 +263,9 @@ uint32_t se_tropic_kem_init_probe(void)
         return SE_TROPIC_ERR;
     }
     if (occ != 0U) {
-        se_tropic_log("KEM INIT refused: slot 510 occupied");
+        se_tropic_log("failed");
         return SE_TROPIC_SLOT_OCC;
     }
-    se_tropic_log("slot 510 empty");
     return SE_TROPIC_OK;
 }
 
@@ -296,8 +295,6 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
     }
 
     se_tropic_log("KEM INIT ok; ML-KEM pk stored in NV");
-    se_tropic_log("TROPIC KEM pub:");
-    se_tropic_log_hex(NULL, pk, pk_len);
     return SE_TROPIC_OK;
 }
 
@@ -305,16 +302,8 @@ uint32_t se_tropic_kem_pub_dump(void)
 {
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint16_t pk_len = 0U;
-    uint32_t st;
 
-    st = se_tropic_mlkem_pub_read(pk, sizeof(pk), &pk_len);
-    if (st != SE_TROPIC_OK) {
-        se_tropic_log("ML-KEM pk missing (run TROPIC KEM INIT)");
-        return st;
-    }
-    se_tropic_log("TROPIC KEM pub:");
-    se_tropic_log_hex(NULL, pk, pk_len);
-    return SE_TROPIC_OK;
+    return se_tropic_mlkem_pub_read(pk, sizeof(pk), &pk_len);
 }
 
 lt_ret_t se_tropic_mlkem_key_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,

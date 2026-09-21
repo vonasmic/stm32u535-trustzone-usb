@@ -28,7 +28,7 @@ bash host/tropic_model/download_deps.sh
 
 Needs `python3`, `curl` or `wget`, `sha256sum`, `cmake`, a C compiler, and `make`. CMake fails until `_deps/wolfssl` exists.
 
-TLS credentials are enrolled at runtime (unsigned USB `OWNER SET`, then unsigned MANAGE TLS for KEM INIT / CREDS / PEER).
+TLS credentials are enrolled at runtime (unsigned USB `OWNER SET`, then unsigned MANAGE TLS for KEYGEN / KEM INIT / CREDS / PEER).
 
 ---
 
@@ -73,19 +73,19 @@ bash ../run_all.sh
 | Group | Binary | What it gates |
 | --- | --- | --- |
 | A | `test_a_session` | Session / ping / info |
-| B | `test_b_ecc` | ECC store, occupied-slot KEYGEN refuse, generate, PIN reroll, sign+verify |
+| B | `test_b_ecc` | Empty PUB (`NOT_READY` / Tropic `INVALID_KEY`), ECC store, occupied-slot KEYGEN refuse, generate, PIN reroll, sign+verify |
 | C | `test_c_rmem` | R-MEM erase-before-write keystream |
 | D | `test_d_pin` | PIN setup/check, wrong-PIN consume, PIN-gated XOR, exhaustion |
 | E | `test_e_mcounter` | Monotonic cursor advance-before-use |
 | F | `test_f_mlkem` | ML-KEM provision / kem_ct / PIN-gated XOR |
 | G | `test_g_ingest` | QKD ingest / pad store |
 | H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key, LOAD after NV wipe |
-| I | `test_i_post_tls` | Encrypt TLS body / OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
+| I | `test_i_post_tls` | Production `secure_otp_session_feed` encrypt/decrypt consume, OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
 | J | `test_j_peers` | PEER NV add/remove/list, uplink item count `7+2n` |
 | K | `test_k_owner` | First-wins owner, REPLACE, unsigned MANAGE CREDS stream, NV ML-KEM |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
 
-Do **not** run `TROPIC KEYGEN`, `TROPIC PAIRING … y`, PIN setup, or R-MEM writes on physical silicon until A–E and H are green.
+Do **not** run MANAGE `KEYGEN` / `PAIRING`, PIN setup, or R-MEM writes on physical silicon until A–E and H are green.
 
 One test with a live model (same helper CTest uses):
 
@@ -152,11 +152,8 @@ TROPIC PING
 TROPIC INFO
 TROPIC PUB
 CLIENT HASH
-TROPIC KEYGEN
-TROPIC SIGN <64-hex>
-TROPIC KEM INIT
+CLIENT CSR
 TROPIC KEM PUB
-TROPIC PAIRING <1-3> [y|LOAD <priv> <pub>]
 OWNER SET
 PROVISION <unix>
 ENCRYPT <unix>
@@ -170,7 +167,7 @@ Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB 
 
 ```text
 OWNER SET
-TROPIC KEYGEN
+MANAGE <unix>    # KEYGEN
 MANAGE <unix>    # KEM INIT
 MANAGE <unix>    # PEER ADD
 ```
@@ -179,11 +176,11 @@ Leave TerminalBridge running with `USB_BRIDGE=1` and `USB_SERIAL_PORT` pointing
 at the device PTY. In `./run-all.sh` the terminal pane wrapper starts that only
 while lab owner is SAE.
 
-Do not use plain `socat` (it forwards `DEBUG:<text>:DEBUG` into the TLS server). **Encrypt/decrypt**
+Do not use plain `socat` (it forwards dump frames and `failed` into the TLS server). **Encrypt/decrypt**
 is UserApp on the selected client PTY (`USER` in LabSwitchApp). PIN is
 never a console argument for PROVISION/ENCRYPT/DECRYPT — it arrives on TLS.
 
-On host, `TROPIC KEM INIT` persists the ML-KEM pub into NV. Tests may also fill `host_fw_mlkem_pk` as a fallback when NV is empty.
+On host, `KEM INIT` persists the ML-KEM pub into NV. Tests may also fill `host_fw_mlkem_pk` as a fallback when NV is empty.
 
 ---
 
@@ -205,7 +202,7 @@ After mTLS:
 
 Shared Secure + NonSecure sources (linked into `se_host`):
 
-`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_rmem.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `se_creds.c`, `se_owner.c`, `se_auth.c`, `se_manage.c`, `se_cert_spki.c`, `se_tls_user.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
+`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_aead.c`, `se_tropic_cursor.c`, `se_tropic_otp_xor.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `se_creds.c`, `se_owner.c`, `se_auth.c`, `se_manage.c`, `se_cert_spki.c`, `se_tls_user.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
 
 Host-only (do not exist on silicon):
 

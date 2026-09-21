@@ -12,7 +12,7 @@ static SeUsbRxRing s_rx;
 static SeUsbTxRing s_tx;
 static uint8_t s_active;
 static uint8_t s_dtr;
-/* After the first TLS record byte is queued, DEBUG must not share the CDC TX. */
+/* After the first TLS record byte is queued, ASCII/dump must not share the CDC TX. */
 static uint8_t s_tls_wire;
 
 static uint32_t rx_free(void)
@@ -194,42 +194,62 @@ int se_usb_tls_tx_pop(uint8_t *out, uint32_t max, uint32_t *out_len)
     return tx_read(out, max, out_len);
 }
 
-void se_usb_debug_puts(const char *msg)
+static int usb_ascii_line(const char *msg)
 {
-    /* "DEBUG: " + body + ":DEBUG" + CRLF */
-    static const char prefix[] = SE_USB_DEBUG_PREFIX " ";
-    enum {
-        PREFIX_LEN = (int)(SE_USB_DEBUG_PREFIX_LEN + 1U),
-        SUFFIX_LEN = (int)SE_USB_DEBUG_SUFFIX_LEN,
-        CRLF_LEN = 2
-    };
     char buf[192];
     uint32_t mlen;
-    uint32_t room;
     uint32_t total;
 
-    /* Never interleave ASCII with TLS records on the same CDC pipe. */
     if ((s_active == 0U) || (msg == NULL) || (s_tls_wire != 0U)) {
-        return;
+        return -1;
     }
-
     mlen = (uint32_t)strlen(msg);
-    room = (uint32_t)sizeof(buf) - (uint32_t)PREFIX_LEN - (uint32_t)SUFFIX_LEN
-           - (uint32_t)CRLF_LEN;
-    if (mlen > room) {
-        mlen = room;
+    if (mlen > (uint32_t)(sizeof(buf) - 3U)) {
+        mlen = (uint32_t)(sizeof(buf) - 3U);
     }
-    (void)memcpy(buf, prefix, (size_t)PREFIX_LEN);
     if (mlen > 0U) {
-        (void)memcpy(buf + PREFIX_LEN, msg, (size_t)mlen);
+        (void)memcpy(buf, msg, (size_t)mlen);
     }
-    total = (uint32_t)PREFIX_LEN + mlen;
-    (void)memcpy(buf + total, SE_USB_DEBUG_SUFFIX, (size_t)SUFFIX_LEN);
-    total += (uint32_t)SUFFIX_LEN;
+    total = mlen;
     buf[total++] = '\r';
     buf[total++] = '\n';
+    return (tx_write((const uint8_t *)buf, total) < 0) ? -1 : 0;
+}
 
-    (void)tx_write((const uint8_t *)buf, total);
+void se_usb_debug_puts(const char *msg)
+{
+    (void)usb_ascii_line(msg);
+}
+
+void se_usb_failed(void)
+{
+    (void)usb_ascii_line("failed");
+}
+
+int se_usb_dump(uint8_t status, const uint8_t *body, uint16_t len)
+{
+    uint8_t hdr[SE_USB_DUMP_HDR_LEN];
+
+    if ((s_active == 0U) || (s_tls_wire != 0U)) {
+        return -1;
+    }
+    if ((len > 0U) && (body == NULL)) {
+        return -1;
+    }
+    if (len > SE_USB_DUMP_BODY_MAX) {
+        return -1;
+    }
+    hdr[0] = (uint8_t)SE_USB_DUMP_MAGIC;
+    hdr[1] = status;
+    hdr[2] = (uint8_t)(len & 0xffu);
+    hdr[3] = (uint8_t)((len >> 8) & 0xffu);
+    if (tx_write(hdr, SE_USB_DUMP_HDR_LEN) < 0) {
+        return -1;
+    }
+    if ((len > 0U) && (tx_write(body, len) < 0)) {
+        return -1;
+    }
+    return 0;
 }
 
 int se_tls_embed_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx)
@@ -270,11 +290,7 @@ int se_tls_embed_send(WOLFSSL *ssl, char *buf, int sz, void *ctx)
         return WOLFSSL_CBIO_ERR_CONN_RST;
     }
 
-    /*
-     * Finish the current DEBUG frame in the TX ring first so :DEBUG is on
-     * the wire before ClientHello. Host still splits on the closer if CDC
-     * glues them into one USB read.
-     */
+    /* Drain ASCII / dump already queued so ClientHello is not glued into it. */
     if ((s_tls_wire == 0U) && (s_tx.count > 0U)) {
         return WOLFSSL_CBIO_ERR_WANT_WRITE;
     }
@@ -299,7 +315,7 @@ void se_usb_tls_service_once(void)
     if (s_rx.overflow != 0U) {
         se_tls_abort();
         link_reset_flags();
-        se_usb_debug_puts("RX overflow, abort");
+        se_usb_failed();
         return;
     }
     if ((s_active == 0U) || (s_dtr == 0U)) {

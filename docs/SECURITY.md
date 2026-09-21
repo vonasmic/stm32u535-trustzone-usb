@@ -31,7 +31,7 @@ This document analyses **protocol, TrustZone layout, Tropic binding, and PQ algo
 | **Pad / seed confidentiality** | Pads and ML-KEM seed require ML-KEM sk + `fill_id` + PIN + MCU `secure_dwk`; kem_ct and PIN NVM are MCU-sealed.                             |
 | **OTP integrity**              | No rewind, no half-mixing, cursor/mcounter binding, advance-then-erase consume.                                                             |
 | **TLS binding**                | SAE on `PROVISION` (CA + mTLS + exporter-bound uplink); USER on `ENCRYPT` / `DECRYPT` / `MANAGE` (owner SPKI pin; mTLS on encrypt/decrypt). |
-| **USB / NS policy**            | Unsigned enrollment surface, first-wins owner, DEBUG leakage, NS as API caller (documented residuals).                                      |
+| **USB / NS policy**            | Unsigned enrollment surface, first-wins owner, coarse dump occupancy, NS as API caller (documented residuals).                                      |
 | **Tropic / L3 (classical)**    | SH0, pairing, mcounters, R-MEM ciphertext, M&D budget, uplink P-256 vs PQ TLS identity.                                                     |
 | **MCU flash / SWD**            | `secure_dwk`, NV page 22, creds page 21, plaintext ML-DSA SK and pairing priv in flash dump.                                                |
 | **PIN online guessing**        | M&D throttle (8 tries); weak PIN on a live device.                                                                                           |
@@ -113,15 +113,15 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 - `PROVISION` / `ENCRYPT` / `DECRYPT` never take a PIN; PIN is only inside TLS.
 - `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
-- Occupied ECC slot 0 and `KEM INIT` / `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. Empty-slot `KEYGEN` stays unsigned USB. R-MEM 510 refuses a second `KEM INIT`.
+- Occupied ECC slot 0, empty-slot `KEYGEN`, `KEM INIT`, and `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. R-MEM 510 refuses a second `KEM INIT`.
 - USB line cap 160 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
-- DEBUG ASCII only **before** the first TLS record, framed as `DEBUG:<text>:DEBUG` so a glued ClientHello is still split at `:DEBUG`.
+- USB errors are `failed` only. Typed dumps use coarse status (`ok`/`err`/`empty`/`refused`) with no Tropic/TLS/auth taxonomy. Leftover splits `0xB1` length-prefixed dumps from TLS `0x16`.
 
 **Residual:**
 
-- **No USB authentication** for ping, info, list, empty-slot keygen, or TLS arm. First USB `OWNER SET` wins. The reset password is dumpable with MCU flash (`SHA-384(dwk || password)`). Pairing survives owner wipe.
+- **No USB authentication** for ping, info, list, or TLS arm. First USB `OWNER SET` wins. The reset password is dumpable with MCU flash (`SHA-384(dwk || password)`). Pairing survives owner wipe.
 - Occupied `KEYGEN` / `KEM INIT` / `PEER *` PIN is on MANAGE TLS (owner-pinned, not mTLS). After slot 510 is occupied, pad consume PIN is only inside ENCRYPT/DECRYPT mTLS.
-- DEBUG lines leak handshake/Tropic status to the USB host.
+- USB dumps still reveal occupancy (empty vs present pub) and enrollment refused vs ok. They do not name Tropic/TLS/PIN failure types.
 
 ### 3. NonSecure world and NSC
 
@@ -136,7 +136,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 **Residual:**
 
 - **TrustZone:** Compromising NS does **not** compromise Secure. NS cannot read or modify Secure RAM, `secure_dwk`, ML-DSA SK, kem seals, or PIN NVM — that isolation is hardware-enforced.
-- **NSC calling surface:** NS still chooses TLS mode and Unix time and forwards every USB/Tropic request into Secure. A buggy or malicious NS image can abuse that interface (proxy records, arm the wrong session, invoke destructive Tropic ops) without ever obtaining Secure key material.
+- **NSC calling surface:** NS still chooses TLS mode and Unix time and forwards USB RX/TX plus read-only Tropic dumps into Secure. Mutating KEYGEN / KEM INIT / PEER ADD/REMOVE are not NSC entries; they run only after owner-pinned MANAGE. A buggy or malicious NS image can still arm the wrong TLS session or proxy records without obtaining Secure key material.
 - NS can set a clock at the floor (not behind it). It cannot roll time backward.
 
 ### 4. SPI and Tropic L3 (classical)
@@ -145,7 +145,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 **Hardening:**
 
-- After `TROPIC PAIRING n y`, factory **SH0 is invalidated** and the X25519 **private** key is in MCU NV **and** printed once on USB for host backup (`pairing.key`). Tropic dump of pairing *pub* is not enough to speak L3 as this host.
+- After MANAGE PAIRING (PIN + slot 1–3), factory **SH0 is invalidated** and the X25519 **private** key is in MCU NV only (never printed). Tropic dump of pairing *pub* is not enough to speak L3 as this host.
 - MCU NV (`fill_id`, OTP cursors) is authoritative. Tropic mcounters must **match**; mismatch → `DEVICE_TAMPERED`.
 - kem_ct and PIN NVM are MCU-sealed (device AEAD + `fill_id` / slot binding). Pads are sealed under ML-KEM SS, not under L3.
 - PIN pepper never leaves the MCU; M&D inputs on SPI are not a PIN hash.
@@ -190,7 +190,7 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 
 ### 7. PIN and MAC-and-Destroy
 
-**Attack:** Brute-force a 4–8 byte PIN; replay M&D; offline hash.
+**Attack:** Brute-force an 8–16 byte printable-ASCII PIN; replay M&D; offline hash.
 
 **Hardening:**
 
@@ -228,10 +228,10 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 
 ## Operator checklist (PQ-relevant)
 
-1. Do not leave factory **SH0** on a field device; run `TROPIC PAIRING n y` after model gates A–E/H. Build with `SE_TROPIC_SH0_PROD` for production chips, not eng-sample keys.
-2. Enroll unsigned USB `OWNER SET` (owner + device cert/key + SAE CA), then **USER** `MANAGE` `KEM INIT` (unsigned PIN). TLS refuses ENCRYPT until owner + cert + device SK are present. ML-KEM pk lives in NV (no reflash).
+1. Do not leave factory **SH0** on a field device; run MANAGE PAIRING (PIN + slot 1–3) after model gates A–E/H. Build with `SE_TROPIC_SH0_PROD` for production chips, not eng-sample keys. See [PRODUCTION.md](PRODUCTION.md).
+2. Enroll unsigned USB `OWNER SET` (owner SPKI + SAE CA), then **USER** `MANAGE` `KEYGEN` and `KEM INIT` (unsigned PIN), `CLIENT CSR`, and `CREDS DEVICE` (signed cert only). TLS refuses ENCRYPT until owner + cert + on-chip SK are present. ML-KEM pk lives in NV.
 3. After enrollment, do not send the Tropic PIN on the ASCII line; encrypt/decrypt take it only inside mTLS. Occupied `KEYGEN` is identity replace over MANAGE, not enrollment.
 4. Lock SWD / enable hide protection if you ship; this project leaves `HDP1EN = 0`.
 5. SAE (`PROVISION`) must require **ML-KEM TLS + ML-DSA client cert**; do not accept a P-256 uplink signature as the device’s PQ identity. USER (`ENCRYPT` / `DECRYPT`) pins the peer to the enrolled owner key, not to SAE CA.
-6. Assume anyone with the **firmware image** or the host `pairing.key` can speak L3 after pairing. Pads remain PIN-gated. Keep `pairing.key` with the device cert; without it an MCU reflash cannot reopen L3.
+6. Assume anyone with the **firmware image** can speak L3 after pairing (pairing priv is in MCU NV). Pads remain PIN-gated. An MCU reflash after SH0 is burned cannot reopen L3.
 

@@ -3,7 +3,7 @@
  * @brief   Group F: irreversible APIs on the MODEL only
  *
  * After this binary runs, restart the model before other tests.
- * Firmware may call lt_pairing_key_invalidate from TROPIC PAIRING;
+ * Firmware may call lt_pairing_key_invalidate from MANAGE PAIRING;
  * this lab still gates i_config_write / occupied SH0 overwrite.
  */
 #include "test_harness.h"

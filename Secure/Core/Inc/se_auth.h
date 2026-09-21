@@ -1,6 +1,9 @@
 /**
  * @file    se_auth.h
  * @brief   Unsigned first-wins USB OWNER SET ingest
+ *
+ * Framing is se_manage_owner_set_need / parse. This module arms CDC RX and applies
+ * se_owner_set + device keygen + optional SAE CA.
  */
 #ifndef SE_AUTH_H
 #define SE_AUTH_H

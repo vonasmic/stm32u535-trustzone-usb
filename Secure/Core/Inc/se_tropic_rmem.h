@@ -298,19 +298,6 @@ lt_ret_t se_tropic_otp_xor_pad(lt_handle_t *h, const uint16_t *req_slot, const u
 /** Wipe the cached shared secret. Safe if xor_open was not called. */
 void se_tropic_otp_xor_close(void);
 
-/**
- * XOR a whole message (open, pad loop, close). Used by model tests.
- * ENCRYPT (@p req_slots NULL) opens by plaintext byte length. DECRYPT opens
- * by @p req_slots_n (encrypt-reply pad count) and needs consecutive slots.
- * @p slot_used is the first physical slot burned.
- */
-lt_ret_t se_tropic_otp_xor_message(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len,
-                                    const uint8_t *add, uint8_t add_len, const uint8_t *msg,
-                                    uint16_t len, uint8_t *out, se_nv_otp_dir_t dir,
-                                    const uint16_t *req_slots, uint16_t req_slots_n,
-                                    uint16_t *slot_used, uint16_t *logical_slots,
-                                    uint16_t slots_cap, uint16_t *slots_n);
-
 #ifdef __cplusplus
 }
 #endif

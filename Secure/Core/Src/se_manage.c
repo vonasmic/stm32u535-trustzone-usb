@@ -3,6 +3,7 @@
  * @brief   PIN-gated / identity-changing commands for owner-pinned TLS
  */
 #include "se_manage.h"
+#include "se_device_id.h"
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_owner.h"
@@ -28,6 +29,42 @@ void se_manage_buf_wipe(void)
     wc_ForceZero(s_buf, sizeof(s_buf));
 }
 
+int se_manage_frame_ready(uint32_t got, uint32_t (*need)(const uint8_t *buf, uint32_t got))
+{
+    uint32_t needn;
+
+    if (need == NULL) {
+        return -1;
+    }
+    needn = need(s_buf, got);
+    if (needn == 0xffffffffu) {
+        return -1;
+    }
+    if ((needn == 0U) || (got < needn)) {
+        return SE_FRAME_NEED_MORE;
+    }
+    if (got != needn) {
+        return -1;
+    }
+    return SE_FRAME_COMPLETE;
+}
+
+int se_manage_accum(uint32_t *got, const uint8_t *chunk, uint32_t n,
+                    uint32_t (*need)(const uint8_t *buf, uint32_t got))
+{
+    if ((got == NULL) || ((n > 0U) && (chunk == NULL))) {
+        return -1;
+    }
+    if ((*got + n) > sizeof(s_buf)) {
+        return -1;
+    }
+    if (n > 0U) {
+        (void)memcpy(s_buf + *got, chunk, (size_t)n);
+        *got += n;
+    }
+    return se_manage_frame_ready(*got, need);
+}
+
 static void set_msg(char *msg, uint16_t cap, const char *s)
 {
     size_t n;
@@ -49,10 +86,7 @@ static void set_msg(char *msg, uint16_t cap, const char *s)
 
 static int pin_ok(const uint8_t *pin, uint8_t pin_len)
 {
-    return ((pin != NULL) && (pin_len >= SE_TROPIC_PIN_SIZE_MIN) &&
-            (pin_len <= SE_TROPIC_PIN_SIZE_MAX))
-               ? 1
-               : 0;
+    return se_tropic_pin_ascii_ok(pin, pin_len);
 }
 
 static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok)
@@ -77,18 +111,18 @@ static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok)
     return SE_MANAGE_ERR;
 }
 
-uint32_t se_manage_store_device(const uint8_t *cert, uint16_t cert_len,
-                                const uint8_t *key, uint16_t key_len)
+uint32_t se_manage_store_device_cert(const uint8_t *cert, uint16_t cert_len)
 {
-    if ((cert == NULL) || (key == NULL) || (cert_len == 0U) || (key_len == 0U) ||
-        (cert_len > SE_CREDS_DER_MAX) || (key_len > SE_MANAGE_KEY_DER_MAX) ||
-        (key_len > SE_NV_SK_MAX)) {
+    if ((cert == NULL) || (cert_len == 0U) || (cert_len > SE_CREDS_DER_MAX)) {
         return SE_MANAGE_PARSE;
     }
-    if (se_creds_set_device_cert(cert, cert_len) != LT_OK) {
+    if (se_nv_has_device_sk() == 0) {
+        return SE_MANAGE_NOT_READY;
+    }
+    if (se_device_id_cert_matches(cert, cert_len) == 0) {
         return SE_MANAGE_ERR;
     }
-    if (se_nv_set_device_sk(key, key_len) != LT_OK) {
+    if (se_creds_set_device_cert(cert, cert_len) != LT_OK) {
         return SE_MANAGE_ERR;
     }
     return SE_MANAGE_OK;
@@ -217,32 +251,50 @@ static uint32_t do_creds_device(const uint8_t *body, uint16_t body_len, char *ms
                                 uint16_t msg_cap)
 {
     uint16_t cert_len;
-    uint16_t key_len;
     uint32_t st;
 
-    if ((body == NULL) || (body_len < 4U)) {
+    if ((body == NULL) || (body_len < 2U)) {
         set_msg(msg, msg_cap, "bad CREDS DEVICE");
         return SE_MANAGE_PARSE;
     }
     cert_len = se_u16le(body);
     if ((cert_len == 0U) || (cert_len > SE_CREDS_DER_MAX) ||
-        (body_len < (4U + (uint32_t)cert_len))) {
+        (body_len != (2U + (uint32_t)cert_len))) {
         set_msg(msg, msg_cap, "bad CREDS DEVICE");
         return SE_MANAGE_PARSE;
     }
-    key_len = se_u16le(body + 2U + cert_len);
-    if ((key_len == 0U) || (key_len > SE_MANAGE_KEY_DER_MAX) ||
-        (body_len != (4U + cert_len + key_len))) {
-        set_msg(msg, msg_cap, "bad CREDS DEVICE");
-        return SE_MANAGE_PARSE;
+    st = se_manage_store_device_cert(body + 2U, cert_len);
+    if (st == SE_MANAGE_NOT_READY) {
+        set_msg(msg, msg_cap, "no device key");
+        return st;
     }
-    st = se_manage_store_device(body + 2U, cert_len, body + 4U + cert_len, key_len);
     if (st != SE_MANAGE_OK) {
         set_msg(msg, msg_cap, "CREDS DEVICE failed");
         return st;
     }
     set_msg(msg, msg_cap, "CREDS DEVICE ok");
     return SE_MANAGE_OK;
+}
+
+static uint32_t do_pairing(const uint8_t *pin, uint8_t pin_len, const uint8_t *body,
+                           uint16_t body_len, char *msg, uint16_t msg_cap)
+{
+    uint32_t st;
+
+    if (pin_ok(pin, pin_len) == 0) {
+        set_msg(msg, msg_cap, "PIN required");
+        return SE_MANAGE_PARSE;
+    }
+    if ((body == NULL) || (body_len != 1U) || (body[0] < 1U) || (body[0] > 3U)) {
+        set_msg(msg, msg_cap, "bad PAIRING");
+        return SE_MANAGE_PARSE;
+    }
+    st = peer_pin_gate(pin, pin_len);
+    if (st != SE_MANAGE_OK) {
+        set_msg(msg, msg_cap, "PIN fail");
+        return st;
+    }
+    return tropic_map(se_create_pairing_key_to_tropic(body[0]), msg, msg_cap, "PAIRING ok");
 }
 
 static uint32_t do_owner_replace(const uint8_t *body, uint16_t body_len, char *msg,
@@ -316,6 +368,88 @@ uint32_t se_manage_req_need(const uint8_t *buf, uint32_t got)
         return 0xffffffffu;
     }
     return 2U + (uint32_t)pin_len + 2U + (uint32_t)body_len;
+}
+
+uint32_t se_manage_owner_set_need(const uint8_t *buf, uint32_t got)
+{
+    uint8_t pw_len;
+    uint16_t n;
+    uint32_t off;
+
+    if ((buf == NULL) || (got < 1U)) {
+        return 0U;
+    }
+    pw_len = buf[0];
+    if ((pw_len < SE_OWNER_PW_MIN) || (pw_len > SE_OWNER_PW_MAX)) {
+        return 0xffffffffu;
+    }
+    if (got < (1U + (uint32_t)pw_len + 2U)) {
+        return 0U;
+    }
+    n = se_u16le(buf + 1U + pw_len);
+    if ((n == 0U) || (n > SE_NV_OWNER_SPKI_MAX)) {
+        return 0xffffffffu;
+    }
+    off = 1U + (uint32_t)pw_len + 2U + (uint32_t)n;
+    if (got < (off + 2U)) {
+        return 0U;
+    }
+    n = se_u16le(buf + off);
+    if (n > SE_CREDS_DER_MAX) {
+        return 0xffffffffu;
+    }
+    return off + 2U + (uint32_t)n;
+}
+
+uint32_t se_manage_owner_set_parse(const uint8_t *buf, uint32_t len,
+                                   const uint8_t **pw, uint8_t *pw_len,
+                                   const uint8_t **spki, uint16_t *spki_len,
+                                   const uint8_t **ca, uint16_t *ca_len)
+{
+    uint8_t pw_n;
+    uint16_t spki_n;
+    uint16_t ca_n;
+    uint32_t off;
+
+    if ((se_manage_owner_set_need(buf, len) != len) || (pw == NULL) || (pw_len == NULL) ||
+        (spki == NULL) || (spki_len == NULL) || (ca == NULL) || (ca_len == NULL)) {
+        return SE_MANAGE_PARSE;
+    }
+    pw_n = buf[0];
+    spki_n = se_u16le(buf + 1U + pw_n);
+    off = 1U + (uint32_t)pw_n + 2U + (uint32_t)spki_n;
+    ca_n = se_u16le(buf + off);
+    *pw_len = pw_n;
+    *pw = buf + 1U;
+    *spki_len = spki_n;
+    *spki = buf + 1U + pw_n + 2U;
+    *ca_len = ca_n;
+    *ca = (ca_n == 0U) ? NULL : (buf + off + 2U);
+    return SE_MANAGE_OK;
+}
+
+uint16_t se_manage_rsp_encode(uint8_t *out, uint16_t cap, uint8_t status, const char *msg)
+{
+    size_t n = 0U;
+
+    if ((out == NULL) || (cap < 3U)) {
+        return 0U;
+    }
+    if (msg != NULL) {
+        n = strlen(msg);
+        if (n > (size_t)SE_MANAGE_MSG_MAX) {
+            n = (size_t)SE_MANAGE_MSG_MAX;
+        }
+    }
+    if (cap < (uint16_t)(3U + n)) {
+        return 0U;
+    }
+    out[0] = status;
+    se_put_u16le(out + 1U, (uint16_t)n);
+    if (n > 0U) {
+        (void)memcpy(out + 3U, msg, n);
+    }
+    return (uint16_t)(3U + n);
 }
 
 uint32_t se_manage_apply_buf(const uint8_t *buf, uint32_t len, char *msg, uint16_t msg_cap)
@@ -396,6 +530,8 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
             return SE_MANAGE_PARSE;
         }
         return do_owner_replace(body, body_len, msg, msg_cap);
+    case SE_MANAGE_PAIRING:
+        return do_pairing(pin, pin_len, body, body_len, msg, msg_cap);
     default:
         set_msg(msg, msg_cap, "bad command");
         return SE_MANAGE_BAD_CMD;

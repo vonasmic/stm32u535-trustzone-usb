@@ -119,7 +119,7 @@ uint32_t se_tropic_init_session(void)
     se_tropic_port_hw_init();
     (void)memset(&s_lt, 0, sizeof(s_lt));
     if (se_tropic_port_attach(&s_lt) != SE_TROPIC_OK) {
-        se_tropic_log("TROPIC port attach fail");
+        se_tropic_log("failed");
         return SE_TROPIC_ERR;
     }
 
@@ -186,7 +186,7 @@ uint32_t se_tropic_ping(void)
         return SE_TROPIC_ERR;
     }
     if (memcmp(recv, TROPIC_PING_MSG, TROPIC_PING_MSG_LEN) != 0) {
-        se_tropic_log("TROPIC ping mismatch");
+        se_tropic_log("failed");
         return SE_TROPIC_ERR;
     }
     se_tropic_log("TROPIC ping ok");
@@ -249,7 +249,7 @@ uint32_t se_tropic_info(void)
     return SE_TROPIC_OK;
 }
 
-uint32_t se_tropic_otp_left_dump(void)
+uint32_t se_tropic_otp_left(uint32_t out_quotas[4])
 {
     lt_handle_t *h;
     uint32_t enc = 0U;
@@ -258,6 +258,9 @@ uint32_t se_tropic_otp_left_dump(void)
     uint32_t dec_cap = 0U;
     lt_ret_t ret;
 
+    if (out_quotas == NULL) {
+        return SE_TROPIC_ERR;
+    }
     if (se_tropic_init_session() != SE_TROPIC_OK) {
         return SE_TROPIC_ERR;
     }
@@ -267,22 +270,25 @@ uint32_t se_tropic_otp_left_dump(void)
     }
 
     ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_ENCRYPT, &enc, &enc_cap);
-    if (ret == SE_TROPIC_LT_TAMPERED) {
-        return SE_TROPIC_TAMPERED;
-    }
     if (ret != LT_OK) {
         return SE_TROPIC_ERR;
     }
     ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_DECRYPT, &dec, &dec_cap);
-    if (ret == SE_TROPIC_LT_TAMPERED) {
-        return SE_TROPIC_TAMPERED;
-    }
     if (ret != LT_OK) {
         return SE_TROPIC_ERR;
     }
-
-    se_tropic_log("OTP left");
+    out_quotas[0] = enc;
+    out_quotas[1] = enc_cap;
+    out_quotas[2] = dec;
+    out_quotas[3] = dec_cap;
     return SE_TROPIC_OK;
+}
+
+uint32_t se_tropic_otp_left_dump(void)
+{
+    uint32_t q[4];
+
+    return se_tropic_otp_left(q);
 }
 
 uint32_t se_tropic_pub_read(uint8_t *out_xy64)
@@ -301,14 +307,15 @@ uint32_t se_tropic_pub_read(uint8_t *out_xy64)
     }
 
     ret = lt_ecc_key_read(&s_lt, SE_TROPIC_ECC_SLOT, key, sizeof(key), &curve, &origin);
+    /* ECC occupancy is INVALID_KEY (0x12), not SLOT_EMPTY (pairing / R-MEM). */
+    if (ret == LT_L3_INVALID_KEY) {
+        return SE_TROPIC_NOT_READY;
+    }
     if (ret != LT_OK) {
-        se_tropic_log_fail("TROPIC pub read fail", ret);
         return SE_TROPIC_ERR;
     }
 
     (void)memcpy(out_xy64, key, 64U);
-    se_tropic_log("TROPIC P-256 pub:");
-    se_tropic_log_hex(NULL, out_xy64, 64U);
     return SE_TROPIC_OK;
 }
 
@@ -339,7 +346,7 @@ uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len)
     if (se_tropic_slot_occupied() != 0U) {
         if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) ||
             (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-            se_tropic_log("TROPIC slot occupied; use MANAGE TLS");
+            se_tropic_log("failed");
             return SE_TROPIC_SLOT_OCC;
         }
         h = se_tropic_handle();
@@ -394,8 +401,6 @@ uint32_t se_tropic_sign_hash(const uint8_t hash32[32], uint8_t rs64[64])
         return SE_TROPIC_ERR;
     }
 
-    se_tropic_log("TROPIC sig:");
-    se_tropic_log_hex(NULL, rs64, 64U);
     return SE_TROPIC_OK;
 }
 
@@ -412,7 +417,7 @@ uint32_t se_create_pairing_key_to_tropic(uint8_t slot)
     lt_ret_t ret;
 
     if (pairing_slot_ok(slot) == 0) {
-        se_tropic_log("TROPIC PAIRING slot must be 1-3 (0 is factory SH0)");
+        se_tropic_log("failed");
         return SE_TROPIC_ERR;
     }
     if (se_tropic_init_session() != SE_TROPIC_OK) {
@@ -421,7 +426,7 @@ uint32_t se_create_pairing_key_to_tropic(uint8_t slot)
 
     ret = lt_pairing_key_read(&s_lt, read_pub, (lt_pkey_index_t)slot);
     if (ret == LT_OK) {
-        se_tropic_log("TROPIC PAIRING refused: slot occupied");
+        se_tropic_log("failed");
         return SE_TROPIC_SLOT_OCC;
     }
     if (ret != LT_L3_SLOT_EMPTY) {
@@ -474,7 +479,7 @@ uint32_t se_create_pairing_key_to_tropic(uint8_t slot)
 
     se_tropic_deinit_session();
     if (se_tropic_init_session() != SE_TROPIC_OK) {
-        se_tropic_log("TROPIC PAIRING re-session with new key failed");
+        se_tropic_log("failed");
         return SE_TROPIC_ERR;
     }
     return SE_TROPIC_OK;
@@ -533,7 +538,7 @@ uint32_t se_tropic_pairing_load(uint8_t slot, const uint8_t priv[32], const uint
         return SE_TROPIC_ERR;
     }
     if (memcmp(derived, pub, sizeof(derived)) != 0) {
-        se_tropic_log("TROPIC PAIRING LOAD pub mismatch");
+        se_tropic_log("failed");
         wc_ForceZero(derived, sizeof(derived));
         return SE_TROPIC_ERR;
     }
@@ -546,7 +551,7 @@ uint32_t se_tropic_pairing_load(uint8_t slot, const uint8_t priv[32], const uint
     s_pkey_valid = 1U;
 
     if (se_tropic_init_session() != SE_TROPIC_OK) {
-        se_tropic_log("TROPIC PAIRING LOAD session fail");
+        se_tropic_log("failed");
         se_tropic_pairing_unload();
         return SE_TROPIC_ERR;
     }

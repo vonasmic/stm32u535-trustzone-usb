@@ -14,8 +14,8 @@ int main(void)
     uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t final_setup[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t final_check[SE_TROPIC_PIN_HMAC_LEN];
-    const uint8_t pin[] = {1, 2, 3, 4};
-    const uint8_t pin_wrong[] = {2, 2, 3, 4};
+    const uint8_t pin[] = {'1', '2', '3', '4', '5', '6', '7', '8'};
+    const uint8_t pin_wrong[] = {'1', '2', '3', '4', '5', '6', '7', '9'};
     const uint8_t add[] = {0x11, 0x22, 0x33, 0x44};
     lt_ret_t ret;
     uint32_t st;
@@ -27,6 +27,10 @@ int main(void)
     }
 
     printf("=== D: PIN-gated ===\n");
+    TEST_ASSERT(se_tropic_pin_ascii_ok(pin, (uint8_t)sizeof(pin)) != 0, "ascii PIN ok");
+    TEST_ASSERT(se_tropic_pin_ascii_ok(pin, 4U) == 0, "PIN too short");
+    TEST_ASSERT(se_tropic_pin_ascii_ok((const uint8_t *)"\x01\x02\x03\x04\x05\x06\x07\x08", 8U) == 0,
+                "non-printable PIN");
     st = se_tropic_init_session();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "init_session");
     h = se_tropic_handle();

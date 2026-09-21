@@ -1,13 +1,21 @@
 /**
  * @file    secure_otp.c
- * @brief   TLS OTP request parsers and reply writers
+ * @brief   TLS OTP request parsers, pad consume session, and reply writers
  */
 #include "secure_otp.h"
 #include "se_le.h"
+#include "se_tropic.h"
 #include "se_tropic_pin.h"
 #include "se_tropic_rmem.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
+
+#define OTP_SESSION_IN_MAX 512u
+
+#define SECURE_OTP_REQ_OK       0u
+#define SECURE_OTP_REQ_PARSE    3u
+#define SECURE_OTP_REQ_COMPLETE 5u
+#define SECURE_OTP_PAD_READY    6u
 
 /* Accumulates the SAE request prefix until complete:
  *   u8 pin_len | pin | u32 (msg_len encrypt, or n_pads decrypt)
@@ -413,4 +421,334 @@ int secure_otp_encode_pad(uint8_t decrypt, uint16_t slot, const uint8_t *data, u
     (void)memcpy(out + hdr, data, len);
     *written = need;
     return 0;
+}
+
+/* ---- consume session: leftover, XOR open/pad, reply encode ----------- */
+
+static struct {
+    uint8_t  decrypt;
+    uint8_t  phase;
+    uint8_t  count_written;
+    uint8_t  err;
+    uint32_t err_code;
+    uint8_t  rest[OTP_SESSION_IN_MAX];
+    uint32_t rest_len;
+    uint8_t  tx[4u + 4u + SE_TROPIC_RMEM_PLAIN_MAX];
+    uint16_t tx_len;
+    uint16_t tx_off;
+} s_sess;
+
+static uint32_t session_map_open_err(lt_ret_t ret)
+{
+    if (ret == SE_TROPIC_LT_OTP_EXHAUSTED) {
+        return SECURE_OTP_ERR_EXHAUSTED;
+    }
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return SECURE_OTP_ERR_TAMPERED;
+    }
+    if (ret == LT_FAIL) {
+        return SECURE_OTP_ERR_PIN;
+    }
+    return SECURE_OTP_ERR_FAIL;
+}
+
+static int session_fail_reply(uint32_t err_code)
+{
+    if (secure_otp_encode_err(err_code, s_sess.tx) != 0) {
+        return -1;
+    }
+    s_sess.tx_len = 8U;
+    s_sess.tx_off = 0U;
+    s_sess.err = 1U;
+    s_sess.err_code = err_code;
+    s_sess.count_written = 1U;
+    s_sess.phase = SECURE_OTP_PHASE_TX;
+    return 0;
+}
+
+static int session_open_xor(uint32_t *err_out)
+{
+    const uint8_t *pin;
+    uint8_t pin_len = 0U;
+    uint32_t msg_len;
+    uint32_t n_pads;
+    se_nv_otp_dir_t dir;
+    lt_handle_t *h;
+    lt_ret_t ret;
+
+    if (err_out != NULL) {
+        *err_out = SECURE_OTP_ERR_FAIL;
+    }
+    pin = secure_otp_request_pin(&pin_len);
+    msg_len = secure_otp_encrypt_msg_len();
+    n_pads = secure_otp_decrypt_n_pads();
+    if ((pin == NULL) || (pin_len == 0U) ||
+        ((s_sess.decrypt == 0U) && (msg_len == 0U)) ||
+        ((s_sess.decrypt != 0U) && (n_pads == 0U))) {
+        return -1;
+    }
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
+        return -1;
+    }
+    h = se_tropic_handle();
+    if (h == NULL) {
+        return -1;
+    }
+    dir = (s_sess.decrypt != 0U) ? SE_NV_OTP_DECRYPT : SE_NV_OTP_ENCRYPT;
+    if (s_sess.decrypt != 0U) {
+        ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, dir, 0U, n_pads);
+    } else {
+        ret = se_tropic_otp_xor_open(h, pin, pin_len, NULL, 0U, dir, msg_len, 0U);
+    }
+    if (ret != LT_OK) {
+        se_tropic_otp_xor_close();
+        if (err_out != NULL) {
+            *err_out = session_map_open_err(ret);
+        }
+        return -1;
+    }
+    if (s_sess.decrypt != 0U) {
+        secure_otp_decrypt_begin_ciphertext(se_tropic_otp_xor_pad_max(), n_pads);
+    } else {
+        secure_otp_encrypt_begin_plaintext(se_tropic_otp_xor_pad_max(), msg_len);
+    }
+    return 0;
+}
+
+/* Keep -Os; do not let GCC rewrite the copy as libc memmove (~50 B FLASH). */
+#pragma GCC push_options
+#pragma GCC optimize ("Os", "no-tree-loop-distribute-patterns")
+static int session_save_leftover(const uint8_t *chunk, uint32_t len)
+{
+    uint32_t i;
+
+    if (len == 0U) {
+        s_sess.rest_len = 0U;
+        return 0;
+    }
+    if (len > sizeof(s_sess.rest)) {
+        s_sess.rest_len = 0U;
+        return -1;
+    }
+    for (i = 0U; i < len; i++) {
+        s_sess.rest[i] = chunk[i];
+    }
+    s_sess.rest_len = len;
+    return 0;
+}
+#pragma GCC pop_options
+
+static int session_xor_into_reply(void)
+{
+    uint8_t *chunk;
+    uint8_t *out;
+    uint16_t take = 0U;
+    uint16_t logical = 0U;
+    const uint16_t *req = NULL;
+    uint16_t req_slot;
+    uint32_t written = 0U;
+    uint32_t hdr = 0U;
+    lt_handle_t *h;
+    lt_ret_t ret;
+
+    chunk = secure_otp_pad_payload(&take);
+    if ((chunk == NULL) || (take == 0U)) {
+        return -1;
+    }
+    h = se_tropic_handle();
+    if (h == NULL) {
+        return -1;
+    }
+    if (s_sess.decrypt != 0U) {
+        req_slot = secure_otp_decrypt_pad_slot();
+        req = &req_slot;
+    }
+    ret = se_tropic_otp_xor_pad(h, req, chunk, take, chunk, &logical, NULL);
+    if (ret != LT_OK) {
+        return -1;
+    }
+    out = s_sess.tx;
+    s_sess.tx_len = 0U;
+    s_sess.tx_off = 0U;
+    if (s_sess.count_written == 0U) {
+        if (secure_otp_encode_n_pads(se_tropic_otp_xor_pads_needed(), out) != 0) {
+            return -1;
+        }
+        hdr = 4U;
+        s_sess.count_written = 1U;
+    }
+    if (secure_otp_encode_pad(s_sess.decrypt, logical, chunk, take, out + hdr,
+                              (uint32_t)sizeof(s_sess.tx) - hdr, &written) != 0) {
+        return -1;
+    }
+    s_sess.tx_len = (uint16_t)(hdr + written);
+    return 0;
+}
+
+/** 0 = need more, 1 = record ready to write, -1 = fail. */
+static int session_parse_incoming(const uint8_t *data, uint32_t len)
+{
+    uint32_t consumed = 0U;
+    uint32_t st;
+
+    if (s_sess.phase == SECURE_OTP_PHASE_HDR) {
+        st = parse_request(data, len, &consumed);
+        if (st == SECURE_OTP_REQ_COMPLETE) {
+            uint32_t err = SECURE_OTP_ERR_FAIL;
+
+            if (session_open_xor(&err) != 0) {
+                s_sess.err_code = err;
+                if (session_fail_reply(err) != 0) {
+                    return -1;
+                }
+                return SECURE_OTP_SESSION_REPLY;
+            }
+            data += consumed;
+            len -= consumed;
+            s_sess.phase = SECURE_OTP_PHASE_PAD;
+            if (len == 0U) {
+                return SECURE_OTP_SESSION_NEED_MORE;
+            }
+        } else if (st != SECURE_OTP_REQ_OK) {
+            if (session_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
+                return -1;
+            }
+            return SECURE_OTP_SESSION_REPLY;
+        } else {
+            return SECURE_OTP_SESSION_NEED_MORE;
+        }
+    }
+
+    st = secure_otp_read_pad(data, len, &consumed);
+    if (st == SECURE_OTP_PAD_READY) {
+        if (session_save_leftover(data + consumed, len - consumed) != 0) {
+            return -1;
+        }
+        if (session_xor_into_reply() != 0) {
+            if (s_sess.count_written == 0U) {
+                if (session_fail_reply(SECURE_OTP_ERR_FAIL) != 0) {
+                    return -1;
+                }
+                return SECURE_OTP_SESSION_REPLY;
+            }
+            return -1;
+        }
+        s_sess.phase = SECURE_OTP_PHASE_TX;
+        return SECURE_OTP_SESSION_REPLY;
+    }
+    if (st != SECURE_OTP_REQ_OK) {
+        if (s_sess.count_written == 0U) {
+            if (session_fail_reply(SECURE_OTP_ERR_PARSE) != 0) {
+                return -1;
+            }
+            return SECURE_OTP_SESSION_REPLY;
+        }
+        return -1;
+    }
+    wc_ForceZero(s_sess.rest, s_sess.rest_len);
+    s_sess.rest_len = 0U;
+    return SECURE_OTP_SESSION_NEED_MORE;
+}
+
+void secure_otp_session_reset(void)
+{
+    wc_ForceZero(s_sess.rest, s_sess.rest_len);
+    s_sess.rest_len = 0U;
+    wc_ForceZero(s_sess.tx, s_sess.tx_len);
+    s_sess.tx_len = 0U;
+    s_sess.tx_off = 0U;
+    s_sess.count_written = 0U;
+    s_sess.err = 0U;
+    s_sess.err_code = 0U;
+    s_sess.decrypt = 0U;
+    s_sess.phase = SECURE_OTP_PHASE_IDLE;
+    se_tropic_otp_xor_close();
+    secure_otp_reset();
+}
+
+void secure_otp_session_begin(uint8_t decrypt)
+{
+    s_sess.decrypt = (decrypt != 0U) ? 1U : 0U;
+    s_sess.count_written = 0U;
+    s_sess.err = 0U;
+    s_sess.err_code = 0U;
+    s_sess.phase = SECURE_OTP_PHASE_HDR;
+}
+
+uint8_t secure_otp_session_phase(void)
+{
+    return s_sess.phase;
+}
+
+int secure_otp_session_has_in(void)
+{
+    return (s_sess.rest_len > 0U) ? 1 : 0;
+}
+
+int secure_otp_session_feed(const uint8_t *data, uint32_t len)
+{
+    if (s_sess.rest_len > 0U) {
+        uint32_t rest_len = s_sess.rest_len;
+        int fed;
+
+        s_sess.rest_len = 0U;
+        fed = session_parse_incoming(s_sess.rest, rest_len);
+        if (s_sess.rest_len < rest_len) {
+            wc_ForceZero(s_sess.rest + s_sess.rest_len, rest_len - s_sess.rest_len);
+        }
+        return fed;
+    }
+    if ((data == NULL) || (len == 0U)) {
+        return SECURE_OTP_SESSION_NEED_MORE;
+    }
+    return session_parse_incoming(data, len);
+}
+
+const uint8_t *secure_otp_session_tx(uint16_t *len)
+{
+    uint16_t left = 0U;
+
+    if (s_sess.tx_off < s_sess.tx_len) {
+        left = (uint16_t)(s_sess.tx_len - s_sess.tx_off);
+    }
+    if (len != NULL) {
+        *len = left;
+    }
+    return (left > 0U) ? (s_sess.tx + s_sess.tx_off) : NULL;
+}
+
+void secure_otp_session_tx_consumed(uint16_t n)
+{
+    uint16_t left;
+
+    if (s_sess.tx_off >= s_sess.tx_len) {
+        return;
+    }
+    left = (uint16_t)(s_sess.tx_len - s_sess.tx_off);
+    if (n > left) {
+        n = left;
+    }
+    s_sess.tx_off = (uint16_t)(s_sess.tx_off + n);
+}
+
+int secure_otp_session_tx_complete(void)
+{
+    wc_ForceZero(s_sess.tx, s_sess.tx_len);
+    s_sess.tx_len = 0U;
+    s_sess.tx_off = 0U;
+    secure_otp_pad_done();
+    if ((s_sess.err != 0U) || (se_tropic_otp_xor_bytes_left() == 0U)) {
+        s_sess.phase = SECURE_OTP_PHASE_DONE;
+        return SECURE_OTP_SESSION_DONE;
+    }
+    s_sess.phase = SECURE_OTP_PHASE_PAD;
+    if (s_sess.rest_len > 0U) {
+        return secure_otp_session_feed(NULL, 0U);
+    }
+    return SECURE_OTP_SESSION_NEED_MORE;
+}
+
+uint32_t secure_otp_session_err(void)
+{
+    return s_sess.err_code;
 }

@@ -88,10 +88,12 @@ int main(void)
     h = se_tropic_handle();
     TEST_ASSERT(h != NULL, "handle");
 
-    /* Empty slot: sign must fail. */
+    /* Empty slot: Tropic returns INVALID_KEY; PUB dump must be empty, not err. */
     (void)memset(empty_hash, 0xab, sizeof(empty_hash));
     ret = lt_ecc_key_erase(h, SE_TROPIC_ECC_SLOT);
     TEST_ASSERT_EQ(ret, LT_OK, "erase slot (fresh)");
+    st = se_tropic_pub_read(pub);
+    TEST_ASSERT_EQ(st, SE_TROPIC_NOT_READY, "pub_read empty slot");
     st = se_tropic_sign_hash(empty_hash, sig);
     TEST_ASSERT(st == SE_TROPIC_ERR, "sign empty slot fails");
 
@@ -138,7 +140,7 @@ int main(void)
         uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
         uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
         uint8_t pub2[64];
-        const uint8_t pin[] = {9, 8, 7, 6};
+        const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
         const uint8_t pin_bad[] = {0, 8, 7, 6};
 
         ret = lt_random_value_get(h, master, sizeof(master));

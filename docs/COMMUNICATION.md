@@ -22,12 +22,12 @@ NonSecure ([tls_usb_io.c](../NonSecure/Core/Src/tls_usb_io.c)):
 
 - **Command mode** — `\n`-terminated ASCII, max 160 chars.
 - After a successful `SECURE_TlsStart_nsc_call` or `SECURE_OwnerBegin_nsc_call`, **binary/TLS mode** — every RX byte goes to `SECURE_UsbRx_nsc_call`. Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`.
-- TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`). After each TLS RX packet, NonSecure runs `SECURE_UsbService_nsc_call` so wolfSSL drains the ring before the next push (a PQC ServerHello is ~12 KiB; dumping it first overflowed the old 8 KiB ring).
+- TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`). After each TLS RX packet, NonSecure runs `SECURE_UsbService_nsc_call` so wolfSSL drains the ring before the next push (a PQC ServerHello is ~12 KiB).
 - DTR off, CDC deactivate, overflow, or TLS end → command mode again.
 
 Secure rings ([se_usb_tls.h](../Secure/Core/Inc/se_usb_tls.h)): RX **16384** bytes, TX **8192** bytes.
 
-Framed `DEBUG:<text>:DEBUG` status lines (handshake progress, Tropic logs) go on the CDC TX ring **only before the first TLS record byte**. After that, TX is TLS only. The closer `:DEBUG` is the ASCII/TLS boundary, so a ClientHello (`0x16`) glued onto the same USB read is still unambiguous. ClientHello waits until the current DEBUG frame has left the Secure TX ring.
+Typed replies are `0xB1` dump frames (`status` + little-endian length + body). ASCII errors are the single line `failed` — Tropic/TLS/auth failure types are not on USB. Dump bodies may contain `0x16`; the leftover parser consumes `u16le` length before treating leftover as TLS. ASCII `HELP` / `PING` / `INFO` and dump frames share the TX ring **only before** the first TLS record byte. After that, TX is TLS only. ClientHello waits until already-queued ASCII/dump has left the Secure TX ring.
 
 PIN is never on the ASCII pipe for the TLS modes. Occupied KEYGEN / KEM INIT / PEER ADD/REMOVE / CREDS / OWNER REPLACE stream unsigned bodies over MANAGE TLS (no ML-DSA). ENCRYPT/DECRYPT stay mTLS.
 
@@ -183,7 +183,7 @@ Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.
 
 Not an LV envelope. Device ↔ **USER** (UserApp), not SAE. [secure_otp.h](../Secure/Core/Inc/secure_otp.h).
 
-PIN length **4–8** bytes (`SE_TROPIC_PIN_SIZE_MIN` / `MAX`).
+PIN length **8–16** printable ASCII bytes (`SE_TROPIC_PIN_SIZE_MIN` / `MAX`).
 
 ### ENCRYPT (USER → SE)
 
@@ -238,7 +238,7 @@ repeat n_pads times:
 
 No slot IDs. UserApp concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
 
-OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`). Remaining/capacity pad kilobytes (no PIN, no consume) are `TROPIC OTP LEFT` on the USB console.
+OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`): TLS pumps application bytes into [`secure_otp_session_feed`](../Secure/Core/Inc/secure_otp.h); the pad module opens XOR, leftover-compacts, burns pads, and encodes the reply. Remaining/capacity pad kilobytes (no PIN, no consume) are `TROPIC OTP LEFT` on the USB console.
 
 ### Parser codes
 

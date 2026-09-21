@@ -91,7 +91,7 @@ static uint32_t feed_chunks(const uint8_t *blob, uint32_t blob_len)
 int main(void)
 {
     lt_handle_t *h;
-    const uint8_t pin[] = {9, 8, 7, 6};
+    const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
     const uint8_t add[] = {0xde, 0xad};
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint8_t kem_ct[SE_TROPIC_KEM_CT_LEN];
@@ -209,8 +209,8 @@ int main(void)
         msg[i] = (uint8_t)(0xE0u + (uint8_t)i);
     }
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used);
     TEST_ASSERT_EQ(ret, LT_OK, "otp consume pad 0");
     TEST_ASSERT_EQ(slot_used, SE_TROPIC_PAD_FIRST, "otp from first pad");
     for (i = 0; i < (int)sizeof(msg); i++) {
@@ -261,14 +261,14 @@ int main(void)
     TEST_ASSERT_EQ(dec_cur, (uint32_t)SE_TROPIC_PAD_FIRST, "decrypt at first pad");
 
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_ENCRYPT, NULL, 0U, &slot_used);
     TEST_ASSERT(ret != LT_OK, "encrypt does not consume first-half pads");
 
     req_slots[0] = 0U;
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used);
     TEST_ASSERT_EQ(ret, LT_OK, "decrypt slot 0");
     TEST_ASSERT_EQ(slot_used, SE_TROPIC_PAD_FIRST, "decrypt physical 0");
     for (i = 0; i < (int)sizeof(msg); i++) {
@@ -276,14 +276,14 @@ int main(void)
     }
 
     req_slots[0] = 0U;
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used);
     TEST_ASSERT(ret != LT_OK, "decrypt rewind refused");
 
     req_slots[0] = 2U;
     (void)memset(out, 0xEE, sizeof(out));
-    ret = se_tropic_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
-                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used, NULL, 0U, NULL);
+    ret = host_otp_xor_message(h, pin, sizeof(pin), add, sizeof(add), msg, sizeof(msg), out,
+                                     SE_NV_OTP_DECRYPT, req_slots, 1U, &slot_used);
     TEST_ASSERT_EQ(ret, LT_OK, "decrypt skip-ahead to slot 2");
     TEST_ASSERT_EQ(slot_used, (uint16_t)(SE_TROPIC_PAD_FIRST + 2u), "skipped to pad2");
     for (i = 0; i < (int)sizeof(msg); i++) {
