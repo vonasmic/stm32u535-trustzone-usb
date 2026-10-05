@@ -303,7 +303,7 @@ void se_tls_abort(void)
     se_usb_tls_clear_rx();
     se_usb_tls_end_tls_wire();
     se_time_clear_synced();
-    se_usb_failed();
+    /* No USB ASCII: host already sees TLS failure / arm refuse via SECURE_USB_ERR. */
     s_state = TLS_ST_IDLE;
 }
 

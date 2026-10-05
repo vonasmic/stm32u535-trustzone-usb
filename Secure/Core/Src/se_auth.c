@@ -54,22 +54,22 @@ static void run_owner_set(const uint8_t *f, uint32_t len)
 
     if (se_manage_owner_set_parse(f, len, &pw, &pw_len, &spki, &spki_len, &ca, &ca_len) !=
         SE_MANAGE_OK) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         return;
     }
     if (se_owner_set(pw, pw_len, spki, spki_len) != LT_OK) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         return;
     }
     if (se_device_id_ensure() != LT_OK) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         return;
     }
     if ((ca_len != 0U) && (se_creds_set_sae_ca(ca, ca_len) != LT_OK)) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         return;
     }
-    (void)se_usb_dump(SE_USB_DUMP_OK, NULL, 0U);
+    se_usb_debug_puts("ok");
 }
 
 void se_auth_service(void)
@@ -83,7 +83,7 @@ void se_auth_service(void)
         return;
     }
     if (se_usb_tls_rx_overflow() != 0U) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         se_auth_abort();
         return;
     }
@@ -95,7 +95,7 @@ void se_auth_service(void)
         s_got += (uint32_t)n;
         st = se_manage_frame_ready(s_got, se_manage_owner_set_need);
         if (st < 0) {
-            (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+            se_usb_failed();
             se_auth_abort();
             return;
         }
@@ -106,7 +106,7 @@ void se_auth_service(void)
         }
     }
     if (s_got >= cap) {
-        (void)se_usb_dump(SE_USB_DUMP_ERR, NULL, 0U);
+        se_usb_failed();
         se_auth_abort();
     }
 }

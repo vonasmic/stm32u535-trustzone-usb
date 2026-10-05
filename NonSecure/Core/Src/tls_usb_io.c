@@ -2,11 +2,11 @@
  * @file    tls_usb_io.c
  * @brief   NonSecure CDC: parse host commands, arm TLS, pump Secure pipe
  *
- * Host commands live in s_host_cmds (HELP lists that table). Typed replies
- * are 0xB1 dump frames. ASCII errors are the string {@code failed} only.
+ * Host commands live in s_host_cmds (HELP lists that table). Console replies
+ * are ASCII lines (hex for binary payloads). Errors are {@code failed} only.
  * PROVISION / ENCRYPT / DECRYPT / MANAGE <unix> set Secure time and arm TLS
  * with a mode enum. Only then are RX bytes forwarded and UsbService polled.
- * / DTR off / TLS exit (IDLE) returns to command mode.
+ * DTR off / TLS exit (IDLE) returns to command mode.
  */
 #include "tls_usb_io.h"
 #include "se_tls_nsc.h"
@@ -112,7 +112,7 @@ static const host_cmd_t s_host_cmds[] = {
     { "TROPIC INFO",     "TROPIC INFO",          cmd_tropic_info },
     { "TROPIC PUB",      "TROPIC PUB",           cmd_tropic_pub },
     { "TROPIC KEM PUB",  "TROPIC KEM PUB",       cmd_tropic_kem_pub },
-    { "TROPIC OTP LEFT", "TROPIC OTP LEFT",      cmd_tropic_otp_left },
+    { "TROPIC OTP STATUS", "TROPIC OTP STATUS",  cmd_tropic_otp_left },
 };
 
 static int cmd_match(const char *line, const char *name, char **args_out)
@@ -152,23 +152,46 @@ static void usb_failed(void)
     ns_log("failed");
 }
 
-static void usb_dump(uint8_t status, const uint8_t *body, uint32_t len)
+static void ns_log_hex(const uint8_t *data, uint32_t len)
 {
-    (void)SECURE_UsbDump_nsc_call(status, body, len);
+    char line[97];
+    uint32_t i;
+    uint32_t pos = 0U;
+
+    if (data == NULL || len == 0U) {
+        return;
+    }
+    for (i = 0U; i < len; i++) {
+        if (pos + 2U >= sizeof(line)) {
+            line[pos] = '\0';
+            ns_log(line);
+            pos = 0U;
+        }
+        line[pos++] = (char)("0123456789abcdef"[(data[i] >> 4) & 0x0FU]);
+        line[pos++] = (char)("0123456789abcdef"[data[i] & 0x0FU]);
+    }
+    if (pos > 0U) {
+        line[pos] = '\0';
+        ns_log(line);
+    }
 }
 
-/** Map collapsed Tropic NSC status: ok / empty occupancy / err. */
-static void usb_tropic_dump(uint32_t st, const uint8_t *body, uint32_t len)
+/** Tropic NSC → ASCII: ok[+hex] / empty / failed. */
+static void usb_tropic_ascii(uint32_t st, const uint8_t *body, uint32_t len)
 {
     if (st == SECURE_TROPIC_OK) {
-        usb_dump(SECURE_USB_DUMP_OK, body, len);
+        if ((body != NULL) && (len > 0U)) {
+            ns_log_hex(body, len);
+        } else {
+            ns_log("ok");
+        }
         return;
     }
     if (st == SECURE_USB_DUMP_EMPTY) {
-        usb_dump(SECURE_USB_DUMP_EMPTY, NULL, 0U);
+        ns_log("empty");
         return;
     }
-    usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
+    usb_failed();
 }
 
 static void cmd_help(char *args)
@@ -259,78 +282,75 @@ static void cmd_tropic_pub(char *args)
 
     (void)args;
     (void)memset(xy64, 0, sizeof(xy64));
-    usb_tropic_dump(SECURE_TropicPub_nsc_call(xy64), xy64, 64U);
+    usb_tropic_ascii(SECURE_TropicPub_nsc_call(xy64), xy64, 64U);
 }
 
 static void cmd_tropic_kem_pub(char *args)
 {
-    uint8_t pk[SECURE_USB_DUMP_BODY_MAX];
+    uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint32_t n = SE_TROPIC_MLKEM_PK_LEN;
 
     (void)args;
-    if (n > SECURE_USB_DUMP_BODY_MAX) {
-        usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
-        return;
-    }
-    usb_tropic_dump(SECURE_TropicKemPub_nsc_call(pk, &n), pk, n);
+    usb_tropic_ascii(SECURE_TropicKemPub_nsc_call(pk, &n), pk, n);
 }
 
 static void cmd_tropic_otp_left(char *args)
 {
     uint32_t q[4];
-    uint8_t body[16];
-    uint32_t i;
+    char line[96];
 
     (void)args;
     if (SECURE_TropicOtpLeft_nsc_call(q) != SECURE_TROPIC_OK) {
-        usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
+        usb_failed();
         return;
     }
-    for (i = 0U; i < 4U; i++) {
-        body[i * 4U] = (uint8_t)(q[i] & 0xffu);
-        body[(i * 4U) + 1U] = (uint8_t)((q[i] >> 8) & 0xffu);
-        body[(i * 4U) + 2U] = (uint8_t)((q[i] >> 16) & 0xffu);
-        body[(i * 4U) + 3U] = (uint8_t)((q[i] >> 24) & 0xffu);
-    }
-    usb_dump(SECURE_USB_DUMP_OK, body, 16U);
+    (void)snprintf(line, sizeof(line), "enc=%lu/%lu kb dec=%lu/%lu kb",
+                   (unsigned long)q[0], (unsigned long)q[1],
+                   (unsigned long)q[2], (unsigned long)q[3]);
+    ns_log(line);
 }
 
 static void cmd_peer_list(char *args)
 {
-    uint8_t body[1U + (SECURE_PEER_MAX * (1U + SECURE_PEER_NAME_MAX + SECURE_PEER_HASH_LEN))];
-    uint32_t off = 1U;
     uint32_t i;
     uint8_t nrec = 0U;
+    char line[1U + SECURE_PEER_NAME_MAX + 1U + (SECURE_PEER_HASH_LEN * 2U) + 1U];
 
     (void)args;
     for (i = 0U; i < SECURE_PEER_MAX; i++) {
-        uint8_t name[SECURE_PEER_NAME_MAX];
+        uint8_t name[SECURE_PEER_NAME_MAX + 1U];
         uint8_t hash48[SECURE_PEER_HASH_LEN];
         uint32_t nlen = SECURE_PEER_NAME_MAX;
         uint32_t st;
+        uint32_t j;
+        uint32_t pos;
 
         (void)memset(name, 0, sizeof(name));
         st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash48);
         if (st == SECURE_PEER_NOT_FOUND) {
             break;
         }
-        if (st != SECURE_PEER_OK) {
-            usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
+        if (st != SECURE_PEER_OK || nlen > SECURE_PEER_NAME_MAX) {
+            usb_failed();
             return;
         }
-        if (nlen > SECURE_PEER_NAME_MAX) {
-            usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
-            return;
+        name[nlen] = '\0';
+        pos = 0U;
+        for (j = 0U; j < nlen; j++) {
+            line[pos++] = (char)name[j];
         }
-        body[off++] = (uint8_t)nlen;
-        (void)memcpy(body + off, name, nlen);
-        off += nlen;
-        (void)memcpy(body + off, hash48, SECURE_PEER_HASH_LEN);
-        off += SECURE_PEER_HASH_LEN;
+        line[pos++] = ' ';
+        for (j = 0U; j < SECURE_PEER_HASH_LEN; j++) {
+            line[pos++] = (char)("0123456789abcdef"[(hash48[j] >> 4) & 0x0FU]);
+            line[pos++] = (char)("0123456789abcdef"[hash48[j] & 0x0FU]);
+        }
+        line[pos] = '\0';
+        ns_log(line);
         nrec++;
     }
-    body[0] = nrec;
-    usb_dump(SECURE_USB_DUMP_OK, body, off);
+    if (nrec == 0U) {
+        ns_log("empty");
+    }
 }
 
 static void cmd_owner_set(char *args)
@@ -340,10 +360,10 @@ static void cmd_owner_set(char *args)
         return;
     }
     if (SECURE_OwnerBegin_nsc_call() != SECURE_USB_OK) {
-        usb_dump(SECURE_USB_DUMP_REFUSED, NULL, 0U);
+        ns_log("refused");
         return;
     }
-    usb_dump(SECURE_USB_DUMP_OK, NULL, 0U);
+    ns_log("ok");
     s_bin_armed = 1U;
 }
 
@@ -353,23 +373,23 @@ static void cmd_client_hash(char *args)
 
     (void)args;
     if (SECURE_TropicClientHash_nsc_call(h) != SECURE_TROPIC_OK) {
-        usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
+        usb_failed();
         return;
     }
-    usb_dump(SECURE_USB_DUMP_OK, h, 48U);
+    ns_log_hex(h, 48U);
 }
 
 static void cmd_client_csr(char *args)
 {
-    uint8_t pub[SECURE_USB_DUMP_BODY_MAX];
-    uint32_t n = SECURE_USB_DUMP_BODY_MAX;
+    uint8_t pub[1312];
+    uint32_t n = sizeof(pub);
 
     (void)args;
     if (SECURE_ClientCsr_nsc_call(pub, &n) != SECURE_TROPIC_OK) {
-        usb_dump(SECURE_USB_DUMP_ERR, NULL, 0U);
+        usb_failed();
         return;
     }
-    usb_dump(SECURE_USB_DUMP_OK, pub, n);
+    ns_log_hex(pub, n);
 }
 
 static void handle_host_command_line(char *line)

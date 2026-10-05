@@ -103,15 +103,16 @@ bash ../run_with_model.sh ./test_a_session \
 - TROPIC01 **model** at `127.0.0.1:28992` (hardcoded in `port_posix.c`)
 - Host apps over a PTY, same console + TLS pipe as USB CDC on silicon
 
-It does **not** open TCP to SAE or USER. Lab cable ownership is a JSON file plus
-`scripts/lab-run.py` in the existing tmux `terminal` / `userapp` panes (restart
-with new `USB_SERIAL_PORT` / `NODE_*`). Silicon uses one `/dev/ttyACM0`. The lab
+It does **not** open TCP to SAE or USER. Lab USB ownership is a JSON file plus
+`scripts/lab-run.py` in the tmux `terminal-1` / `terminal-2` / `userapp-1` /
+`userapp-2` panes. Each pane is pinned to one keychain; LabSwitch is **USER** /
+**SAE** only (both clients in parallel). Silicon uses one `/dev/ttyACM0`. The lab
 stack runs **two** `se_host` processes:
 
-| Path | Tropic model | Lab client |
+| Path | Tropic model | Lab pane |
 | --- | --- | --- |
-| `--tty /tmp/ttyACM-se1 --tropic-port 28992` | `model_server -p 28992` | CL 1 |
-| `--tty /tmp/ttyACM-se2 --tropic-port 28993` | `model_server -p 28993` | CL 2 |
+| `--tty /tmp/ttyACM-se1 --tropic-port 28992` | `model_server -p 28992` | userapp-1 / terminal-1 |
+| `--tty /tmp/ttyACM-se2 --tropic-port 28993` | `model_server -p 28993` | userapp-2 / terminal-2 |
 
 `--tty-sae none` disables the optional second symlink (default in `scripts/host.sh`).
 UserApp and Terminal open whichever PTY their process env `USB_SERIAL_PORT` names.
@@ -131,7 +132,7 @@ Leave it running. Restart it to wipe Tropic + host RAM NV.
 
 ### 4.2 Start the Java Node
 
-Start `JAVA_TLS_TEST` listening on `NODE_NATIVE_PORT` (default **11111**) when you are ready to provision.
+Start `JAVA_APPS` listening on `NODE_NATIVE_PORT` (default **11111**) when you are ready to provision.
 
 ### 4.3 Start the host device
 
@@ -160,7 +161,7 @@ ENCRYPT <unix>
 DECRYPT <unix>
 MANAGE <unix>
 PEER LIST
-TROPIC OTP LEFT
+TROPIC OTP STATUS
 ```
 
 Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB blob. PIN-gated and identity-changing commands stream unsigned over `MANAGE <unix>` (no ML-DSA):
@@ -172,12 +173,12 @@ MANAGE <unix>    # KEM INIT
 MANAGE <unix>    # PEER ADD
 ```
 
-Leave TerminalBridge running with `USB_BRIDGE=1` and `USB_SERIAL_PORT` pointing
-at the device PTY. In `./run-all.sh` the terminal pane wrapper starts that only
-while lab owner is SAE.
+Leave TerminalBridge running with `USB_SERIAL_PORT` pointing at the device PTY.
+In `./run-all.sh` both terminal panes enable USB while lab owner is SAE.
 
-Do not use plain `socat` (it forwards dump frames and `failed` into the TLS server). **Encrypt/decrypt**
-is UserApp on the selected client PTY (`USER` in LabSwitchApp). PIN is
+Do not use plain `socat` unless you also send `PROVISION <unix>` yourself first.
+**Encrypt/decrypt**
+is UserApp on each keychain PTY (`USER` in LabSwitchApp). PIN is
 never a console argument for PROVISION/ENCRYPT/DECRYPT — it arrives on TLS.
 
 On host, `KEM INIT` persists the ML-KEM pub into NV. Tests may also fill `host_fw_mlkem_pk` as a fallback when NV is empty.

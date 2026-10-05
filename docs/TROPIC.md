@@ -79,7 +79,7 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 - Decrypt **rewind** (`target < cursor`) is refused.
 - Decrypt **skip-ahead**: intermediate pads are burned (`erase + advance`, no XOR).
-- Exhausted: Tropic mcounter `0xFFFFFFFE`; MCU cursor **510** (not a keystream slot). TLS replies with `SECURE_OTP_ERR_EXHAUSTED`. `TROPIC OTP LEFT` prints remaining/capacity kilobytes per half (`enc=A/B kb dec=C/D kb`). No fill yet is `0/capacity`, not an error.
+- Exhausted: Tropic mcounter `0xFFFFFFFE`; MCU cursor **510** (not a keystream slot). TLS replies with `SECURE_OTP_ERR_EXHAUSTED`. `TROPIC OTP STATUS` prints remaining/capacity kilobytes per half (`enc=A/B kb dec=C/D kb`). No fill yet is `0/capacity`, not an error.
 
 ---
 

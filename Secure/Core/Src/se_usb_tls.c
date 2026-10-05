@@ -122,7 +122,7 @@ void se_usb_tls_clear_rx(void)
 
 void se_usb_tls_end_tls_wire(void)
 {
-    /* Drop any queued TLS records; allow DEBUG again. */
+    /* Drop any queued TLS records; allow ASCII console again. */
     (void)memset(&s_tx, 0, sizeof(s_tx));
     s_tls_wire = 0U;
 }
@@ -226,32 +226,6 @@ void se_usb_failed(void)
     (void)usb_ascii_line("failed");
 }
 
-int se_usb_dump(uint8_t status, const uint8_t *body, uint16_t len)
-{
-    uint8_t hdr[SE_USB_DUMP_HDR_LEN];
-
-    if ((s_active == 0U) || (s_tls_wire != 0U)) {
-        return -1;
-    }
-    if ((len > 0U) && (body == NULL)) {
-        return -1;
-    }
-    if (len > SE_USB_DUMP_BODY_MAX) {
-        return -1;
-    }
-    hdr[0] = (uint8_t)SE_USB_DUMP_MAGIC;
-    hdr[1] = status;
-    hdr[2] = (uint8_t)(len & 0xffu);
-    hdr[3] = (uint8_t)((len >> 8) & 0xffu);
-    if (tx_write(hdr, SE_USB_DUMP_HDR_LEN) < 0) {
-        return -1;
-    }
-    if ((len > 0U) && (tx_write(body, len) < 0)) {
-        return -1;
-    }
-    return 0;
-}
-
 int se_tls_embed_recv(WOLFSSL *ssl, char *buf, int sz, void *ctx)
 {
     int got;
@@ -315,7 +289,6 @@ void se_usb_tls_service_once(void)
     if (s_rx.overflow != 0U) {
         se_tls_abort();
         link_reset_flags();
-        se_usb_failed();
         return;
     }
     if ((s_active == 0U) || (s_dtr == 0U)) {

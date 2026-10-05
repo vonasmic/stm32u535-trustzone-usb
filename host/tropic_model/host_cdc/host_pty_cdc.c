@@ -5,9 +5,8 @@
  * User PTY vs optional SAE PTY: user slave attached wins (lab "home PC").
  * That tears down the SAE symlink so a continuous usb-tcp bridge waits and
  * reopens when UserApp DISCONNECTs. Slave attach is DTR. Stdin is extra RX.
- * ASCII TX is echoed to stdout. Dump frames (0xB1) and TLS records are muted.
- * After the first TLS content type (0x14–0x17) the rest of the session is
- * muted: USB TX is 64-byte slices, so later packets are not type bytes.
+ * ASCII TX is echoed to stdout. TLS records (0x14–0x17) are muted for the
+ * rest of the session until printable ASCII returns.
  */
 #define _GNU_SOURCE
 #include "host_pty.h"
@@ -47,11 +46,8 @@ static UX_SLAVE_CLASS_CDC_ACM s_cdc;
 static uint32_t s_write_off;
 static uint32_t s_tick_base_ms;
 static uint8_t s_tick_inited;
-/* 1 once a TLS record type is seen; stay quiet until ASCII or dump magic. */
+/* 1 once a TLS record type is seen; stay quiet until ASCII returns. */
 static uint8_t s_echo_tls;
-static uint8_t s_dump_hdr[4];
-static uint8_t s_dump_hdr_got;
-static uint16_t s_dump_skip;
 
 static uint32_t monotonic_ms(void)
 {
@@ -110,9 +106,7 @@ static int tls_content_type(uint8_t b)
 
 static int ascii_unmute(uint8_t b)
 {
-    return (b == 0xB1u || (b >= 0x20U && b <= 0x7eU) || b == '\r' || b == '\n')
-                   ? 1
-                   : 0;
+    return ((b >= 0x20U && b <= 0x7eU) || b == '\r' || b == '\n') ? 1 : 0;
 }
 
 static void echo_ascii_tx(const uint8_t *buf, ULONG len)
@@ -129,27 +123,6 @@ static void echo_ascii_tx(const uint8_t *buf, ULONG len)
         s_echo_tls = 0U;
     }
     while (i < len) {
-        if (s_dump_skip > 0U) {
-            ULONG n = len - i;
-
-            if (n > s_dump_skip) {
-                n = s_dump_skip;
-            }
-            s_dump_skip -= (uint16_t)n;
-            i += n;
-            continue;
-        }
-        if (s_dump_hdr_got > 0U || buf[i] == 0xB1u) {
-            while (i < len && s_dump_hdr_got < 4U) {
-                s_dump_hdr[s_dump_hdr_got++] = buf[i++];
-            }
-            if (s_dump_hdr_got < 4U) {
-                return;
-            }
-            s_dump_skip = (uint16_t)s_dump_hdr[2] | (uint16_t)((uint16_t)s_dump_hdr[3] << 8);
-            s_dump_hdr_got = 0U;
-            continue;
-        }
         if (tls_content_type(buf[i]) != 0) {
             s_echo_tls = 1U;
             return;
@@ -280,8 +253,6 @@ int host_pty_open(const char *link_path, const char *sae_link_path)
     s_activated = 0;
     s_write_off = 0U;
     s_echo_tls = 0U;
-    s_dump_hdr_got = 0U;
-    s_dump_skip = 0U;
     return 0;
 }
 
@@ -296,8 +267,6 @@ void host_pty_close(void)
     s_activated = 0;
     s_slave_attached = 0;
     s_echo_tls = 0U;
-    s_dump_hdr_got = 0U;
-    s_dump_skip = 0U;
 }
 
 void host_pty_poll_link(void)
@@ -359,8 +328,6 @@ void host_pty_poll_link(void)
         s_io = NULL;
         s_write_off = 0U;
         s_echo_tls = 0U;
-        s_dump_hdr_got = 0U;
-        s_dump_skip = 0U;
         tls_usb_cdc_parameter_change(&s_cdc);
     }
     s_io = want;

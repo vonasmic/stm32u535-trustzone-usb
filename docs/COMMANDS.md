@@ -44,7 +44,7 @@ MANAGE TLS request (one per session, unsigned):
 u8 cmd | u8 pin_len | pin[pin_len] | u16le body_len | body[body_len]
 ```
 
-Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 4=PEER REMOVE, 5=CREDS SAE, 6=CREDS DEVICE (cert DER only), 7=OWNER REPLACE, 8=PAIRING (body: one slot byte 1–3). PIN length is 0 for CREDS and OWNER REPLACE. PAIRING never prints the X25519 private key.
+Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 4=PEER REMOVE, 5=CREDS SAE, 6=INSERT SIGNED CSR (cert DER only), 7=OWNER REPLACE, 8=PAIRING (body: one slot byte 1–3). PIN length is 0 for CREDS SAE, INSERT SIGNED CSR, and OWNER REPLACE. PAIRING never prints the X25519 private key.
 
 ---
 
@@ -58,11 +58,11 @@ Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 
 | `ENCRYPT <unix>` | yes | yes | same | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots. |
 | `DECRYPT <unix>` | yes | yes | same | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots). |
 | `MANAGE <unix>` | yes | yes | same | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command (see above), status reply, shutdown. |
-| `OWNER SET` | yes | yes | then unsigned blob | First USB wins if the owner slot is empty; else dump status **refused**. Two dump frames: begin, then apply. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
+| `OWNER SET` | yes | yes | then unsigned blob | First USB wins if the owner slot is empty; else ASCII `refused`. Begin prints `ok`, then apply prints `ok`/`failed`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
 | `PEER LIST` | yes | yes | — | Dump: `u8 count \| (u8 nlen \| name \| 48 hash)*` |
 | `CLIENT HASH` | yes | yes | — | Dump 48-byte `SHA384(device_cert_spki \|\| ecc_pub)` |
 | `CLIENT CSR` | yes | yes | — | Dump raw ML-DSA-44 pub (1312 B) |
-| `TROPIC …` | yes | yes | subcommand | Flat table: PING/INFO/PUB/KEM PUB/OTP LEFT |
+| `TROPIC …` | yes | yes | subcommand | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS |
 
 ### `<unix>`
 
@@ -73,13 +73,10 @@ On USB (silicon or PTY), success sets `s_tls_armed`: further RX is opaque TLS un
 
 TLS arm failure: ASCII line `failed` (no Tropic/TLS/auth taxonomy).
 
-Typed USB replies (PUB, CSR, HASH, KEM PUB, OTP LEFT, PEER LIST, OWNER SET) are dump frames:
-
-```text
-0xB1 | u8 status | u16le body_len | body
-```
-
-Status: **0** ok, **1** err, **2** empty, **3** refused. ASCII errors elsewhere are only `failed`.
+Console replies (PUB, CSR, HASH, KEM PUB, OTP STATUS, PEER LIST, OWNER SET) are
+**ASCII only**. The host drains until idle and prints. Binary payloads are hex
+lines; occupancy / refuse use the words `empty` / `refused`; hard errors are
+`failed`. There is no `0xB1` frame.
 
 ---
 
@@ -93,7 +90,7 @@ Certs and PIN-gated commands use MANAGE TLS application data, not the ASCII line
 | --- | --- | --- |
 | `PEER ADD` (MANAGE cmd 3) | status 0, `PEER ADD ok` | PIN fail, nickname exists, list full |
 | `PEER REMOVE` (MANAGE cmd 4) | status 0, `PEER REMOVE ok` | PIN fail, not found |
-| `PEER LIST` | dump `u8 count | records` | dump status **err** |
+| `PEER LIST` | ASCII lines `name` + hex hash, or `empty` | `failed` |
 
 - Tropic PIN is 8–16 printable ASCII inside the unsigned MANAGE request
 - `<name>`: 1–16 bytes, printable ASCII `[A-Za-z0-9_.-]`
@@ -109,11 +106,11 @@ Certs and PIN-gated commands use MANAGE TLS application data, not the ASCII line
 | --- | --- | --- |
 | `TROPIC PING` | — | `lt_ping("hello")`. Success ASCII: `TROPIC ping ok` |
 | `TROPIC INFO` | — | Chip ID / FW ASCII (success only) |
-| `TROPIC PUB` | — | Dump 64-byte P-256 pub, or status **empty** |
-| `TROPIC KEM PUB` | — | Dump NV ML-KEM pk, or status **empty** |
-| `TROPIC OTP LEFT` | — | Dump 4×u32le: enc left, enc cap, dec left, dec cap. Unprovisioned is `0/capacity` |
+| `TROPIC PUB` | — | Hex P-256 pub, or `empty` |
+| `TROPIC KEM PUB` | — | Hex NV ML-KEM pk, or `empty` |
+| `TROPIC OTP STATUS` | — | `enc=A/B kb dec=C/D kb`. Unprovisioned is `0/capacity` |
 
-Unknown USB lines: `failed`. NSC Tropic results are only ok / err (plus dump empty for unoccupied PUB / KEM PUB). MANAGE TLS still returns typed `u8 status` (PIN_FAIL, TAMPERED, …) on the owner-pinned channel, not on USB.
+Unknown USB lines: `failed`. NSC Tropic results are only ok / err (plus empty for unoccupied PUB / KEM PUB). MANAGE TLS still returns typed `u8 status` (PIN_FAIL, TAMPERED, …) on the owner-pinned channel, not on USB.
 
 MANAGE Tropic ops (unsigned request after `MANAGE <unix>`):
 
@@ -125,16 +122,17 @@ MANAGE Tropic ops (unsigned request after `MANAGE <unix>`):
 
 ---
 
-## USB dump status
+## Console status words
 
-| Status | Meaning |
+| Word | Meaning |
 | --- | --- |
-| 0 ok | Body is the typed payload |
-| 1 err | Command failed (no Tropic/TLS/auth subtype) |
-| 2 empty | Slot / table unoccupied (PUB / KEM PUB) |
-| 3 refused | `OWNER SET` begin when already enrolled |
+| (hex lines) | ok body for PUB / CSR / HASH / KEM PUB |
+| `ok` | OWNER SET begin/apply with no body |
+| `empty` | Slot / table unoccupied (PUB / KEM PUB / PEER LIST) |
+| `refused` | `OWNER SET` begin when already enrolled |
+| `failed` | Command failed (no Tropic/TLS/auth subtype) |
 
-ASCII errors are only `failed`. PING/INFO/HELP stay ASCII on success.
+PING/INFO/HELP stay multi-line ASCII on success.
 
 ---
 
@@ -162,7 +160,7 @@ TROPIC PING
 TROPIC INFO
 TROPIC PUB
 TROPIC KEM PUB
-TROPIC OTP LEFT
+TROPIC OTP STATUS
 ```
 
 Host adds `QUIT`.
@@ -180,7 +178,7 @@ Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.
 | `PEER LIST` | `SECURE_PeerGet_nsc_call` |
 | `CLIENT HASH` | `SECURE_TropicClientHash_nsc_call` |
 | `CLIENT CSR` | `SECURE_ClientCsr_nsc_call` |
-| `TROPIC OTP LEFT` | `SECURE_TropicOtpLeft_nsc_call` |
-| `TROPIC PING` … | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is dump empty. |
+| `TROPIC OTP STATUS` | `SECURE_TropicOtpLeft_nsc_call` |
+| `TROPIC PING` … | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
 | Armed USB RX/TX | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call` |
-| Debug / dump | `SECURE_UsbLog_nsc_call` / `SECURE_UsbDump_nsc_call` |
+| Console ASCII | `SECURE_UsbLog_nsc_call` |

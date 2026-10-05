@@ -297,13 +297,11 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
         return ret;
     }
     if (ret != LT_OK) {
-        se_tropic_log("failed");
         return SE_TROPIC_LT_OTP_EXHAUSTED;
     }
     first_slot = (uint16_t)raw_slot;
     last_slot = se_tropic_keystream_slot_at_offset(first_slot, (uint16_t)(s_otp_xor.slots_needed - 1u));
     if ((first_slot < half_base) || (last_slot > half_last)) {
-        se_tropic_log("failed");
         return SE_TROPIC_LT_OTP_EXHAUSTED;
     }
 
@@ -382,7 +380,6 @@ lt_ret_t se_tropic_otp_xor_pad(lt_handle_t *h, const uint16_t *req_slot, const u
             return ret;
         }
         if ((target_phys < half_base) || (target_phys > half_last)) {
-            se_tropic_log("failed");
             return LT_FAIL;
         }
         ret = se_tropic_qkd_cursor_get(h, s_otp_xor.dir, &raw_slot);
@@ -390,7 +387,6 @@ lt_ret_t se_tropic_otp_xor_pad(lt_handle_t *h, const uint16_t *req_slot, const u
             return ret;
         }
         if (target_phys < (uint16_t)raw_slot) {
-            se_tropic_log("failed");
             return LT_FAIL;
         }
         while ((uint16_t)raw_slot < target_phys) {

@@ -14,6 +14,8 @@
 /** Empty ECC / ML-KEM occupancy (USB dump empty). Not a Tropic failure type. */
 #define SE_TROPIC_NOT_READY   4u
 #define SE_TROPIC_TAMPERED    5u
+/** Wrong Tropic PIN (M&D). Mapped to SE_MANAGE_PIN_FAIL on MANAGE TLS. */
+#define SE_TROPIC_PIN_FAIL    9u
 
 #include "libtropic.h"
 

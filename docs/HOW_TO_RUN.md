@@ -36,7 +36,7 @@ Irreversible Tropic sequences (MANAGE PAIRING, PIN setup) must pass host model g
   - `Secure/Debug/SE_firmware_Secure.elf`
   - `NonSecure/Debug/SE_firmware_NonSecure.elf`
 
-Enroll TLS credentials **at runtime**: unsigned USB `OWNER SET` (owner + optional SAE CA), on-chip ML-DSA, `CLIENT CSR`, then `MANAGE` TLS for KEYGEN / KEM INIT / CREDS DEVICE / PEER.
+Enroll TLS credentials **at runtime**: unsigned USB `OWNER SET` (owner + optional SAE CA), on-chip ML-DSA, `CLIENT CSR`, then `MANAGE` TLS for KEYGEN / KEM INIT / INSERT SIGNED CSR / PEER.
 
 ### 2. Option bytes (once, or after the linker map changes)
 
@@ -89,7 +89,7 @@ MANAGE <unix>    # KEYGEN (unsigned PIN + empty body)
 MANAGE <unix>    # KEM INIT (unsigned PIN + empty body)
 ```
 
-This creates the owner key, on-chip device ML-DSA, PIN, and ML-KEM key. `CLIENT CSR` dumps the device public key; a client-CA-signed cert is installed with MANAGE CREDS DEVICE. The 1184-byte ML-KEM-768 public key is stored in NV.
+This creates the owner key, on-chip device ML-DSA, PIN, and ML-KEM key. `CLIENT CSR` dumps the device public key; a client-CA-signed cert is installed with MANAGE INSERT SIGNED CSR. The 1184-byte ML-KEM-768 public key is stored in NV.
 
 To replace an occupied P-256 key (unsigned PIN on MANAGE):
 

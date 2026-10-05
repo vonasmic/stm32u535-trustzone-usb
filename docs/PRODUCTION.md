@@ -10,9 +10,10 @@ which profile it is using and warns before PROD continues.
 
 - Device ML-DSA is generated **on-chip**. The host never injects a device private key.
 - `CLIENT CSR` is written to the client folder. **Do not** sign it with the lab
-  `client_ca.p12`. A production client CA (offline) signs the CSR; the cert is
-  installed with MANAGE `CREDS DEVICE` (cert DER only). ENCRYPT / DECRYPT /
-  PROVISION stay down until that cert matches the on-chip public key.
+  `client_ca.p12`. A production client CA (offline) signs the CSR; the operator
+  then runs UserApp **INSERT SIGNED CSR** (MANAGE cmd 6, cert DER only). INIT PROD
+  itself does **not** install. ENCRYPT / DECRYPT / PROVISION stay down until that
+  cert matches the on-chip public key.
 - Pairing (MANAGE cmd 8 + PIN, slots 1–3) **invalidates factory SH0**. The pairing
   private key stays in MCU NV. An MCU reflash after pairing cannot reopen L3
   from factory SH0.

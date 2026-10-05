@@ -24,7 +24,7 @@ extern "C" {
 #define SE_MANAGE_PEER_ADD       3u
 #define SE_MANAGE_PEER_REMOVE    4u
 #define SE_MANAGE_CREDS_SAE      5u
-#define SE_MANAGE_CREDS_DEVICE   6u
+#define SE_MANAGE_INSERT_SIGNED_CSR 6u
 #define SE_MANAGE_OWNER_REPLACE  7u
 #define SE_MANAGE_PAIRING        8u
 

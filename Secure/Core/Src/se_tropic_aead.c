@@ -119,7 +119,6 @@ lt_ret_t se_tropic_encrypt_storage_blob(const uint8_t key[SE_TROPIC_RMEM_AES_KEY
     wc_AesFree(&aes);
 
     if (wret != 0) {
-        se_tropic_log("failed");
         return LT_CRYPTO_ERR;
     }
     *blob_len = (uint16_t)(SE_TROPIC_RMEM_OVERHEAD + plain_len);
@@ -167,7 +166,6 @@ lt_ret_t se_tropic_decrypt_storage_blob(const uint8_t key[SE_TROPIC_RMEM_AES_KEY
     wc_AesFree(&aes);
 
     if (wret != 0) {
-        se_tropic_log("failed");
         wc_ForceZero(plain, ct_len);
         return LT_CRYPTO_ERR;
     }

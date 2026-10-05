@@ -126,7 +126,6 @@ static lt_ret_t mlkem_check_pk(const uint8_t *pk, uint16_t pk_len)
         return LT_FAIL;
     }
     if (memcmp(pk, emb, SE_TROPIC_MLKEM_PK_LEN) != 0) {
-        se_tropic_log("failed");
         return LT_FAIL;
     }
     return LT_OK;
@@ -151,7 +150,6 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
 
     ret = se_tropic_mlkem_seed_occupied(h, &occ);
     if ((ret == LT_OK) && (occ != 0U)) {
-        se_tropic_log("failed");
         return LT_FAIL;
     }
 
@@ -263,7 +261,6 @@ uint32_t se_tropic_kem_init_probe(void)
         return SE_TROPIC_ERR;
     }
     if (occ != 0U) {
-        se_tropic_log("failed");
         return SE_TROPIC_SLOT_OCC;
     }
     return SE_TROPIC_OK;
@@ -290,11 +287,9 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
 
     ret = se_tropic_mlkem_provision(h, pin, pin_len, add, add_len, pk, sizeof(pk), &pk_len);
     if (ret != LT_OK) {
-        se_tropic_log_fail("KEM INIT fail", ret);
         return SE_TROPIC_ERR;
     }
 
-    se_tropic_log("KEM INIT ok; ML-KEM pk stored in NV");
     return SE_TROPIC_OK;
 }
 

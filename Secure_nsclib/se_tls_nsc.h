@@ -59,25 +59,19 @@ uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
 /** First-wins USB OWNER SET: wait for an unsigned binary blob. */
 uint32_t CSME_NSE_API SECURE_OwnerBegin_nsc_call(void);
 
-/** Queue a plain ASCII line on the CDC TX ring (HELP / PING / INFO). Errors use {@code failed}. */
+/** Queue a plain ASCII line on the CDC TX ring. Errors use {@code failed}. */
 uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len);
-/** Dump frame: {@code 0xB1 | status | u16le len | body}. Status 0 ok, 1 err, 2 empty, 3 refused. */
-uint32_t CSME_NSE_API SECURE_UsbDump_nsc_call(uint8_t status, const uint8_t *body, uint32_t len);
 
 /**
  * USB-facing Tropic results. Failures are collapsed to ERR so NonSecure cannot
- * tell Tropic / TLS / auth / tamper apart. Occupancy uses DUMP_EMPTY on PUB /
+ * tell Tropic / TLS / auth / tamper apart. Occupancy uses EMPTY on PUB /
  * KEM PUB (not a failure type).
  */
 #define SECURE_TROPIC_OK       0u
 #define SECURE_TROPIC_ERR      1u
 
-#define SECURE_USB_DUMP_MAGIC    0xB1u
-#define SECURE_USB_DUMP_OK       0u
-#define SECURE_USB_DUMP_ERR      1u
 #define SECURE_USB_DUMP_EMPTY    2u
-#define SECURE_USB_DUMP_REFUSED  3u
-#define SECURE_USB_DUMP_BODY_MAX 1312u
+#define SECURE_USB_REPLY_BODY_MAX 1312u
 #define SE_TROPIC_MLKEM_PK_LEN   1184u
 
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void);

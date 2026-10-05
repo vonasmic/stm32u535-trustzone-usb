@@ -1,6 +1,6 @@
 /**
  * @file    port_posix.c
- * @brief   Host model port: POSIX TCP HAL + CDC DEBUG logging
+ * @brief   Host model port: POSIX TCP HAL + CDC ASCII console logging
  */
 #include "se_tropic_port.h"
 #include "se_tropic.h"
@@ -64,7 +64,7 @@ uint32_t se_tropic_port_attach(lt_handle_t *h)
 
 void se_tropic_log(const char *msg)
 {
-    /* Same CDC DEBUG path as se_tropic_port_stm32.c so UserApp transact sees a reply. */
+    /* Same CDC ASCII path as se_tropic_port_stm32.c (PING / INFO / HELP). */
     se_usb_debug_puts(msg);
 }
 

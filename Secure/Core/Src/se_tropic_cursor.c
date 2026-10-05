@@ -84,12 +84,10 @@ lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
     for (slot = SE_TROPIC_QKD_SLOT_BASE; slot <= SE_TROPIC_QKD_SLOT_LAST; slot++) {
         ret = lt_r_mem_data_erase(h, slot);
         if (ret != LT_OK) {
-            se_tropic_log_fail("QKD wipe fail", ret);
             return ret;
         }
     }
 
-    se_tropic_log("QKD provision wipe slots");
     return LT_OK;
 }
 
@@ -124,7 +122,6 @@ lt_ret_t se_tropic_qkd_arm_halves(lt_handle_t *h, uint8_t decrypt_half)
     if (ret != LT_OK) {
         return ret;
     }
-    se_tropic_log("QKD halves armed");
     return LT_OK;
 }
 
@@ -162,7 +159,6 @@ lt_ret_t se_tropic_qkd_cursor_get(lt_handle_t *h, se_nv_otp_dir_t dir, uint32_t 
         return ret;
     }
     if (tropic_raw != (uint32_t)mcu_cursor) {
-        se_tropic_log("failed");
         return SE_TROPIC_LT_TAMPERED;
     }
     *next_slot = (uint32_t)mcu_cursor;

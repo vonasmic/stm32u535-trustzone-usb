@@ -135,10 +135,10 @@ int main(void)
     se_put_u16le(device_body, (uint16_t)sizeof(der));
     (void)memcpy(device_body + 2U, der, sizeof(der));
     manage_msg[0] = '\0';
-    TEST_ASSERT_EQ(se_manage_apply(SE_MANAGE_CREDS_DEVICE, NULL, 0U, device_body,
+    TEST_ASSERT_EQ(se_manage_apply(SE_MANAGE_INSERT_SIGNED_CSR, NULL, 0U, device_body,
                                    (uint16_t)(2U + sizeof(der)), manage_msg,
                                    (uint16_t)sizeof(manage_msg)),
-                   SE_MANAGE_ERR, "manage CREDS DEVICE rejects unmatched cert");
+                   SE_MANAGE_ERR, "manage INSERT SIGNED CSR rejects unmatched cert");
     TEST_ASSERT_EQ(se_creds_set_device_cert(der, (uint16_t)sizeof(der)), LT_OK,
                    "direct dummy cert for ready flags");
     TEST_ASSERT(se_ready_encrypt() != 0, "encrypt ready");
@@ -212,10 +212,10 @@ int main(void)
         TEST_ASSERT_EQ(ca_len, 3U, "ca len");
         TEST_ASSERT_EQ(ca[0], 9U, "ca0");
         rsp_n = se_manage_rsp_encode(rsp, (uint16_t)sizeof(rsp), (uint8_t)SE_MANAGE_OK,
-                                     "CREDS DEVICE ok");
-        TEST_ASSERT_EQ(rsp_n, (uint16_t)(3U + 15U), "rsp len");
+                                     "INSERT SIGNED CSR ok");
+        TEST_ASSERT_EQ(rsp_n, (uint16_t)(3U + 20U), "rsp len");
         TEST_ASSERT_EQ(rsp[0], (uint8_t)SE_MANAGE_OK, "rsp status");
-        TEST_ASSERT_EQ((uint16_t)(rsp[1] | ((uint16_t)rsp[2] << 8)), 15U, "rsp msg len");
+        TEST_ASSERT_EQ((uint16_t)(rsp[1] | ((uint16_t)rsp[2] << 8)), 20U, "rsp msg len");
     }
 
     wc_dilithium_free(&key_a);

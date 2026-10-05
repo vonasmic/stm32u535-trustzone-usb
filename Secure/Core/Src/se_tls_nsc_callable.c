@@ -246,22 +246,6 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len)
     return SECURE_USB_OK;
 }
 
-uint32_t CSME_NSE_API SECURE_UsbDump_nsc_call(uint8_t status, const uint8_t *body, uint32_t len)
-{
-    const uint8_t *ns_body = NULL;
-
-    if (len > SE_USB_DUMP_BODY_MAX) {
-        return SECURE_USB_ERR;
-    }
-    if (len > 0U) {
-        ns_body = (const uint8_t *)ns_sanitize_in(body, len);
-        if (ns_body == NULL) {
-            return SECURE_USB_ERR;
-        }
-    }
-    return (se_usb_dump(status, ns_body, (uint16_t)len) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
-}
-
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void)
 {
     return tropic_nsc_ok_err(se_tropic_ping());
@@ -307,7 +291,7 @@ uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(uint8_t *out, uint32_t *len_inou
         return SECURE_TROPIC_ERR;
     }
     cap = *ns_len;
-    if ((cap < 1U) || (cap > SE_USB_DUMP_BODY_MAX)) {
+    if ((cap < 1U) || (cap > SECURE_USB_REPLY_BODY_MAX)) {
         return SECURE_TROPIC_ERR;
     }
     ns_out = (uint8_t *)ns_sanitize_out(out, cap);

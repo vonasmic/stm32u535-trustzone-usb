@@ -89,7 +89,8 @@ static int pin_ok(const uint8_t *pin, uint8_t pin_len)
     return se_tropic_pin_ascii_ok(pin, pin_len);
 }
 
-static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok)
+static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok,
+                           const char *fail)
 {
     if (st == SE_TROPIC_OK) {
         set_msg(msg, cap, ok);
@@ -107,7 +108,11 @@ static uint32_t tropic_map(uint32_t st, char *msg, uint16_t cap, const char *ok)
         set_msg(msg, cap, "DEVICE_TAMPERED");
         return SE_MANAGE_TAMPERED;
     }
-    set_msg(msg, cap, "command failed");
+    if (st == SE_TROPIC_PIN_FAIL) {
+        set_msg(msg, cap, "PIN fail");
+        return SE_MANAGE_PIN_FAIL;
+    }
+    set_msg(msg, cap, (fail != NULL && fail[0] != '\0') ? fail : "command failed");
     return SE_MANAGE_ERR;
 }
 
@@ -247,20 +252,20 @@ static uint32_t do_creds_sae(const uint8_t *body, uint16_t body_len, char *msg,
     return SE_MANAGE_OK;
 }
 
-static uint32_t do_creds_device(const uint8_t *body, uint16_t body_len, char *msg,
-                                uint16_t msg_cap)
+static uint32_t do_insert_signed_csr(const uint8_t *body, uint16_t body_len, char *msg,
+                                     uint16_t msg_cap)
 {
     uint16_t cert_len;
     uint32_t st;
 
     if ((body == NULL) || (body_len < 2U)) {
-        set_msg(msg, msg_cap, "bad CREDS DEVICE");
+        set_msg(msg, msg_cap, "bad INSERT SIGNED CSR");
         return SE_MANAGE_PARSE;
     }
     cert_len = se_u16le(body);
     if ((cert_len == 0U) || (cert_len > SE_CREDS_DER_MAX) ||
         (body_len != (2U + (uint32_t)cert_len))) {
-        set_msg(msg, msg_cap, "bad CREDS DEVICE");
+        set_msg(msg, msg_cap, "bad INSERT SIGNED CSR");
         return SE_MANAGE_PARSE;
     }
     st = se_manage_store_device_cert(body + 2U, cert_len);
@@ -269,10 +274,10 @@ static uint32_t do_creds_device(const uint8_t *body, uint16_t body_len, char *ms
         return st;
     }
     if (st != SE_MANAGE_OK) {
-        set_msg(msg, msg_cap, "CREDS DEVICE failed");
+        set_msg(msg, msg_cap, "INSERT SIGNED CSR failed");
         return st;
     }
-    set_msg(msg, msg_cap, "CREDS DEVICE ok");
+    set_msg(msg, msg_cap, "INSERT SIGNED CSR ok");
     return SE_MANAGE_OK;
 }
 
@@ -294,7 +299,8 @@ static uint32_t do_pairing(const uint8_t *pin, uint8_t pin_len, const uint8_t *b
         set_msg(msg, msg_cap, "PIN fail");
         return st;
     }
-    return tropic_map(se_create_pairing_key_to_tropic(body[0]), msg, msg_cap, "PAIRING ok");
+    return tropic_map(se_create_pairing_key_to_tropic(body[0]), msg, msg_cap, "PAIRING ok",
+                      "PAIRING failed");
 }
 
 static uint32_t do_owner_replace(const uint8_t *body, uint16_t body_len, char *msg,
@@ -475,7 +481,7 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
 {
     uint32_t st;
 
-    if ((cmd != SE_MANAGE_CREDS_SAE) && (cmd != SE_MANAGE_CREDS_DEVICE) &&
+    if ((cmd != SE_MANAGE_CREDS_SAE) && (cmd != SE_MANAGE_INSERT_SIGNED_CSR) &&
         (cmd != SE_MANAGE_OWNER_REPLACE) && (pin_len != 0U) &&
         (pin_ok(pin, pin_len) == 0)) {
         set_msg(msg, msg_cap, "bad PIN");
@@ -494,10 +500,10 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
         }
         st = se_tropic_kem_init_probe();
         if (st != SE_TROPIC_OK) {
-            return tropic_map(st, msg, msg_cap, "");
+            return tropic_map(st, msg, msg_cap, "", "KEM INIT failed");
         }
         return tropic_map(se_tropic_kem_init_confirm(pin, pin_len, NULL, 0U), msg, msg_cap,
-                          "KEM INIT ok");
+                          "KEM INIT ok", "KEM INIT failed");
     case SE_MANAGE_KEYGEN:
         if (pin_ok(pin, pin_len) == 0) {
             set_msg(msg, msg_cap, "PIN required");
@@ -507,7 +513,8 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
             set_msg(msg, msg_cap, "bad KEYGEN");
             return SE_MANAGE_PARSE;
         }
-        return tropic_map(se_tropic_keygen(pin, pin_len), msg, msg_cap, "KEYGEN ok");
+        return tropic_map(se_tropic_keygen(pin, pin_len), msg, msg_cap, "KEYGEN ok",
+                          "KEYGEN failed");
     case SE_MANAGE_PEER_ADD:
         return do_peer_add(pin, pin_len, body, body_len, msg, msg_cap);
     case SE_MANAGE_PEER_REMOVE:
@@ -518,12 +525,12 @@ uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
             return SE_MANAGE_PARSE;
         }
         return do_creds_sae(body, body_len, msg, msg_cap);
-    case SE_MANAGE_CREDS_DEVICE:
+    case SE_MANAGE_INSERT_SIGNED_CSR:
         if (pin_len != 0U) {
-            set_msg(msg, msg_cap, "bad CREDS DEVICE");
+            set_msg(msg, msg_cap, "bad INSERT SIGNED CSR");
             return SE_MANAGE_PARSE;
         }
-        return do_creds_device(body, body_len, msg, msg_cap);
+        return do_insert_signed_csr(body, body_len, msg, msg_cap);
     case SE_MANAGE_OWNER_REPLACE:
         if (pin_len != 0U) {
             set_msg(msg, msg_cap, "bad OWNER REPLACE");

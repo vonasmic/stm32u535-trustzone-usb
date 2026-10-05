@@ -115,13 +115,14 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 - `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
 - Occupied ECC slot 0, empty-slot `KEYGEN`, `KEM INIT`, and `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. R-MEM 510 refuses a second `KEM INIT`.
 - USB line cap 160 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
-- USB errors are `failed` only. Typed dumps use coarse status (`ok`/`err`/`empty`/`refused`) with no Tropic/TLS/auth taxonomy. Leftover splits `0xB1` length-prefixed dumps from TLS `0x16`.
+- USB errors on the console are coarse (`failed` / `empty` / `refused` / `ok`). Leftover for UserApp TLS arm waits for ClientHello `0x16` or ASCII `failed`.
+- MANAGE TLS replies keep typed status (`PIN_FAIL`, `SLOT_OCC`, …) and msg strings (`PIN fail`, `KEM INIT failed`, `KEYGEN ok`).
 
 **Residual:**
 
 - **No USB authentication** for ping, info, list, or TLS arm. First USB `OWNER SET` wins. The reset password is dumpable with MCU flash (`SHA-384(dwk || password)`). Pairing survives owner wipe.
 - Occupied `KEYGEN` / `KEM INIT` / `PEER *` PIN is on MANAGE TLS (owner-pinned, not mTLS). After slot 510 is occupied, pad consume PIN is only inside ENCRYPT/DECRYPT mTLS.
-- USB dumps still reveal occupancy (empty vs present pub) and enrollment refused vs ok. They do not name Tropic/TLS/PIN failure types.
+- ASCII console replies reveal occupancy (empty vs present pub) and enrollment refused vs ok, but collapse hard errors to `failed`. Tropic/PIN/slot taxonomy is on MANAGE TLS only.
 
 ### 3. NonSecure world and NSC
 
@@ -229,7 +230,7 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 ## Operator checklist (PQ-relevant)
 
 1. Do not leave factory **SH0** on a field device; run MANAGE PAIRING (PIN + slot 1–3) after model gates A–E/H. Build with `SE_TROPIC_SH0_PROD` for production chips, not eng-sample keys. See [PRODUCTION.md](PRODUCTION.md).
-2. Enroll unsigned USB `OWNER SET` (owner SPKI + SAE CA), then **USER** `MANAGE` `KEYGEN` and `KEM INIT` (unsigned PIN), `CLIENT CSR`, and `CREDS DEVICE` (signed cert only). TLS refuses ENCRYPT until owner + cert + on-chip SK are present. ML-KEM pk lives in NV.
+2. Enroll unsigned USB `OWNER SET` (owner SPKI + SAE CA), then **USER** `MANAGE` `KEYGEN` and `KEM INIT` (unsigned PIN), `CLIENT CSR`, and `INSERT SIGNED CSR` (signed cert only). TLS refuses ENCRYPT until owner + cert + on-chip SK are present. ML-KEM pk lives in NV.
 3. After enrollment, do not send the Tropic PIN on the ASCII line; encrypt/decrypt take it only inside mTLS. Occupied `KEYGEN` is identity replace over MANAGE, not enrollment.
 4. Lock SWD / enable hide protection if you ship; this project leaves `HDP1EN = 0`.
 5. SAE (`PROVISION`) must require **ML-KEM TLS + ML-DSA client cert**; do not accept a P-256 uplink signature as the device’s PQ identity. USER (`ENCRYPT` / `DECRYPT`) pins the peer to the enrolled owner key, not to SAE CA.
