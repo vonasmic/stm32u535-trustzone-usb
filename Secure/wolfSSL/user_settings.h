@@ -627,7 +627,7 @@ extern "C" {
 #define NO_MAIN_DRIVER
 #define NO_DEV_RANDOM
 #define NO_OLD_TLS
-#define NO_WOLFSSL_SERVER         /* TLS client only;
+#define NO_WOLFSSL_SERVER         /* TLS client only*/
 
 #define NO_DSA
 #define NO_RC4

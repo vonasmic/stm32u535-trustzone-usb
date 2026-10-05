@@ -8,6 +8,8 @@
 
 #define LT_USE_WOLFCRYPT              1
 #define LT_SILICON_REV_ACAB           1
+/* lt_ret_verbose() and lt_verify_chip_and_start_secure_session() live in this group. */
+#define LT_HELPERS                    1
 
 #define LT_LOG_ENABLE_DEBUG           0
 #define LT_LOG_ENABLE_INFO            0

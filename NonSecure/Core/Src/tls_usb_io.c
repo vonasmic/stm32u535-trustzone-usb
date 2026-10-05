@@ -613,6 +613,3 @@ void tls_usb_poll(void)
     tls_usb_drain_tx();
 }
 
-#ifndef SE_HOST_MODEL
-#include "se_ns_usbx_sources.inc"
-#endif

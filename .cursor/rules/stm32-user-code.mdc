@@ -1,0 +1,72 @@
+---
+description: STM32 CubeMX — edit only USER CODE blocks; never touch generated Debug/
+alwaysApply: true
+---
+
+# STM32 / CubeMX edit boundaries
+
+## CubeMX owns peripherals
+
+Peripheral configuration (SPI, GPIO, clocks, MSP) is **user-only via CubeMX**. See **`cubemx-configuration.mdc`**. Do not duplicate that setup in code.
+
+## USER CODE blocks only
+
+In CubeMX-generated files (`main.c`, `stm32u5xx_hal_msp.c`, `stm32u5xx_it.c`, `*_hal_conf.h` when it has blocks, etc.), **only** add or change code between:
+
+```c
+/* USER CODE BEGIN <tag> */
+/* USER CODE END <tag> */
+```
+
+Never edit ST-provided code outside those markers — CubeMX regeneration will overwrite it.
+
+Prefer new logic in:
+- `USER CODE` sections for hooks tied to generated init (includes, `main` setup order)
+- Separate project files under `Secure/Core/Src/` and `Secure/Core/Inc/` (e.g. `se_tropic.c`) for application modules
+
+## Do not hand-edit generated build output
+
+**Never edit anything under `Secure/Debug/` or `NonSecure/Debug/`.** CubeIDE regenerates these trees on every build (makefiles, `subdir.mk`, `objects.list`, `sources.mk`, `.o`, `.d`, `.elf`, `secure_nsclib.o`, etc.). Manual edits are lost immediately and waste review time.
+
+### Forbidden paths (examples)
+
+- `Secure/Debug/**`
+- `NonSecure/Debug/**`
+- `**/Debug/makefile`, `**/Debug/**/subdir.mk`, `**/Debug/objects.list`, `**/Debug/sources.mk`
+
+### Where to make build changes instead
+
+| Goal | Edit |
+|------|------|
+| Add/remove source files | `Secure/.project` linked resources + `Secure/.cproject` `sourceEntries` |
+| Compiler defines / `-I` paths | `Secure/.cproject` (Debug + Release tool settings) |
+| Include paths (NonSecure) | `NonSecure/.cproject` |
+| Enable HAL IP | CubeMX `.ioc` → regenerate |
+| Application logic | `Secure/Core/Src/`, `NonSecure/Core/Src/` |
+
+After changing `.project` / `.cproject` or CubeMX, tell the user to **Build** in STM32CubeIDE so Debug output regenerates — do not patch Debug yourself.
+
+- Enable HAL modules via **CubeMX `.ioc`**, not compiler `-D` overrides in `.cproject`
+
+## External / vendored trees
+
+- **`libtropic/`** — read-only; link via `.project` linked folders + `.cproject` includes/defines
+- **`Middlewares/Third_Party/`** — do not patch; configure through project settings
+
+## Examples
+
+```c
+// GOOD — main.c USER CODE 2 (after MX_GPIO_Init from CubeMX)
+se_tropic_hw_init();
+
+// BAD — editing MX_GPIO_Init body outside USER CODE
+static void MX_GPIO_Init(void) {
+  __HAL_RCC_GPIOB_CLK_ENABLE();  // lost on CubeMX regen
+}
+
+// BAD — manual HAL_SPI_MspInit anywhere (use CubeMX regen)
+void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi) { ... }
+
+// BAD — editing Secure/Debug/Middlewares/libtropic/subdir.mk (lost on next build)
+// GOOD — add libtropic linked folder in Secure/.project + includes in Secure/.cproject, then user rebuilds
+```

@@ -1,0 +1,72 @@
+---
+description: STM32 peripherals — user configures in CubeMX; never hand-edit SPI/GPIO/clock/MSP
+alwaysApply: true
+---
+
+# CubeMX owns peripheral configuration
+
+The **user** changes hardware configuration in **STM32CubeMX** (`SE_firmware.ioc`, Secure / CortexM33S context). The agent **must not** manually configure peripherals in source files.
+
+## Never do manually
+
+- SPI / I2C / UART / USB pin mux, clocks, or `MX_*_Init` bodies
+- GPIO mode, pull, speed, labels, or initial pin levels outside CubeMX
+- `HAL_*_MspInit` / `HAL_*_MspDeInit` for those peripherals (including in `USER CODE` blocks)
+- `*_hal_conf.h` module enables (e.g. `HAL_SPI_MODULE_ENABLED`) — enable the IP in CubeMX instead
+- GTZC / SAU pin or peripheral security attributes
+- Compiler `-DHAL_*_MODULE_ENABLED` workarounds when CubeMX can enable the module
+
+## When hardware must change
+
+1. Tell the user **what** to enable in CubeMX (IP, pins, labels, secure context).
+2. User saves `.ioc` and **regenerates code**.
+3. Agent only updates **application** code (`se_tropic.c`, NSC, scripts) to use generated symbols from `main.h` (`TR01_*_Pin`, `TR01_*_GPIO_Port`, etc.).
+
+## TROPIC01 / TS13 DevKit (Secure SPI1)
+
+Configure in **Secure (M33S)** context:
+
+| Pin | Label     | Mode                          |
+|-----|-----------|-------------------------------|
+| PA5 | TR01_SCK  | SPI1_SCK, Full-Duplex Master  |
+| PA6 | TR01_MISO | SPI1_MISO                     |
+| PA7 | TR01_MOSI | SPI1_MOSI                     |
+| PA4 | TR01_CS   | GPIO_Output (CS, initial High)|
+| PA0 | TR01_PWR  | GPIO_Output (initial Low)     |
+| PB0 | TR01_GPO  | GPIO_Input (optional)         |
+
+- Enable **SPI1** (Master, software NSS). Do **not** call `MX_SPI1_Init()` in firmware — **libtropic** calls `HAL_SPI_Init()` and relies on CubeMX-generated `HAL_SPI_MspInit`.
+- Keep SPI1 and related GPIO **Secure** in GTZC.
+- After regen, `main.h` must expose `TR01_PWR_Pin`, `TR01_CS_Pin`, etc.
+
+Reference pinout: `libtropic/examples/applications/tropic01_util/firmware/tropic01-util.ioc`.
+
+## Allowed agent edits in generated files
+
+- `USER CODE` hooks only (includes, call order in `main`, WolfSSL init) — see `stm32-user-code.mdc`
+- **Not** peripheral register/pin/clock setup, even inside `USER CODE`
+
+## Examples
+
+```c
+// BAD — agent adds MSP in USER CODE
+void HAL_SPI_MspInit(SPI_HandleTypeDef *hspi) {
+  __HAL_RCC_SPI1_CLK_ENABLE();
+  HAL_GPIO_Init(GPIOA, ...);
+}
+
+// BAD — agent configures GPIO in application code
+void se_tropic_hw_init(void) {
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = GPIO_PIN_0;
+  HAL_GPIO_Init(GPIOA, &gpio);
+}
+
+// GOOD — CubeMX generated MX_GPIO_Init; app only drives known pins
+HAL_GPIO_WritePin(TR01_PWR_GPIO_Port, TR01_PWR_Pin, GPIO_PIN_SET);
+HAL_Delay(5);
+
+// GOOD — libtropic device struct uses CubeMX labels
+device.spi_cs_gpio_bank = TR01_CS_GPIO_Port;
+device.spi_cs_gpio_pin = TR01_CS_Pin;
+```
