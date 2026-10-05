@@ -10,14 +10,16 @@ The device is a TLS client. **SAE** is the peer for `PROVISION`. **USER** (UserA
 
 ## Parsing
 
-| Rule | USB CDC | Host `se_host` |
-| --- | --- | --- |
-| Line end | `\n` (`\r` ignored) | Same (PTY + stdin) |
-| Max line | **160** chars | **160** chars (same parser) |
-| Whitespace | Trim spaces/tabs | Same |
-| Match | Case-sensitive prefix; optional spaces/tabs/`=` after the name | Same |
-| Empty line | Ignored | Ignored |
-| Unknown | `failed` | `failed` |
+
+| Rule       | USB CDC                                                        | Host `se_host`              |
+| ---------- | -------------------------------------------------------------- | --------------------------- |
+| Line end   | `\n` (`\r` ignored)                                            | Same (PTY + stdin)          |
+| Max line   | **160** chars                                                  | **160** chars (same parser) |
+| Whitespace | Trim spaces/tabs                                               | Same                        |
+| Match      | Case-sensitive prefix; optional spaces/tabs/`=` after the name | Same                        |
+| Empty line | Ignored                                                        | Ignored                     |
+| Unknown    | `failed`                                                       | `failed`                    |
+
 
 `HELP` prints every `usage` string. `?` is an alias (not listed in HELP). Stop `se_host` with Ctrl-C (unlinks the PTY).
 
@@ -25,44 +27,54 @@ Clock + TLS arm happen together on `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE
 
 ---
 
+
+
 ## PIN / owner policy
 
-| Context | On the 160-char ASCII line? |
-| --- | --- |
-| `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | **Never** — PIN (when used) is only inside TLS |
-| `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `CLIENT CSR` / `KEM PUB` / `PEER LIST` | **No PIN** (unsigned, read-only) |
-| MANAGE KEYGEN / KEM INIT / PEER ADD / REMOVE / CREDS / OWNER REPLACE / PAIRING | Unsigned request over owner-pinned TLS. PIN when the command is PIN-gated. **No ML-DSA.** |
-| `OWNER SET` | Unsigned USB blob (password + SPKI + optional SAE CA). First-wins. Device ML-DSA is generated on-chip. |
 
-Tropic PIN (KEM / KEYGEN replace / PEER / ENCRYPT / PAIRING): **8–16** printable ASCII (`0x20–0x7E`). The same bytes are used on MANAGE and on ENCRYPT/DECRYPT.
+| Context                                                                                   | On the 160-char ASCII line?                                                                            |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`                                            | **Never** — PIN (when used) is only inside TLS                                                         |
+| `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `CLIENT CSR` / `KEM PUB` / `PEER LIST` | Unsigned, read-only                                                                                    |
+| MANAGE KEYGEN / KEM INIT / PEER ADD / REMOVE / CREDS / OWNER REPLACE / PAIRING / PAIRING LOAD | Unsigned request over owner-pinned TLS. PIN only on KEM INIT. **No ML-DSA.** |
+| `OWNER SET`                                                                               | Unsigned USB blob (password + SPKI + optional SAE CA). First-wins. Device ML-DSA is generated on-chip. |
+
+
+Tropic PIN (KEM INIT / ENCRYPT / DECRYPT): **8–16** printable ASCII (`0x20–0x7E`). The same bytes are used on MANAGE KEM INIT and on ENCRYPT/DECRYPT.
 
 Reset password: ASCII printable `0x20–0x7E`, **min 8, max 64**. Hash is `SHA-384(secure_dwk || password)`. Only this password can `OWNER REPLACE` (over MANAGE).
 
-MANAGE TLS request (one per session, unsigned):
+MANAGE TLS request (one per session, unsigned). Commands and bodies: **[MANAGE commands](#manage-commands)**.
 
 ```text
 u8 cmd | u8 pin_len | pin[pin_len] | u16le body_len | body[body_len]
 ```
 
-Reply: `u8 status | u16le msg_len | msg`. Cmd 1=KEM INIT, 2=KEYGEN, 3=PEER ADD, 4=PEER REMOVE, 5=CREDS SAE, 6=INSERT SIGNED CSR (cert DER only), 7=OWNER REPLACE, 8=PAIRING (body: one slot byte 1–3). PIN length is 0 for CREDS SAE, INSERT SIGNED CSR, and OWNER REPLACE. PAIRING never prints the X25519 private key.
+Reply: `u8 status | u16le msg_len | msg` (ASCII, no NUL on the wire, max 160). PIN length is 0 except on KEM INIT.
 
 ---
 
+
+
 ## Top-level commands
 
-| Syntax | USB | Host | Parameters | What it does |
-| --- | --- | --- | --- | --- |
-| `HELP` | yes | yes | — | Print `commands:` plus all usage lines |
-| `?` | alias | alias | — | Same as HELP |
-| `PROVISION <unix>` | yes | yes | decimal Unix UTC, ≠ 0 | Arm TLS mode **1** (**SAE** peer). Refuses until owner + device cert + device SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v4, then QKD downlink v2 into R-MEM. **mTLS** (device cert). |
-| `ENCRYPT <unix>` | yes | yes | same | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots. |
-| `DECRYPT <unix>` | yes | yes | same | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots). |
-| `MANAGE <unix>` | yes | yes | same | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command (see above), status reply, shutdown. |
-| `OWNER SET` | yes | yes | then unsigned blob | First USB wins if the owner slot is empty; else ASCII `refused`. Begin prints `ok`, then apply prints `ok`/`failed`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
-| `PEER LIST` | yes | yes | — | Dump: `u8 count \| (u8 nlen \| name \| 48 hash)*` |
-| `CLIENT HASH` | yes | yes | — | Dump 48-byte `SHA384(device_cert_spki \|\| ecc_pub)` |
-| `CLIENT CSR` | yes | yes | — | Dump raw ML-DSA-44 pub (1312 B) |
-| `TROPIC …` | yes | yes | subcommand | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS |
+
+| Syntax             | USB   | Host  | Parameters            | What it does                                                                                                                                                                                                                                      |
+| ------------------ | ----- | ----- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HELP`             | yes   | yes   | —                     | Print `commands:` plus all usage lines                                                                                                                                                                                                            |
+| `?`                | alias | alias | —                     | Same as HELP                                                                                                                                                                                                                                      |
+| `PROVISION <unix>` | yes   | yes   | decimal Unix UTC, ≠ 0 | Arm TLS mode **1** (**SAE** peer). Refuses until owner + device cert + device SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v4, then QKD downlink v2 into R-MEM. **mTLS** (device cert). |
+| `ENCRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots.                            |
+| `DECRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots).                                                                                                           |
+| `MANAGE <unix>`    | yes   | yes   | same                  | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command ([MANAGE commands](#manage-commands)), status reply, shutdown.                  |
+| `OWNER SET`        | yes   | yes   | then unsigned blob    | First USB wins if the owner slot is empty; else ASCII `refused`. Begin prints `ok`, then apply prints `ok`/`failed`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip.                                         |
+| `PEER LIST`        | yes   | yes   | —                     | Dump: `u8 count | (u8 nlen | name | 48 hash)*`                                                                                                                                                                                                    |
+| `CLIENT HASH`      | yes   | yes   | —                     | Dump 48-byte `SHA384(device_cert_spki || ecc_pub)`                                                                                                                                                                                                |
+| `CLIENT CSR`       | yes   | yes   | —                     | Dump raw ML-DSA-44 pub (1312 B)                                                                                                                                                                                                                   |
+| `TROPIC …`         | yes   | yes   | subcommand            | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS                                                                                                                                                                                                      |
+
+
+
 
 ### `<unix>`
 
@@ -73,6 +85,73 @@ On USB (silicon or PTY), success sets `s_tls_armed`: further RX is opaque TLS un
 
 TLS arm failure: ASCII line `failed` (no Tropic/TLS/auth taxonomy).
 
+---
+
+
+
+## MANAGE commands
+
+Not USB lines. `HELP` prints only `MANAGE <unix>`. After that arms TLS mode **4**, the owner peer sends **one** request from the framing above, the device replies, and TLS shuts down. Codec: [se_manage.h](../Secure/Core/Inc/se_manage.h) and Java `fel.cvut.se.SeManage`. UserApp sends these from `INIT LAB` / `INIT PROD` / `PEER` / `INSERT SIGNED CSR` / `REPLACE` ([UserApp README](../../JAVA_APPS/src/UserApp/README.md)); a raw `MANAGE` line at that prompt is refused.
+
+Tropic PIN is only cmd 1 (KEM INIT): **8–16** printable ASCII (`0x20–0x7E`). A missing or ill-formed PIN is status **11** (`PIN required` / `bad PIN`) before Tropic runs. Every other command rejects a non-zero PIN length (`bad KEYGEN`, `bad PEER ADD`, `bad PAIRING`, …).
+
+
+| Cmd | Name              | Body                                                          | Success `msg`          |
+| --- | ----------------- | ------------------------------------------------------------- | ---------------------- |
+| 1   | KEM INIT          | empty                                                         | `KEM INIT ok`          |
+| 2   | KEYGEN            | empty                                                         | `KEYGEN ok`            |
+| 3   | PEER ADD          | `u8 nlen | name | 48-byte hash`                               | `PEER ADD ok`          |
+| 4   | PEER REMOVE       | `u8 nlen | name`                                              | `PEER REMOVE ok`       |
+| 5   | CREDS SAE         | SAE CA DER (1–4000 bytes)                                     | `CREDS SAE ok`         |
+| 6   | INSERT SIGNED CSR | `u16le cert_len | cert DER`                                   | `INSERT SIGNED CSR ok` |
+| 7   | OWNER REPLACE     | `u8 old_len | old | u8 new_len | new | u16le spki_len | spki` | `OWNER REPLACE ok`     |
+| 8   | PAIRING           | one byte, slot **1–3**                                        | `PAIRING ok <slot> <64 hex priv> <64 hex pub>` |
+| 9   | PAIRING LOAD      | `u8 slot | 32-byte priv | 32-byte pub`                        | `PAIRING LOAD ok`      |
+
+
+Unknown `cmd` is status **10**, `bad command`. A non-empty body on KEM INIT or KEYGEN is status **11** (`bad KEM INIT` / `bad KEYGEN`).
+
+
+| Cmd               | What it does                                                                                                                                                                                       | Notable failures                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| KEM INIT          | Occupied R-MEM **510** is refused. Else M&D PIN setup, wrap the seed, persist the 1184-byte ML-KEM pk in NV.                                                                                       | **3** `slot occupied`. **1** `KEM INIT failed`.                                                |
+| KEYGEN            | ECC slot 0. Empty: generate P-256. Occupied: erase and generate.                                                                                                                                   | **1** `KEYGEN failed`. **11** `bad KEYGEN`.                                                    |
+| PEER ADD          | Nickname + `SHA384(peer SPKI)` into MCU NV. Name rules are under [PEER](#peer-commands).                                                                                                           | **6** `PEER nickname exists`. **8** `PEER list full`. **11** `bad PEER ADD`.                   |
+| PEER REMOVE       | Delete by nickname.                                                                                                                                                                                | **7** `PEER not found`. **11** `bad PEER REMOVE`.                                              |
+| CREDS SAE         | Store the SAE CA DER in FLASH_CREDS.                                                                                                                                                               | **11** `bad CREDS SAE`. **1** `CREDS SAE failed`.                                              |
+| INSERT SIGNED CSR | Cert DER only. Requires the on-chip device SK. The leaf must match the on-chip ML-DSA public key.                                                                                                  | **4** `no device key`. **11** `bad INSERT SIGNED CSR`. **1** `INSERT SIGNED CSR failed`.       |
+| OWNER REPLACE     | Reset password (not the Tropic PIN): **8–64** printable ASCII, same hash as [PIN / owner policy](#pin--owner-policy). Replaces the enrolled owner SPKI.                                            | Wrong current password: **12** `OWNER REPLACE failed`. **11** `bad OWNER REPLACE`.             |
+| PAIRING           | X25519 into pairing slot 1–3. The private key is stored in MCU NV and returned once in the MANAGE reply (UserApp writes `pairing-key.hex`, does not print it). On silicon, factory SH0 invalidation is irreversible. An occupied slot is refused. | **3** `slot occupied`. **11** `bad PAIRING`. **1** `PAIRING failed`. |
+| PAIRING LOAD      | Restore a previously exported host pairing key into MCU NV (no Tropic write). Refused if NV already has a pairing key. After a reflash: `OWNER SET`, then this command. Restores L3 only; pads and device identity stay lost. | **11** `bad PAIRING LOAD`. **1** `pairing present` / `PAIRING LOAD failed`. |
+
+
+
+
+### Reply status
+
+`msg` is the device string (max 160). USB never prints these codes.
+
+
+| Status | Name           | Typical `msg`                 |
+| ------ | -------------- | ----------------------------- |
+| 0      | OK             | command `… ok`                |
+| 1      | ERR            | `… failed` / `command failed` |
+| 3      | SLOT_OCC       | `slot occupied`               |
+| 4      | NOT_READY      | `no device key` / `not ready` |
+| 5      | TAMPERED       | `DEVICE_TAMPERED`             |
+| 6      | PEER_EXISTS    | `PEER nickname exists`        |
+| 7      | PEER_NOT_FOUND | `PEER not found`              |
+| 8      | PEER_FULL      | `PEER list full`              |
+| 9      | PIN_FAIL       | `PIN fail`                    |
+| 10     | BAD_CMD        | `bad command`                 |
+| 11     | PARSE          | `bad …` / `PIN required`      |
+| 12     | PW_FAIL        | `OWNER REPLACE failed`        |
+
+
+There is no status **2**.
+
+---
+
 Console replies (PUB, CSR, HASH, KEM PUB, OTP STATUS, PEER LIST, OWNER SET) are
 **ASCII only**. The host drains until idle and prints. Binary payloads are hex
 lines; occupancy / refuse use the words `empty` / `refused`; hard errors are
@@ -80,19 +159,22 @@ lines; occupancy / refuse use the words `empty` / `refused`; hard errors are
 
 ---
 
+
+
 ## `PEER` commands
 
 Runtime nickname + `SHA384(peer SPKI)` list in MCU NV. Provision uplink items 7+ are this table (hash then name per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
 
-Certs and PIN-gated commands use MANAGE TLS application data, not the ASCII line.
+PEER ADD/REMOVE use MANAGE TLS application data, not the ASCII line. Bodies are in [MANAGE commands](#manage-commands).
 
-| Syntax | Success | Errors |
-| --- | --- | --- |
-| `PEER ADD` (MANAGE cmd 3) | status 0, `PEER ADD ok` | PIN fail, nickname exists, list full |
-| `PEER REMOVE` (MANAGE cmd 4) | status 0, `PEER REMOVE ok` | PIN fail, not found |
-| `PEER LIST` | ASCII lines `name` + hex hash, or `empty` | `failed` |
 
-- Tropic PIN is 8–16 printable ASCII inside the unsigned MANAGE request
+| Syntax                       | Success                                   | Errors                               |
+| ---------------------------- | ----------------------------------------- | ------------------------------------ |
+| `PEER ADD` (MANAGE cmd 3)    | status 0, `PEER ADD ok`                   | nickname exists, list full |
+| `PEER REMOVE` (MANAGE cmd 4) | status 0, `PEER REMOVE ok`                | not found                  |
+| `PEER LIST`                  | ASCII lines `name` + hex hash, or `empty` | `failed`                             |
+
+
 - `<name>`: 1–16 bytes, printable ASCII `[A-Za-z0-9_.-]`
 - Hash: 48-byte SHA-384 of the peer SPKI
 
@@ -100,49 +182,53 @@ Certs and PIN-gated commands use MANAGE TLS application data, not the ASCII line
 
 ---
 
+
+
 ## `TROPIC` subcommands
 
-| Syntax | Parameters | Firmware |
-| --- | --- | --- |
-| `TROPIC PING` | — | `lt_ping("hello")`. Success ASCII: `TROPIC ping ok` |
-| `TROPIC INFO` | — | Chip ID / FW ASCII (success only) |
-| `TROPIC PUB` | — | Hex P-256 pub, or `empty` |
-| `TROPIC KEM PUB` | — | Hex NV ML-KEM pk, or `empty` |
-| `TROPIC OTP STATUS` | — | `enc=A/B kb dec=C/D kb`. Unprovisioned is `0/capacity` |
 
-Unknown USB lines: `failed`. NSC Tropic results are only ok / err (plus empty for unoccupied PUB / KEM PUB). MANAGE TLS still returns typed `u8 status` (PIN_FAIL, TAMPERED, …) on the owner-pinned channel, not on USB.
+| Syntax              | Parameters | Firmware                                               |
+| ------------------- | ---------- | ------------------------------------------------------ |
+| `TROPIC PING`       | —          | `lt_ping("hello")`. Success ASCII: `TROPIC ping ok`    |
+| `TROPIC INFO`       | —          | Chip ID / FW ASCII (success only)                      |
+| `TROPIC PUB`        | —          | Hex P-256 pub, or `empty`                              |
+| `TROPIC KEM PUB`    | —          | Hex NV ML-KEM pk, or `empty`                           |
+| `TROPIC OTP STATUS` | —          | `enc=A/B kb dec=C/D kb`. Unprovisioned is `0/capacity` |
 
-MANAGE Tropic ops (unsigned request after `MANAGE <unix>`):
 
-| Cmd | Name | Firmware |
-| --- | --- | --- |
-| 1 | KEM INIT | Occupied R-MEM **510** refused. Else M&D PIN setup, wrap seed, persist 1184-byte pk in NV |
-| 2 | KEYGEN | Empty or occupied ECC slot 0: generate / PIN-replace P-256. Empty-slot KEYGEN still requires a well-formed PIN (owner-pinned TLS is the first-enroll gate; Tropic verifies the PIN only when replacing an occupied ECC slot). |
-| 8 | PAIRING | PIN + body slot 1–3. Success: `PAIRING ok`. Factory SH0 invalidation is irreversible on silicon. Pairing private key stays in MCU NV. |
+Unknown USB lines: `failed`. NSC Tropic results are only ok / err (plus empty for unoccupied PUB / KEM PUB). KEM INIT, KEYGEN, PAIRING, and PAIRING LOAD run as MANAGE cmds 1, 2, 8, and 9 — see [MANAGE commands](#manage-commands).
 
 ---
 
+
+
 ## Console status words
 
-| Word | Meaning |
-| --- | --- |
-| (hex lines) | ok body for PUB / CSR / HASH / KEM PUB |
-| `ok` | OWNER SET begin/apply with no body |
-| `empty` | Slot / table unoccupied (PUB / KEM PUB / PEER LIST) |
-| `refused` | `OWNER SET` begin when already enrolled |
-| `failed` | Command failed (no Tropic/TLS/auth subtype) |
+
+| Word        | Meaning                                             |
+| ----------- | --------------------------------------------------- |
+| (hex lines) | ok body for PUB / CSR / HASH / KEM PUB              |
+| `ok`        | OWNER SET begin/apply with no body                  |
+| `empty`     | Slot / table unoccupied (PUB / KEM PUB / PEER LIST) |
+| `refused`   | `OWNER SET` begin when already enrolled             |
+| `failed`    | Command failed (no Tropic/TLS/auth subtype)         |
+
 
 PING/INFO/HELP stay multi-line ASCII on success.
 
 ---
 
+
+
 ## Status strings (MANAGE TLS only)
 
-USB does not print Tropic `SLOT_OCC` / `NOT_READY` / `TAMPERED` / `DEVICE_TAMPERED`. Those exist only as MANAGE reply codes (`SeManage`) after owner-pinned TLS.
+USB does not print Tropic `SLOT_OCC` / `NOT_READY` / `TAMPERED` / `DEVICE_TAMPERED`. Those exist only as MANAGE reply codes after owner-pinned TLS. The byte and `msg` table is under [MANAGE commands](#manage-commands).
 
 PEER ADD/REMOVE status strings are MANAGE TLS `msg` fields, not USB.
 
 ---
+
+
 
 ## HELP output (silicon)
 
@@ -167,18 +253,23 @@ Host adds `QUIT`.
 
 ---
 
+
+
 ## NSC map
 
 Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.h)):
 
-| Console | NSC |
-| --- | --- |
-| `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | `SECURE_TlsStart_nsc_call(mode, unix)` |
-| `OWNER SET` | `SECURE_OwnerBegin_nsc_call` then unsigned USB blob |
-| `PEER LIST` | `SECURE_PeerGet_nsc_call` |
-| `CLIENT HASH` | `SECURE_TropicClientHash_nsc_call` |
-| `CLIENT CSR` | `SECURE_ClientCsr_nsc_call` |
-| `TROPIC OTP STATUS` | `SECURE_TropicOtpLeft_nsc_call` |
-| `TROPIC PING` … | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
-| Armed USB RX/TX | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call` |
-| Console ASCII | `SECURE_UsbLog_nsc_call` |
+
+| Console                                        | NSC                                                                                                                   |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | `SECURE_TlsStart_nsc_call(mode, unix)`                                                                                |
+| `OWNER SET`                                    | `SECURE_OwnerBegin_nsc_call` then unsigned USB blob                                                                   |
+| `PEER LIST`                                    | `SECURE_PeerGet_nsc_call`                                                                                             |
+| `CLIENT HASH`                                  | `SECURE_TropicClientHash_nsc_call`                                                                                    |
+| `CLIENT CSR`                                   | `SECURE_ClientCsr_nsc_call`                                                                                           |
+| `TROPIC OTP STATUS`                            | `SECURE_TropicOtpLeft_nsc_call`                                                                                       |
+| `TROPIC PING` …                                | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
+| Armed USB RX/TX                                | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call`                                      |
+| Console ASCII                                  | `SECURE_UsbLog_nsc_call`                                                                                              |
+
+

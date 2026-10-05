@@ -3,9 +3,10 @@
  * @brief   Non-secure callable USB byte pipe + time for Secure TLS
  *
  * NonSecure owns command parsing and when TLS may run. PROVISION / ENCRYPT /
- * DECRYPT / MANAGE each carry a Unix timestamp (clock + arm). PIN-gated and
- * identity-changing commands after first-wins OWNER SET run on MANAGE TLS
- * as unsigned application data (no USB challenge). ENCRYPT/DECRYPT stay mTLS.
+ * DECRYPT / MANAGE each carry a Unix timestamp (clock + arm). Identity-changing
+ * commands after first-wins OWNER SET run on MANAGE TLS as unsigned application
+ * data (no USB challenge). The Tropic PIN is only on KEM INIT there.
+ * ENCRYPT/DECRYPT stay mTLS and are what open the ML-KEM seed.
  */
 #ifndef SE_TLS_NSC_H
 #define SE_TLS_NSC_H

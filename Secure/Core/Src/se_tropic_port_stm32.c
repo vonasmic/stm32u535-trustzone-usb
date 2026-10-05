@@ -142,22 +142,50 @@ static int page_dwk_blank(const uint8_t *p)
     return 1;
 }
 
+/* 512 KB / 1 MB parts use 8 KB pages only with DUALBANK set. Single-bank
+ * mode doubles the page, which would erase the NSC page next to NV. */
+static uint32_t flash_hw_page_size(void)
+{
+    if ((FLASH_SIZE > 0x40000U) &&
+        ((FLASH->OPTR & FLASH_OPTR_DUALBANK) == 0U)) {
+        return FLASH_PAGE_SIZE * 2U;
+    }
+    return FLASH_PAGE_SIZE;
+}
+
 static lt_ret_t flash_program_page(uint32_t addr, uint32_t page, const uint8_t *src)
 {
     FLASH_EraseInitTypeDef erase = {0};
     uint32_t page_error = 0U;
     uint32_t off;
-    uint8_t qw[16];
+    uint32_t bank;
+    uint8_t qw[16] __attribute__((aligned(16)));
     HAL_StatusTypeDef st;
 
-    if (src == NULL) {
+    if ((src == NULL) || (addr < 0x0C000000u) ||
+        (((addr - 0x0C000000u) % SE_NV_PAGE_SIZE) != 0U)) {
         return LT_PARAM_ERR;
+    }
+    /* Linker map is 8 KB pages. A 16 KB hardware page would erase NSC too. */
+    if (flash_hw_page_size() != SE_NV_PAGE_SIZE) {
+        return LT_HAL_ERROR;
+    }
+    off = addr - 0x0C000000u;
+    if ((FLASH_SIZE > 0x40000U) &&
+        ((FLASH->OPTR & FLASH_OPTR_DUALBANK) != 0U) &&
+        (off >= FLASH_BANK_SIZE)) {
+        bank = FLASH_BANK_2;
+        page = (off - FLASH_BANK_SIZE) / SE_NV_PAGE_SIZE;
+    } else {
+        bank = FLASH_BANK_1;
+        page = off / SE_NV_PAGE_SIZE;
     }
     if (HAL_FLASH_Unlock() != HAL_OK) {
         return LT_HAL_ERROR;
     }
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
     erase.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase.Banks = FLASH_BANK_1;
+    erase.Banks = bank;
     erase.Page = page;
     erase.NbPages = 1U;
     st = HAL_FLASHEx_Erase(&erase, &page_error);
@@ -180,6 +208,9 @@ static lt_ret_t flash_program_page(uint32_t addr, uint32_t page, const uint8_t *
         off += 16U;
     }
     (void)HAL_FLASH_Lock();
+    if (memcmp((const void *)addr, src, SE_NV_PAGE_SIZE) != 0) {
+        return LT_HAL_ERROR;
+    }
     return LT_OK;
 }
 
@@ -301,6 +332,16 @@ void se_tropic_port_device_id(uint8_t out[SE_DEVICE_ID_LEN])
     out[9] = (uint8_t)(w >> 8);
     out[10] = (uint8_t)(w >> 16);
     out[11] = (uint8_t)(w >> 24);
+}
+
+int se_stm32_rand_seed(unsigned char *out, unsigned int sz)
+{
+    if ((out == NULL) || (sz == 0U) || (sz > 0xffffU)) {
+        return -1;
+    }
+    /* CubeMX already started hrng. wolfSSL's built-in STM32 seeder builds a
+     * second handle and HAL_RNG_DeInit() stops this clock. */
+    return (se_tropic_port_nv_random(out, (uint16_t)sz) == LT_OK) ? 0 : -1;
 }
 
 lt_ret_t se_tropic_port_nv_random(uint8_t *out, uint16_t len)

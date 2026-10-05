@@ -8,6 +8,7 @@
 #include "se_tropic.h"
 #include "se_tropic_port.h"
 #include <string.h>
+#include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
 #include <wolfssl/wolfcrypt/memory.h>
 #include <wolfssl/wolfcrypt/random.h>

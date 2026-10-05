@@ -478,7 +478,8 @@ extern "C" {
 #undef HAVE_ED25519
 /* Tropic01 pairing (libtropic CAL) needs X25519; Ed25519 stays optional. */
 #define HAVE_CURVE25519
-#define CURVED25519_SMALL
+/* No CURVED25519_SMALL: fe_low_mem X25519 is ~1 s/op at 48 MHz and a Tropic
+ * session needs 4 ops, which breaks the 3 s host console window (+5.5 KB flash). */
 #if defined(WOLF_CONF_EDCURVE25519) && WOLF_CONF_EDCURVE25519 == 1
     #define HAVE_ED25519
 #endif
@@ -602,6 +603,9 @@ extern "C" {
 #define NO_OLD_RNGNAME
 #if !defined(WOLF_CONF_RNG) || WOLF_CONF_RNG == 1
     #define HAVE_HASHDRBG
+    /* Use the CubeMX RNG handle. Do not let wolfSSL DeInit it. */
+    int se_stm32_rand_seed(unsigned char *out, unsigned int sz);
+    #define CUSTOM_RAND_GENERATE_SEED se_stm32_rand_seed
 #else
     #define WC_NO_HASHDRBG
     #define WC_NO_RNG

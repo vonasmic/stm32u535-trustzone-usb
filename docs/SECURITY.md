@@ -61,7 +61,7 @@ This document analyses **protocol, TrustZone layout, Tropic binding, and PQ algo
 |                         |                                |                                      |
 | R-MEM blobs at rest     | AES-256-GCM                    | yes (key secrecy is the issue)       |
 | PIN / M&D               | HMAC-SHA384 (MCU KDF, 512-bit key) + KMAC M&D (chip) | **yes** at the MAC (NIST 192-bit SHA-384); online guess limit is still 8 silicon tries (16 M&D slots) |
-| Factory SH0 in firmware | X25519 (eng-sample by default) | **no**                               |
+| Factory SH0 in firmware | X25519 (prod0 by default) | **no**                               |
 
 
 Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L3. It is **not** the confidentiality root for pads.
@@ -74,7 +74,7 @@ Tropic is a **classical** SE: tamper-evident storage, M&D, and (until pairing) L
 | What the attacker has              | Pads / ML-KEM sk                                                           | L3 to Tropic                                                 | Impersonate TLS client           |
 | ---------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------- |
 | Recorded TLS (no keys)             | no (ML-KEM)                                                                | n/a                                                          | no (ML-DSA)                      |
-| USB CDC, no PIN                    | cannot consume pads (need TLS + PIN); first-fill KEYGEN; can brick pairing | yes, as the MCU                                              | no (key in Secure)               |
+| USB CDC, no PIN                    | cannot consume pads (need mTLS + PIN). Owner-pinned MANAGE can KEYGEN, edit peers, and burn SH0 | yes, as the MCU                                              | no (key in Secure)               |
 | Tropic dump only                   | ciphertext only                                                            | pub keys; P-256 **sk** is on chip (classical attest)         | no                               |
 | Tropic dump + break X25519         | still no pads (`fill_id` + dwk + PIN)                                      | **yes if SH0 still valid** (pre-pairing / leaked eng-sample) | no                               |
 | MCU flash (`secure_dwk` + page 22) | kem_ct and PIN NVM decrypt; pads still need PIN                            | pairing **priv** after `PAIRING y`                           | **yes** (ML-DSA SK in the clear) |
@@ -103,7 +103,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 **Residual:**
 
-- USER sees PIN on the TLS application channel (encrypt / decrypt, and PIN-gated MANAGE). Compromise of UserApp ⇒ PIN. SAE does not see the OTP PIN; provision has no PIN on the wire.
+- USER sees PIN on the TLS application channel (encrypt / decrypt, and KEM INIT). Compromise of UserApp ⇒ PIN. SAE does not see the OTP PIN; provision has no PIN on the wire.
 
 ### 2. USB CDC console
 
@@ -113,7 +113,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 - `PROVISION` / `ENCRYPT` / `DECRYPT` never take a PIN; PIN is only inside TLS.
 - `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
-- Occupied ECC slot 0, empty-slot `KEYGEN`, `KEM INIT`, and `PEER ADD`/`REMOVE` require a Tropic PIN on unsigned MANAGE TLS. R-MEM 510 refuses a second `KEM INIT`.
+- `KEM INIT` requires a Tropic PIN on unsigned MANAGE TLS. R-MEM 510 refuses a second `KEM INIT`.
 - USB line cap 160 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
 - USB errors on the console are coarse (`failed` / `empty` / `refused` / `ok`). Leftover for UserApp TLS arm waits for ClientHello `0x16` or ASCII `failed`.
 - MANAGE TLS replies keep typed status (`PIN_FAIL`, `SLOT_OCC`, …) and msg strings (`PIN fail`, `KEM INIT failed`, `KEYGEN ok`).
@@ -121,7 +121,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 **Residual:**
 
 - **No USB authentication** for ping, info, list, or TLS arm. First USB `OWNER SET` wins. The reset password is dumpable with MCU flash (`SHA-384(dwk || password)`). Pairing survives owner wipe.
-- Occupied `KEYGEN` / `KEM INIT` / `PEER *` PIN is on MANAGE TLS (owner-pinned, not mTLS). After slot 510 is occupied, pad consume PIN is only inside ENCRYPT/DECRYPT mTLS.
+- `KEM INIT` PIN is on MANAGE TLS (owner-pinned, not mTLS). After slot 510 is occupied, pad consume PIN is only inside ENCRYPT/DECRYPT mTLS.
 - ASCII console replies reveal occupancy (empty vs present pub) and enrollment refused vs ok, but collapse hard errors to `failed`. Tropic/PIN/slot taxonomy is on MANAGE TLS only.
 
 ### 3. NonSecure world and NSC
@@ -146,7 +146,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 **Hardening:**
 
-- After MANAGE PAIRING (PIN + slot 1–3), factory **SH0 is invalidated** and the X25519 **private** key is in MCU NV only (never printed). Tropic dump of pairing *pub* is not enough to speak L3 as this host.
+- After MANAGE PAIRING (slot 1–3), factory **SH0 is invalidated** and the X25519 **private** key is in MCU NV and returned once over that TLS session (UserApp saves `pairing-key.hex`, does not print it). Tropic dump of pairing *pub* is not enough to speak L3 as this host. The PC file plus SPI access is.
 - MCU NV (`fill_id`, OTP cursors) is authoritative. Tropic mcounters must **match**; mismatch → `DEVICE_TAMPERED`.
 - kem_ct and PIN NVM are MCU-sealed (device AEAD + `fill_id` / slot binding). Pads are sealed under ML-KEM SS, not under L3.
 - PIN pepper never leaves the MCU; M&D inputs on SPI are not a PIN hash.
@@ -154,7 +154,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 
 **Residual:**
 
-- **Before pairing**, L3 uses factory SH0. Default firmware is **eng-sample** SH0 (`libtropic_user_config.h`) unless `SE_TROPIC_SH0_PROD`. Those private keys are in the SDK. A PQ attacker (or anyone with the published sample key) who can SPI the chip **before** pairing owns L3.
+- **Before pairing**, L3 uses factory SH0. Default firmware is **prod0** SH0 (`libtropic_user_config.h`); `SE_TROPIC_SH0_ENG` selects eng-sample. Those private keys are in the SDK. A PQ attacker (or anyone with the published sample key) who can SPI the chip **before** pairing owns L3.
 - Even with broken L3, pads still need ML-KEM sk + `fill_id`. L3 break alone ≠ pad plaintext.
 - Tropic ECC slot 0 **private** key is on the chip (classical). Dump or L3 as host ⇒ forge uplink signatures.
 - `HDP1EN = 0` (hide protection off). SWD/debug is an assumed lab surface unless you lock it in production.
@@ -204,7 +204,7 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 **Residual:**
 
 - Entropy is small; M&D is the only throttle. 8 guesses of a 4-digit PIN is not enough if the PIN is weak **and** the attacker can run checks (they need live Tropic + MCU). HMAC-SHA384 does not add PIN entropy; a PQ break of Tropic L3 can still observe M&D outputs on the wire.
-- Correct PIN on TLS is visible to USER (encrypt / decrypt / PIN-gated MANAGE), not to SAE.
+- Correct PIN on TLS is visible to USER (encrypt / decrypt / KEM INIT), not to SAE.
 - Changing `secure_dwk` (new firmware blob) invalidates PIN NVM — re-run `KEM INIT` (slot 510 must be empty, so this is a brick unless you wipe Tropic).
 
 ### 8. QKD fill / OTP protocol
@@ -229,10 +229,10 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 
 ## Operator checklist (PQ-relevant)
 
-1. Do not leave factory **SH0** on a field device; run MANAGE PAIRING (PIN + slot 1–3) after model gates A–E/H. Build with `SE_TROPIC_SH0_PROD` for production chips, not eng-sample keys. See [PRODUCTION.md](PRODUCTION.md).
+1. Do not leave factory **SH0** on a field device; run MANAGE PAIRING (slot 1–3) after model gates A–E/H. Production chips use the default prod0 keys; only engineering samples need `SE_TROPIC_SH0_ENG`.
 2. Enroll unsigned USB `OWNER SET` (owner SPKI + SAE CA), then **USER** `MANAGE` `KEYGEN` and `KEM INIT` (unsigned PIN), `CLIENT CSR`, and `INSERT SIGNED CSR` (signed cert only). TLS refuses ENCRYPT until owner + cert + on-chip SK are present. ML-KEM pk lives in NV.
 3. After enrollment, do not send the Tropic PIN on the ASCII line; encrypt/decrypt take it only inside mTLS. Occupied `KEYGEN` is identity replace over MANAGE, not enrollment.
 4. Lock SWD / enable hide protection if you ship; this project leaves `HDP1EN = 0`.
 5. SAE (`PROVISION`) must require **ML-KEM TLS + ML-DSA client cert**; do not accept a P-256 uplink signature as the device’s PQ identity. USER (`ENCRYPT` / `DECRYPT`) pins the peer to the enrolled owner key, not to SAE CA.
-6. Assume anyone with the **firmware image** can speak L3 after pairing (pairing priv is in MCU NV). Pads remain PIN-gated. An MCU reflash after SH0 is burned cannot reopen L3.
+6. Assume anyone with the **firmware image** can speak L3 after pairing (pairing priv is in MCU NV). Pads remain PIN-gated. An MCU reflash after SH0 is burned cannot reopen L3 from factory keys; **PAIRING LOAD** from `pairing-key.hex` restores L3 only (pads and device identity stay lost).
 

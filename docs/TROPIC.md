@@ -107,7 +107,7 @@ Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER
 | `owner_len` + owner SPKI | u16 + 1312 B | Enrolled owner (`OWNER SET`) |
 | `mlkem_len` + ML-KEM pk | u16 + 1184 B | NV copy from `KEM INIT` |
 | `pw_hash` | 48 B | `SHA-384(secure_dwk \|\| password)` |
-| `pairing_priv` | 32 B | X25519 host private (MCU NV only; never printed) |
+| `pairing_priv` | 32 B | X25519 host private (MCU NV; also returned once on MANAGE PAIRING TLS) |
 | `sk_len` + device SK DER | u16 + 4096 B | ML-DSA-44 PKCS#8 with public key (`CLIENT CSR` / mTLS); loaded only for mTLS |
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
@@ -153,20 +153,20 @@ Eight wrong PINs on silicon (four on the host model) lock ML-KEM forever until a
 
 ## Pairing / SH0
 
-Until paired, L3 uses factory **SH0** (pairing slot 0). Firmware default is **eng-sample** SH0 unless `SE_TROPIC_SH0_PROD` (host model always prod0).
+Until paired, L3 uses factory **SH0** (pairing slot 0). Firmware default is **prod0** SH0 (TS13 dev kits); build with `SE_TROPIC_SH0_ENG` for engineering samples (host model always prod0).
 
-MANAGE PAIRING (PIN + slot 1–3):
+MANAGE PAIRING (slot 1–3):
 
 1. Generate X25519 (priv from MCU RNG).
 2. Write **public** to Tropic pairing slot `n`.
 3. Persist priv+pub in MCU NV.
 4. `lt_pairing_key_invalidate(slot 0)` — factory SH0 **burned**.
 5. Re-open L3 with the new slot.
-6. Log pairing **pub** only. The private key is never printed or saved on the host.
+6. MANAGE reply is `PAIRING ok <slot> <priv hex> <pub hex>`. UserApp writes `pairing-key.hex` and does not print the private key.
 
-Irreversible on silicon. The pairing **private** key is in MCU NV so a Tropic-only dump cannot impersonate L3 after SH0 is gone.
+Irreversible on silicon. The pairing **private** key is in MCU NV and on the PC file so a Tropic-only dump cannot impersonate L3 after SH0 is gone. Anyone with that file and SPI access can speak L3.
 
-After an MCU reflash NV is empty and SH0 is already invalid, so L3 cannot start from factory keys. See [PRODUCTION.md](PRODUCTION.md).
+After an MCU reflash NV is empty and SH0 is already invalid. `OWNER SET` then MANAGE **PAIRING LOAD** (cmd 9) writes the backed-up key into MCU NV and reopens L3. It does not write Tropic. Pads, `secure_dwk`, and the enrolled device identity stay lost.
 
 ---
 

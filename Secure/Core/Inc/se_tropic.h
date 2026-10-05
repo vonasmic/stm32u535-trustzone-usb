@@ -29,8 +29,8 @@ uint32_t se_tropic_otp_left(uint32_t out_quotas[4]);
 uint32_t se_tropic_otp_left_dump(void);
 /** ECC slot 0 XY. NOT_READY if unoccupied (Tropic INVALID_KEY). */
 uint32_t se_tropic_pub_read(uint8_t *out_xy64);
-/** Empty slot: generate. Occupied: PIN required, then erase+generate. */
-uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len);
+/** Generate P-256 in ECC slot 0. An occupied slot is erased first. */
+uint32_t se_tropic_keygen(void);
 uint32_t se_tropic_sign_hash(const uint8_t hash32[32], uint8_t rs64[64]);
 uint32_t se_tropic_session_sign(const uint8_t hash32[32], uint8_t rs64[64]);
 /** Generate X25519, write pub to slot, persist, invalidate SH0, re-session. */

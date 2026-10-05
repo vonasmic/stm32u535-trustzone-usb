@@ -1,10 +1,9 @@
 /**
  * @file    test_b_ecc.c
- * @brief   Group B: ECC store / generate / occupied-slot / PIN reroll / sign+verify
+ * @brief   Group B: ECC store / generate / occupied-slot reroll / sign+verify
  */
 #include "test_harness.h"
 #include "se_tropic.h"
-#include "se_tropic_pin.h"
 #include "libtropic.h"
 #include "libtropic_user_config.h"
 #include <string.h>
@@ -70,8 +69,6 @@ int main(void)
     uint8_t hash[WC_SHA384_DIGEST_SIZE];
     uint8_t sig[64];
     uint8_t empty_hash[32];
-    lt_ecc_curve_type_t curve;
-    lt_ecc_key_origin_t origin;
     lt_ret_t ret;
     uint32_t st;
     wc_Sha384 sha;
@@ -112,59 +109,31 @@ int main(void)
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "sign after store");
     TEST_ASSERT(verify_p256_rs(pub, hash, sig) == 0, "openssl/wc verify stored key");
 
-    /* Occupied-slot KEYGEN: no PIN → refuse. PIN without NVM → fail. */
-    st = se_tropic_keygen(NULL, 0U);
-    TEST_ASSERT_EQ(st, SE_TROPIC_SLOT_OCC, "keygen occupied");
+    /* Occupied-slot KEYGEN replaces the key. */
     {
-        const uint8_t pin_early[] = {9, 8, 7, 6};
-        st = se_tropic_keygen(pin_early, sizeof(pin_early));
-        TEST_ASSERT_EQ(st, SE_TROPIC_ERR, "reroll without PIN NVM fails");
+        uint8_t pub_before[64];
+
+        (void)memcpy(pub_before, pub, sizeof(pub_before));
+        st = se_tropic_keygen();
+        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "keygen occupied replaces");
+        st = se_tropic_pub_read(pub);
+        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "pub after occupied keygen");
+        TEST_ASSERT(memcmp(pub_before, pub, sizeof(pub)) != 0, "pub changed after occupied keygen");
+        st = se_tropic_sign_hash(hash, sig);
+        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "sign after occupied keygen");
+        TEST_ASSERT(verify_p256_rs(pub, hash, sig) == 0, "verify replaced key");
     }
-    /* Slot must still hold the stored key. */
-    ret = lt_ecc_key_read(h, SE_TROPIC_ECC_SLOT, pub, sizeof(pub), &curve, &origin);
-    TEST_ASSERT_EQ(ret, LT_OK, "slot still occupied after refused keygen");
 
     /* Erase (model-only), KEYGEN, PUB, SIGN, verify. */
     ret = lt_ecc_key_erase(h, SE_TROPIC_ECC_SLOT);
     TEST_ASSERT_EQ(ret, LT_OK, "erase before keygen");
-    st = se_tropic_keygen(NULL, 0U);
+    st = se_tropic_keygen();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "keygen empty");
     st = se_tropic_pub_read(pub);
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "pub after keygen");
     st = se_tropic_sign_hash(hash, sig);
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "sign after keygen");
     TEST_ASSERT(verify_p256_rs(pub, hash, sig) == 0, "verify generated key");
-
-    /* PIN-gated reroll: erase + new P-256. */
-    {
-        uint8_t master[SE_TROPIC_PIN_HMAC_LEN];
-        uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
-        uint8_t pub2[64];
-        const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
-        const uint8_t pin_bad[] = {0, 8, 7, 6};
-
-        ret = lt_random_value_get(h, master, sizeof(master));
-        TEST_ASSERT_EQ(ret, LT_OK, "random for pin_setup");
-        ret = se_tropic_pin_setup(h, master, pin, sizeof(pin), NULL, 0U, final_key);
-        TEST_ASSERT_EQ(ret, LT_OK, "pin_setup for keygen reroll");
-
-        st = se_tropic_keygen(NULL, 0U);
-        TEST_ASSERT_EQ(st, SE_TROPIC_SLOT_OCC, "reroll without PIN refused");
-        st = se_tropic_keygen(pin_bad, sizeof(pin_bad));
-        TEST_ASSERT_EQ(st, SE_TROPIC_ERR, "reroll wrong PIN refused");
-        st = se_tropic_pub_read(pub2);
-        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "pub after refused reroll");
-        TEST_ASSERT(memcmp(pub, pub2, sizeof(pub)) == 0, "pub unchanged after refused reroll");
-
-        st = se_tropic_keygen(pin, sizeof(pin));
-        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "reroll with PIN");
-        st = se_tropic_pub_read(pub2);
-        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "pub after reroll");
-        TEST_ASSERT(memcmp(pub, pub2, sizeof(pub)) != 0, "pub changed after reroll");
-        st = se_tropic_sign_hash(hash, sig);
-        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "sign after reroll");
-        TEST_ASSERT(verify_p256_rs(pub2, hash, sig) == 0, "verify rerolled key");
-    }
 
     se_tropic_deinit_session();
     host_crypto_deinit();

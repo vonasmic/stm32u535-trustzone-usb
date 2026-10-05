@@ -234,7 +234,17 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USER CODE BEGIN SPI1_MspInit 1 */
+    /* TS13 stock firmware pulls MISO up so an idle line is not floating. */
+    {
+      GPIO_InitTypeDef miso = {0};
 
+      miso.Pin = GPIO_PIN_6;
+      miso.Mode = GPIO_MODE_AF_PP;
+      miso.Pull = GPIO_PULLUP;
+      miso.Speed = GPIO_SPEED_FREQ_LOW;
+      miso.Alternate = GPIO_AF5_SPI1;
+      HAL_GPIO_Init(GPIOA, &miso);
+    }
     /* USER CODE END SPI1_MspInit 1 */
 
   }

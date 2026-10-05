@@ -49,20 +49,28 @@ Boot: Secure init then jump to NonSecure `VTOR_TABLE_NS_START_ADDR = 0x08030000`
 | NonSecure | RAM | `0x20030000` | 64 KB |
 | NonSecure | SRAM4 | `0x28000000` | 16 KB |
 
-Secure heap/stack minima in the linker: heap `0x200`, stack `0x400` (TLS + ML-KEM). NonSecure: heap `0x200` (USBX), stack `0x400`.
+Secure heap/stack minima in the linker: heap `0x200`, stack `0x2000` (TLS + ML-KEM + libtropic session; `_sbrk` caps the heap at `_estack - _Min_Stack_Size`). NonSecure: heap `0x200` (USBX), stack `0x400`.
 
 ---
 
 ## Option bytes
 
-TrustZone (`TZEN`) must be enabled.
+Set these. Commands: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
 
 | Option | Value | Meaning |
 | --- | --- | --- |
+| `TZEN` | `0x1` | TrustZone on. Clearing it is an RDP regression (mass erase) |
+| `DBANK` | `0x0` | Single bank, 8 KB pages |
+| `SWAP_BANK` | `0x0` | Bank 1 at `0x08000000` |
+| `SECBOOTADD0` | `0x180000` | Secure boot at `0x0C000000` (`addr >> 7`) |
+| `NSBOOTADD0` | `0x100600` | NS vectors at `0x08030000` (`addr >> 7`) |
 | `SECWM1_PSTRT` | `0x0` | Secure flash from page 0 |
 | `SECWM1_PEND` | `0x17` | Last Secure page = **23** (includes NSC) |
-| `NSBOOTADD0` | `0x100600` | NS vectors at `0x08030000` (`addr >> 7`) |
 | `HDP1EN` | `0x0` | Hide protection off |
+| `BOOT_LOCK` | `0x0` | Lab. Boot follows BOOT0 and the boot addresses stay writable. `0x1` forces boot from flash until an RDP regression ([HOW_TO_RUN.md](HOW_TO_RUN.md)) |
+| `RDP` | `0xAA` | Level 0. Level 1 `0xBB` blocks debug readout and regresses with a mass erase. Level 2 `0xCC` disables SWD permanently ([HOW_TO_RUN.md](HOW_TO_RUN.md)) |
+
+SRAM split and SAU are not option bytes. Secure startup programs them (see below).
 
 Inspect:
 
@@ -70,10 +78,18 @@ Inspect:
 STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob displ
 ```
 
-Set (after a map change, then `-rst`):
+Erase, set bank mode and TrustZone, then unplug power and plug it back in before the watermark command:
 
 ```text
-STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob SECWM1_PSTRT=0x0 SECWM1_PEND=0x17 NSBOOTADD0=0x100600 HDP1EN=0x0 -rst
+STM32_Programmer_CLI.exe -c port=SWD mode=UR -e all
+
+STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob DBANK=0x0 SWAP_BANK=0x0 TZEN=0x1 -rst
+```
+
+Then set the map:
+
+```text
+STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob SECBOOTADD0=0x180000 NSBOOTADD0=0x100600 SECWM1_PSTRT=0x0 SECWM1_PEND=0x17 HDP1EN=0x0 BOOT_LOCK=0x0 -rst
 ```
 
 ---

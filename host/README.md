@@ -73,7 +73,7 @@ bash ../run_all.sh
 | Group | Binary | What it gates |
 | --- | --- | --- |
 | A | `test_a_session` | Session / ping / info |
-| B | `test_b_ecc` | Empty PUB (`NOT_READY` / Tropic `INVALID_KEY`), ECC store, occupied-slot KEYGEN refuse, generate, PIN reroll, sign+verify |
+| B | `test_b_ecc` | Empty PUB (`NOT_READY` / Tropic `INVALID_KEY`), ECC store, occupied-slot KEYGEN replace, generate, sign+verify |
 | C | `test_c_rmem` | R-MEM erase-before-write keystream |
 | D | `test_d_pin` | PIN setup/check, wrong-PIN consume, PIN-gated XOR, exhaustion |
 | E | `test_e_mcounter` | Monotonic cursor advance-before-use |
@@ -164,7 +164,7 @@ PEER LIST
 TROPIC OTP STATUS
 ```
 
-Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB blob. PIN-gated and identity-changing commands stream unsigned over `MANAGE <unix>` (no ML-DSA):
+Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB blob. Identity-changing commands stream unsigned over `MANAGE <unix>` (no ML-DSA). KEM INIT carries the PIN:
 
 ```text
 OWNER SET
@@ -215,7 +215,7 @@ Host-only (do not exist on silicon):
 | NV page | Secure flash page 22 (8 KB, dwk + plaintext) | 8 KB RAM |
 | Creds page | Secure flash page 21 | 8 KB RAM |
 | CDC bytes | USBX CDC ACM | PTY `--tty` (lab: `/tmp/ttyACM-se1` / `se2`) |
-| SH0 | eng-sample unless `SE_TROPIC_SH0_PROD` | Forced prod0 (`host_libtropic_config.h`) |
+| SH0 | prod0 unless `SE_TROPIC_SH0_ENG` | Forced prod0 (`host_libtropic_config.h`) |
 | PIN rounds | silicon default 8 tries / 16 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |
 
 TLS I/O, console parsing, NSC veneers, and wall-clock floor are the firmware sources. Host wolfSSL still uses the process clock (`TIME_OVERRIDES` is firmware-only).

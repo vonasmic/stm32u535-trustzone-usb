@@ -179,12 +179,7 @@ int main(void)
 
     st = se_tropic_init_session();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "init_session");
-    st = se_tropic_keygen(NULL, 0U);
-    if (st == SE_TROPIC_SLOT_OCC) {
-        TEST_ASSERT_EQ(lt_ecc_key_erase(se_tropic_handle(), SE_TROPIC_ECC_SLOT), LT_OK,
-                       "erase ecc");
-        st = se_tropic_keygen(NULL, 0U);
-    }
+    st = se_tropic_keygen();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "keygen");
     TEST_ASSERT_EQ(se_creds_set_device_cert(k_dummy_cert, (uint16_t)sizeof(k_dummy_cert)), LT_OK,
                    "dummy device cert");

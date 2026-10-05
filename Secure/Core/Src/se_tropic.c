@@ -4,7 +4,6 @@
  */
 #include "se_tropic.h"
 #include "se_tropic_port.h"
-#include "se_tropic_pin.h"
 #include "se_tropic_rmem.h"
 #include "libtropic_user_config.h"
 #include "libtropic.h"
@@ -24,6 +23,20 @@ static uint8_t s_pkey_valid;
 static uint8_t s_pkey_slot;
 static uint8_t s_pkey_priv[TR01_SHIPRIV_LEN];
 static uint8_t s_pkey_pub[TR01_SHIPUB_LEN];
+/* Static: 4 x 700 B certs on the Secure stack overflow it (heap may grow to _estack - _Min_Stack_Size). */
+static uint8_t s_cert_bufs[LT_NUM_CERTIFICATES][TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE];
+
+static lt_ret_t cert_store_read(struct lt_cert_store_t *store)
+{
+    uint32_t i;
+
+    for (i = 0U; i < LT_NUM_CERTIFICATES; i++) {
+        store->certs[i] = s_cert_bufs[i];
+        store->buf_len[i] = TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE;
+        store->cert_len[i] = 0U;
+    }
+    return lt_get_info_cert_store(&s_lt, store);
+}
 
 static int pairing_slot_ok(uint8_t slot)
 {
@@ -107,6 +120,8 @@ void se_tropic_log_hex(const char *label, const uint8_t *data, uint32_t len)
 
 uint32_t se_tropic_init_session(void)
 {
+    struct lt_cert_store_t store;
+    uint8_t stpub[TR01_STPUB_LEN];
     lt_ret_t ret;
 
     if (s_session_active != 0U) {
@@ -130,8 +145,13 @@ uint32_t se_tropic_init_session(void)
         return SE_TROPIC_ERR;
     }
 
-    ret = lt_verify_chip_and_start_secure_session(&s_lt, session_priv(), session_pub(),
-                                                  session_slot());
+    ret = cert_store_read(&store);
+    if (ret == LT_OK) {
+        ret = lt_get_st_pub(&store, stpub);
+    }
+    if (ret == LT_OK) {
+        ret = lt_session_start(&s_lt, stpub, session_slot(), session_priv(), session_pub());
+    }
     if (ret != LT_OK) {
         (void)lt_deinit(&s_lt);
         return SE_TROPIC_ERR;
@@ -185,19 +205,9 @@ uint32_t se_tropic_ping(void)
 
 static void se_tropic_info_cert_store(void)
 {
-    static uint8_t s_cert_bufs[LT_NUM_CERTIFICATES][TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE];
     struct lt_cert_store_t store;
-    uint32_t i;
 
-    store.certs[0] = s_cert_bufs[0];
-    store.certs[1] = s_cert_bufs[1];
-    store.certs[2] = s_cert_bufs[2];
-    store.certs[3] = s_cert_bufs[3];
-    for (i = 0U; i < LT_NUM_CERTIFICATES; i++) {
-        store.buf_len[i] = TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE;
-    }
-
-    (void)lt_get_info_cert_store(&s_lt, &store);
+    (void)cert_store_read(&store);
 }
 
 uint32_t se_tropic_info(void)
@@ -315,10 +325,8 @@ static uint32_t se_tropic_slot_occupied(void)
     return 0U;
 }
 
-uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len)
+uint32_t se_tropic_keygen(void)
 {
-    lt_handle_t *h;
-    uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     lt_ret_t ret;
 
     if (se_tropic_init_session() != SE_TROPIC_OK) {
@@ -326,28 +334,10 @@ uint32_t se_tropic_keygen(const uint8_t *pin, uint8_t pin_len)
     }
 
     if (se_tropic_slot_occupied() != 0U) {
-        if ((pin == NULL) || (pin_len < SE_TROPIC_PIN_SIZE_MIN) ||
-            (pin_len > SE_TROPIC_PIN_SIZE_MAX)) {
-            return SE_TROPIC_SLOT_OCC;
-        }
-        h = se_tropic_handle();
-        if (h == NULL) {
-            return SE_TROPIC_ERR;
-        }
-        ret = se_tropic_pin_check(h, pin, pin_len, NULL, 0U, final_key);
-        wc_ForceZero(final_key, sizeof(final_key));
-        if (ret != LT_OK) {
-            return SE_TROPIC_PIN_FAIL;
-        }
         ret = lt_ecc_key_erase(&s_lt, SE_TROPIC_ECC_SLOT);
         if (ret != LT_OK) {
             return SE_TROPIC_ERR;
         }
-        ret = lt_ecc_key_generate(&s_lt, SE_TROPIC_ECC_SLOT, TR01_CURVE_P256);
-        if (ret != LT_OK) {
-            return SE_TROPIC_ERR;
-        }
-        return SE_TROPIC_OK;
     }
 
     ret = lt_ecc_key_generate(&s_lt, SE_TROPIC_ECC_SLOT, TR01_CURVE_P256);

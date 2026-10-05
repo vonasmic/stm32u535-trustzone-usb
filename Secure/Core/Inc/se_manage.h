@@ -2,8 +2,9 @@
  * @file    se_manage.h
  * @brief   Owner-pinned TLS manage commands (no USB challenge)
  *
- * One request per MANAGE session. PIN-gated Tropic ops and identity changes
- * run here. ENCRYPT/DECRYPT stay on their own mTLS modes.
+ * One request per MANAGE session. Identity changes run here. The Tropic PIN
+ * is only on KEM INIT (it wraps the ML-KEM seed). ENCRYPT/DECRYPT stay on
+ * their own mTLS modes and are the only commands that open that seed.
  *
  * Wire codec (need/parse/reply) matches Java fel.cvut.se.SeManage.
  * USB OWNER SET ingest stays in se_auth.c; TLS apply stays below.
@@ -27,6 +28,8 @@ extern "C" {
 #define SE_MANAGE_INSERT_SIGNED_CSR 6u
 #define SE_MANAGE_OWNER_REPLACE  7u
 #define SE_MANAGE_PAIRING        8u
+/** Restore host pairing priv+pub into MCU NV after a reflash (no Tropic write). */
+#define SE_MANAGE_PAIRING_LOAD   9u
 
 #define SE_MANAGE_OK             0u
 #define SE_MANAGE_ERR            1u
@@ -46,7 +49,7 @@ extern "C" {
 #define SE_MANAGE_BODY_MAX    (2u + SE_CREDS_DER_MAX)
 #define SE_MANAGE_REQ_MAX \
     (1u + 1u + SE_TROPIC_PIN_SIZE_MAX + 2u + SE_MANAGE_BODY_MAX)
-#define SE_MANAGE_MSG_MAX 80u
+#define SE_MANAGE_MSG_MAX 160u
 #define SE_MANAGE_RSP_MAX (1u + 2u + SE_MANAGE_MSG_MAX)
 
 /**
@@ -104,7 +107,8 @@ uint16_t se_manage_rsp_encode(uint8_t *out, uint16_t cap, uint8_t status,
                               const char *msg);
 
 /**
- * Execute one manage command. PIN is printable ASCII (same bytes as ENCRYPT OTP).
+ * Execute one manage command. KEM INIT takes the printable Tropic PIN (same
+ * bytes as ENCRYPT/DECRYPT).
  * @return SE_MANAGE_* status; @p msg is a short ASCII detail (may be empty).
  */
 uint32_t se_manage_apply(uint8_t cmd, const uint8_t *pin, uint8_t pin_len,
