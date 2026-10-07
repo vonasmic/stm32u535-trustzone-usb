@@ -9,7 +9,8 @@
  * Each try consumes two Tropic M&D slots. Their 32-byte outputs are
  * concatenated as a 64-byte HMAC-SHA384 key so the MCU MAC is a 192-bit
  * PQ primitive (NIST SHA-384). Hardware slots for attempt i are 2i and
- * 2i+1 (silicon: 8 tries → slots 0..15).
+ * 2i+1 (silicon: 7 tries → slots 0..13). Eight SHA-384 rounds do not
+ * fit Tropic FW 1.x R-MEM (444 B slot, 29 B AEAD).
  *
  * SPI/L3 is untrusted. Every setup/check mixes a 32-byte MCU pepper
  * (HKDF from the device-seal key) into PIN||add before computing v and the
@@ -35,7 +36,7 @@ extern "C" {
  * host_libtropic_config.h so tests can exercise exhaustion cheaply.
  */
 #ifndef SE_TROPIC_PIN_ROUNDS
-#define SE_TROPIC_PIN_ROUNDS 8u
+#define SE_TROPIC_PIN_ROUNDS 7u
 #endif
 
 /** Hardware M&D slots consumed per try (S1 || S2 → 64-byte HMAC key). */

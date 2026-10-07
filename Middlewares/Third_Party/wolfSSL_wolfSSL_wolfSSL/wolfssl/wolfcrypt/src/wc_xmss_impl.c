@@ -29,7 +29,19 @@
  *       (https://ece.engr.uvic.ca/~raltawy/SAC2021/9.pdf)
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_WC_XMSS_IMPL_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
+
+#if defined(WOLFSSL_HAVE_XMSS)
+
+#if FIPS_VERSION3_GE(7,0,0)
+    #ifdef USE_WINDOWS_API
+        #pragma code_seg(".fipsA$nh")
+        #pragma const_seg(".fipsB$nh")
+    #endif
+#endif
 
 #include <wolfssl/wolfcrypt/wc_xmss.h>
 #include <wolfssl/wolfcrypt/hash.h>
@@ -40,8 +52,6 @@
     #define WOLFSSL_MISC_INCLUDED
     #include <wolfcrypt/src/misc.c>
 #endif
-
-#if defined(WOLFSSL_HAVE_XMSS)
 
 /* Indices into Hash Address. */
 #define XMSS_ADDR_LAYER                 0
@@ -192,12 +202,16 @@ do {                                                    \
 
 /* Check whether index is valid.
  *
+ * Written as "i >= 2^h - 1" for the same reason as IDX32_INVALID: the
+ * previous "((i + 1) >> (h - 32)) != 0" form wrapped at i == 2^64 - 1, the
+ * exhausted-key marker of an 8-byte index field (the h = 60 parameter sets).
+ *
  * @param [in] i  Index to check.
  * @param [in] c  Count of bytes i was encoded in.
  * @param [in] h  Full tree Height.
  */
 #define IDX64_INVALID(i, c, h)                              \
-    ((w64GetHigh32(w64Add32(i, 1, NULL)) >> ((h) - 32)) != 0)
+    w64GTE(i, w64Sub32(w64ShiftLeft(w64From32(0, 1), h), 1, NULL))
 
 /* Set 64-bit index as hash address value for tree.
  *
@@ -249,12 +263,18 @@ do {                                                    \
 
 /* Check whether 32-bit index is valid.
  *
+ * Written as "i >= 2^h - 1" rather than "((i + 1) >> h) != 0": the two agree
+ * everywhere except at i == 0xFFFFFFFF, where i + 1 wraps to 0 and the shift
+ * form reports the index VALID. 0xFFFFFFFF is exactly the exhausted-key
+ * marker this file writes into a 4-byte index field, so the shift form let a
+ * retired key be signed with again.
+ *
  * @param [in] i  Index to check.
  * @param [in] c  Count of bytes i was encoded in.
  * @param [in] h  Full tree Height.
  */
 #define IDX32_INVALID(i, c, h)                          \
-    ((((i) + 1) >> (h)) != 0)
+    ((i) >= ((((word32)1U) << (h)) - 1U))
 
 /* Set 32-bit index as hash address value for tree.
  *
@@ -476,29 +496,24 @@ do {                                                  \
 #define XMSS_ADDR_TREE_SET_SUBTREE(a, s) \
     XMSS_ADDR_SET_SUBTREE(a, s, WC_XMSS_ADDR_TYPE_TREE)
 
-#ifdef LITTLE_ENDIAN_ORDER
-
 /* Set a byte value into a word of an encoded address.
+ *
+ * The address is a byte array whose alignment is not guaranteed, so encode the
+ * word value with byte-wise stores rather than casting to word32* (which can be
+ * an unaligned access and violates strict aliasing). The word is stored in
+ * network byte order, so the value occupies the least significant (last) byte.
  *
  * @param [in, out] a  Encoded hash address.
  * @param [in]      i  Index of word.
  * @param [in]      b  Byte to set.
  */
-#define XMSS_ADDR_SET_BYTE(a, i, b)     \
-    ((word32*)(a))[i] = (word32)(b) << 24
-
-#else
-
-/* Set a byte value into a word of an encoded address.
- *
- * @param [in, out] a  Encoded hash address.
- * @param [in]      i  Index of word.
- * @param [in]      b  Byte to set.
- */
-#define XMSS_ADDR_SET_BYTE(a, i, b)     \
-    ((word32*)(a))[i] = (b)
-
-#endif /* LITTLE_ENDIAN_ORDER */
+#define XMSS_ADDR_SET_BYTE(a, i, b)             \
+    do {                                        \
+        (a)[(i) * 4 + 0] = 0;                   \
+        (a)[(i) * 4 + 1] = 0;                   \
+        (a)[(i) * 4 + 2] = 0;                   \
+        (a)[(i) * 4 + 3] = (byte)(b);           \
+    } while (0)
 
 /* Convert hash address to bytes.
  *
@@ -700,7 +715,7 @@ static void wc_xmss_chain_hash_sha256_32(XmssState* state, const byte* tmp,
     int ret;
 
     /* Calculate n-byte key - KEY. */
-    ((word32*)addr)[XMSS_ADDR_KEY_MASK] = 0;
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_KEY_MASK, 0);
     /* Copy back state after first 64 bytes. */
     XMSS_SHA256_STATE_RESTORE_DATA(state, addr, WC_XMSS_ADDR_LEN,
         XMSS_HASH_PRF_DATA_LEN_SHA256_32);
@@ -760,7 +775,7 @@ static void wc_xmss_chain_hash_sha256_32(XmssState* state, const byte* tmp,
     byte* bm = key + XMSS_SHA256_32_N;
 
     /* Calculate n-byte key - KEY. */
-    ((word32*)addr)[XMSS_ADDR_KEY_MASK] = 0;
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_KEY_MASK, 0);
     wc_xmss_hash(state, state->prf_buf, XMSS_HASH_PRF_DATA_LEN_SHA256_32, key);
     /* Calculate the n-byte mask. */
     addr[XMSS_ADDR_KEY_MASK * 4 + 3] = 1;
@@ -801,7 +816,7 @@ static void wc_xmss_chain_hash(XmssState* state, const byte* tmp, byte* hash)
     byte* bm = key + params->n;
 
     /* Calculate n-byte key - KEY. */
-    ((word32*)addr)[XMSS_ADDR_KEY_MASK] = 0;
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_KEY_MASK, 0);
     wc_xmss_hash(state, state->prf_buf, XMSS_HASH_PRF_DATA_LEN(params), key);
     /* Calculate n-byte bit mask - BM. */
     addr[XMSS_ADDR_KEY_MASK * 4 + 3] = 1;
@@ -1450,9 +1465,9 @@ static void wc_xmss_wots_get_wots_sk_sha256_32(XmssState* state,
     byte* addr_buf = seed + XMSS_SHA256_32_N;
     int ret;
 
-    ((word32*)addr)[XMSS_ADDR_CHAIN] = 0;
-    ((word32*)addr)[XMSS_ADDR_HASH] = 0;
-    ((word32*)addr)[XMSS_ADDR_KEY_MASK] = 0;
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_CHAIN, 0);
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_HASH, 0);
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_KEY_MASK, 0);
 
     XMSS_PAD_ENC(XMSS_HASH_PADDING_PRF_KEYGEN, pad, XMSS_SHA256_32_PAD_LEN);
     XMEMCPY(s_xmss, sk_seed, XMSS_SHA256_32_N);
@@ -1541,9 +1556,9 @@ static void wc_xmss_wots_get_wots_sk(XmssState* state, const byte* sk_seed,
 #endif /* XMSS_CALL_PRF_KEYGEN */
 
     /* Ensure hash address fields are 0. */
-    ((word32*)addr)[XMSS_ADDR_CHAIN] = 0;
-    ((word32*)addr)[XMSS_ADDR_HASH] = 0;
-    ((word32*)addr)[XMSS_ADDR_KEY_MASK] = 0;
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_CHAIN, 0);
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_HASH, 0);
+    XMSS_ADDR_SET_BYTE(addr, XMSS_ADDR_KEY_MASK, 0);
 
 #ifdef XMSS_CALL_PRF_KEYGEN
     /* Copy the seed and address into PRF keygen message buffer. */
@@ -2545,7 +2560,8 @@ typedef struct BdsState {
     byte*     treeHashNode;
     /* Hashes of nodes to retain - based on K parameter. */
     byte*     retain;
-    /* Next leaf to calculate - max 20 bits. */
+    /* Next leaf to calculate - max 20 bits. Equals 2^sub_h when the subtree
+     * has been completed. */
     word32    next;
     /* Current offset into stack - 0..<subtree height>. */
     word8     offset;
@@ -2704,6 +2720,8 @@ static int wc_xmss_bds_state_load(const XmssState* state, byte* sk,
     const word8 k = params->bds_k;
     const word32 retainLen = XMSS_RETAIN_LEN(k, n);
     int i;
+    int j;
+    word16 used;
 
     /* Skip past standard SK = idx || wots_sk || SK_PRF || root || SEED; */
     sk += params->idx_len + 4 * n;
@@ -2732,6 +2750,32 @@ static int wc_xmss_bds_state_load(const XmssState* state, byte* sk,
         sk += 3;
         bds[i].offset = sk[0];
         sk += 1;
+
+        /* Stack holds at most hs + 1 nodes. */
+        if (bds[i].offset > (word8)(hs + 1)) {
+            return WC_FAILURE;
+        }
+        /* next counts leaves done rather than indexing one: it is only used
+         * as an index while below 2^hs and comes to rest at 2^hs when the
+         * subtree is complete. */
+        if (bds[i].next > ((word32)1U << hs)) {
+            return WC_FAILURE;
+        }
+        /* An update pops one stack node per node a tree hash uses. Tree hash
+         * j completes at height j, so it holds at most j nodes, and all of
+         * them are on the stack. */
+        used = 0;
+        for (j = 0; j < (int)hsk; j++) {
+            word8 tu = (word8)(bds[i].treeHash[j * 4 + 3] & 0x7f);
+
+            if (tu > j) {
+                return WC_FAILURE;
+            }
+            used = (word16)(used + tu);
+        }
+        if (used > bds[i].offset) {
+            return WC_FAILURE;
+        }
     }
 
     if (wots_sigs != NULL) {
@@ -2847,6 +2891,12 @@ static void wc_xmss_bds_next_idx(XmssState* state, BdsState* bds,
 
     /* Top node on Stack has same height t' as node. */
     while ((o >= 1) && (h == height[o - 1])) {
+        /* Nodes below the root are merged here, so a height at or above the
+         * subtree's can only come from a bad stored height chain. */
+        if (h >= hs) {
+            state->ret = WC_FAILURE;
+            return;
+        }
         /* HDSS, Section 4.5, 1: AUTH[h] = v[h][1], h = 0,...,H-1.
          * Cache left node if on authentication path. */
         if ((i >> h) == 1) {
@@ -2871,6 +2921,15 @@ static void wc_xmss_bds_next_idx(XmssState* state, BdsState* bds,
              */
             word32 ro = (word32)(((word32)1U << (hs - 1 - h)) + h - hs +
                                  (((i >> h) - 3) >> 1));
+
+            /* Only the second and later right nodes are retained; a lower
+             * index underflows ro. Checked first so that ro is small enough
+             * for the bound below to be computed. */
+            if (((i >> h) < 3) ||
+                    (ro * n >= XMSS_RETAIN_LEN(params->bds_k, n))) {
+                state->ret = WC_FAILURE;
+                return;
+            }
             XMEMCPY(bds->retain + ro * n, node, n);
         }
 
@@ -2994,9 +3053,16 @@ static void wc_xmss_bds_treehash_update(XmssState* state, BdsState* bds,
     const word8 n = params->n;
     HashAddress addrLocal;
     TreeHash treeHash[1];
-    byte* sp = bds->stack + bds->offset * n;
+    byte* sp;
     byte* node = state->stack + WC_XMSS_MAX_STACK_LEN - n;
     word8 h;
+
+    /* Stack holds at most sub_h + 1 nodes. */
+    if (bds->offset > (word8)(params->sub_h + 1)) {
+        state->ret = WC_FAILURE;
+        return;
+    }
+    sp = bds->stack + bds->offset * n;
 
     /* Get the tree hash data. */
     wc_xmss_bds_state_treehash_get(bds, height, treeHash);
@@ -3015,7 +3081,8 @@ static void wc_xmss_bds_treehash_update(XmssState* state, BdsState* bds,
     h = 0;
 
     /* Top node on Stack has same height t' as node. */
-    while ((treeHash->used > 0) && (h == bds->height[bds->offset - 1])) {
+    while ((treeHash->used > 0) && (bds->offset > 0) &&
+           (h == bds->height[bds->offset - 1])) {
         sp -= n;
         /* Copy from stack to before last calculated node. */
         node -= n;
@@ -3037,6 +3104,11 @@ static void wc_xmss_bds_treehash_update(XmssState* state, BdsState* bds,
         /* Cache node. */
         XMEMCPY(bds->treeHashNode + height * n, node, n);
         treeHash->completed = 1;
+    }
+    else if (bds->offset > params->sub_h) {
+        /* No slot left on the stack to push onto. */
+        state->ret = WC_FAILURE;
+        return;
     }
     else {
         /* Push calculated node onto stack. */
@@ -3143,14 +3215,15 @@ static void wc_xmss_bds_update(XmssState* state, BdsState* bds,
 {
     if (bds->next < ((word32)1U << state->params->sub_h)) {
         const XmssParams* params = state->params;
-        byte* sp = bds->stack + bds->offset * params->n;
+        byte* sp;
         HashAddress addrCopy;
 
         XMSS_ADDR_OTS_SET_SUBTREE(addrCopy, addr);
-        if (bds->height == NULL) {
+        if ((bds->height == NULL) || (bds->offset > params->sub_h)) {
             state->ret = WC_FAILURE;
             return;
         }
+        sp = bds->stack + bds->offset * params->n;
         wc_xmss_bds_next_idx(state, bds, sk_seed, pk_seed, addrCopy, bds->next,
             bds->height, &bds->offset, &sp);
         bds->offset++;
@@ -3717,12 +3790,16 @@ static void xmss_idx_decode(XmssIdx* idx, word8 c, const unsigned char* a)
 
 /* Check whether index is valid.
  *
+ * Written as "i >= 2^h - 1" rather than "((i + 1) >> h) != 0": with XmssIdx
+ * 32 bits wide (WOLFSSL_XMSS_MAX_HEIGHT <= 32) the increment wraps at the
+ * all-ones exhausted-key marker and the shift form reports it valid.
+ *
  * @param [in] i  Index to check.
  * @param [in] h  Full tree Height.
  */
 static int xmss_idx_invalid(XmssIdx i, word8 h)
 {
-    return ((i + 1) >> h) != 0;
+    return i >= ((((XmssIdx)1) << h) - 1);
 }
 
 /* Get tree and leaf index from index.

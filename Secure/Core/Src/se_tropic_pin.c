@@ -25,8 +25,9 @@ struct se_tropic_pin_nvm_t {
     uint8_t t[SE_TROPIC_PIN_HMAC_LEN];  /**< Auth tag HMAC-SHA384(master, 0x00). */
 } __attribute__((packed));
 
-_Static_assert(sizeof(struct se_tropic_pin_nvm_t) <= SE_TROPIC_RMEM_PLAIN_MAX,
-               "PIN NVM exceeds R-MEM plaintext");
+/* FW 1.x slots are 444 B; FW 2.x are 475. Blob is plaintext + AEAD overhead. */
+_Static_assert(sizeof(struct se_tropic_pin_nvm_t) + SE_TROPIC_RMEM_OVERHEAD <= 444u,
+               "PIN NVM must fit Tropic FW 1.x R-MEM slots");
 _Static_assert(SE_TROPIC_PIN_HMAC_LEN == WC_SHA384_DIGEST_SIZE,
                "PIN HMAC width must match SHA-384");
 

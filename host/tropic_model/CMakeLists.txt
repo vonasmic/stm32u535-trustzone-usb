@@ -53,19 +53,38 @@ set(WOLFSSL_SHAKE128 ON CACHE BOOL "" FORCE)
 set(WOLFSSL_SHAKE256 ON CACHE BOOL "" FORCE)
 set(WOLFSSL_TLS13 ON CACHE BOOL "" FORCE)
 set(WOLFSSL_KEYING_MATERIAL ON CACHE BOOL "" FORCE)
+# 5.9.4 builds wc_mldsa.c from this option. Standalone ML-KEM-768 is the
+# firmware TLS group; the 5.9.4 default turns that off.
+set(WOLFSSL_MLDSA ON CACHE BOOL "" FORCE)
+set(WOLFSSL_TLS_NO_MLKEM_STANDALONE OFF CACHE BOOL "" FORCE)
 add_subdirectory("${PATH_DEPS}/wolfssl" "wolfssl")
-# Native ML-DSA-44 (cmake only pulls dilithium.c when WOLFSSL_OQS is on).
-# WOLFSSL_WC_DILITHIUM is required so dilithium.h defines LEVEL5 max sizes.
-target_sources(wolfssl PRIVATE "${PATH_DEPS}/wolfssl/wolfcrypt/src/dilithium.c")
+# Same PQ footprint as Secure/wolfSSL/user_settings.h. Encapsulate stays on:
+# the host tests wrap the device public key.
 target_compile_definitions(wolfssl PUBLIC
     HAVE_DILITHIUM
-    WOLFSSL_WC_DILITHIUM
     WOLFSSL_HAVE_MLDSA
     WOLFSSL_NO_ML_DSA_65
     WOLFSSL_NO_ML_DSA_87
+    WOLFSSL_MLDSA_VERIFY_SMALL_MEM
+    WOLFSSL_MLDSA_VERIFY_SMALLEST_MEM
+    WOLFSSL_MLDSA_SIGN_SMALL_MEM
+    WOLFSSL_MLDSA_MAKE_KEY_SMALL_MEM
+    WOLFSSL_NO_ML_KEM_512
+    WOLFSSL_NO_ML_KEM_1024
+    WOLFSSL_MLKEM_SMALL
+    WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
+    WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM
+    WOLFSSL_TLSX_PQC_MLKEM_STORE_OBJ
+    XMALLOC_USER
     HAVE_KEYING_MATERIAL
     KEEP_PEER_CERT
 )
+# 5.9.4 keeps feature macros private to the library and writes them into
+# options.h. This host builds with WOLFSSL_NO_OPTIONS_H, so republish the
+# same macros. Drop BUILDING_WOLFSSL / HAVE_CONFIG_H; those are library-only.
+get_target_property(_wolf_defs wolfssl COMPILE_DEFINITIONS)
+list(REMOVE_ITEM _wolf_defs BUILDING_WOLFSSL HAVE_CONFIG_H)
+target_compile_definitions(wolfssl INTERFACE ${_wolf_defs} WOLFSSL_NO_OPTIONS_H)
 
 add_subdirectory("${PATH_LIBTROPIC}/cal/wolfcrypt" "wolfcrypt_cal")
 target_sources(tropic PRIVATE ${LT_CAL_SRCS})
@@ -94,6 +113,7 @@ set(SE_TROPIC_RUNTIME
     ${PATH_SECURE_CORE}/Src/se_owner.c
     ${PATH_SECURE_CORE}/Src/se_auth.c
     ${PATH_SECURE_CORE}/Src/se_device_id.c
+    ${PATH_SECURE_CORE}/Src/se_ram.c
     ${PATH_SECURE_CORE}/Src/se_manage.c
     ${PATH_SECURE_CORE}/Src/se_cert_spki.c
     ${PATH_SECURE_CORE}/Src/se_tls_user.c
@@ -118,15 +138,24 @@ target_compile_definitions(se_tropic_host PUBLIC
     WOLFSSL_WC_MLKEM
     WOLFSSL_HAVE_MLDSA
     HAVE_DILITHIUM
-    WOLFSSL_WC_DILITHIUM
     HAVE_KEYING_MATERIAL
     WOLFSSL_SHA3
 )
 # Host uses prod0 SH0 via host_libtropic_config.h (not firmware eng_sample defaults)
 target_compile_options(se_tropic_host PUBLIC
+    -fPIC
     -include${CMAKE_CURRENT_SOURCE_DIR}/host_libtropic_config.h
 )
-target_link_libraries(se_tropic_host PUBLIC tropic)
+# Arena is its own archive so it is scanned after wolfssl.a, which calls
+# XMALLOC/XFREE/XREALLOC (XMALLOC_USER, same as the Secure build).
+add_library(se_mem STATIC ${PATH_SECURE_CORE}/Src/se_xmallo.c)
+target_include_directories(se_mem PUBLIC ${PATH_SECURE_CORE}/Inc)
+target_link_libraries(se_mem PUBLIC wolfssl)
+target_compile_options(se_mem PRIVATE -fPIC)
+target_link_libraries(se_tropic_host PUBLIC tropic se_mem)
+target_link_options(se_tropic_host PUBLIC
+    "LINKER:--script=${CMAKE_CURRENT_SOURCE_DIR}/host_sram4.ld"
+)
 
 ###########################################################################
 # Test executables + CTest via model_runner.py

@@ -245,6 +245,46 @@ void wc_Sha512Free(wc_Sha512* sha);
 
 /*!
     \ingroup SHA
+
+    \brief Resets the sha structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha512Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha Pointer to the sha structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha512 sha;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA512_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha512(&sha)) == 0) {
+        wc_Sha512Update(&sha, data, sizeof(data));
+        wc_Sha512Reset(&sha); /* discard the partially hashed message */
+        wc_Sha512Update(&sha, data2, sizeof(data2));
+        wc_Sha512Final(&sha, hash);
+        wc_Sha512Free(&sha);
+    }
+    \endcode
+
+    \sa wc_InitSha512
+    \sa wc_Sha512Final
+    \sa wc_Sha512Free
+*/
+int wc_Sha512Reset(wc_Sha512* sha);
+
+/*!
+    \ingroup SHA
     \brief Gets SHA512 hash without finalizing.
 
     \return 0 on success
@@ -273,11 +313,15 @@ int wc_Sha512GetHash(wc_Sha512* sha512, byte* hash);
 
     \param src Source SHA512 structure
     \param dst Destination SHA512 structure
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha512 src, dst;
-    int ret = wc_Sha512Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha512(&src);
+    if (ret == 0)
+        ret = wc_Sha512Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha512
@@ -493,6 +537,46 @@ void wc_Sha512_224Free(wc_Sha512* sha);
 
 /*!
     \ingroup SHA
+
+    \brief Resets the sha structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha512_224Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha Pointer to the sha structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha512 sha;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA512_224_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha512_224(&sha)) == 0) {
+        wc_Sha512_224Update(&sha, data, sizeof(data));
+        wc_Sha512_224Reset(&sha); /* discard the partially hashed message */
+        wc_Sha512_224Update(&sha, data2, sizeof(data2));
+        wc_Sha512_224Final(&sha, hash);
+        wc_Sha512_224Free(&sha);
+    }
+    \endcode
+
+    \sa wc_InitSha512_224
+    \sa wc_Sha512_224Final
+    \sa wc_Sha512_224Free
+*/
+int wc_Sha512_224Reset(wc_Sha512* sha);
+
+/*!
+    \ingroup SHA
     \brief Gets SHA512/224 hash without finalizing.
 
     \return 0 on success
@@ -521,11 +605,15 @@ int wc_Sha512_224GetHash(wc_Sha512* sha512, byte* hash);
 
     \param src Source SHA512 structure
     \param dst Destination SHA512 structure
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha512 src, dst;
-    int ret = wc_Sha512_224Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha512_224(&src);
+    if (ret == 0)
+        ret = wc_Sha512_224Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha512_224
@@ -719,6 +807,46 @@ void wc_Sha512_256Free(wc_Sha512* sha);
 
 /*!
     \ingroup SHA
+
+    \brief Resets the sha structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha512_256Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha Pointer to the sha structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha512 sha;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA512_256_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha512_256(&sha)) == 0) {
+        wc_Sha512_256Update(&sha, data, sizeof(data));
+        wc_Sha512_256Reset(&sha); /* discard the partially hashed message */
+        wc_Sha512_256Update(&sha, data2, sizeof(data2));
+        wc_Sha512_256Final(&sha, hash);
+        wc_Sha512_256Free(&sha);
+    }
+    \endcode
+
+    \sa wc_InitSha512_256
+    \sa wc_Sha512_256Final
+    \sa wc_Sha512_256Free
+*/
+int wc_Sha512_256Reset(wc_Sha512* sha);
+
+/*!
+    \ingroup SHA
     \brief Gets SHA512/256 hash without finalizing.
 
     \return 0 on success
@@ -747,11 +875,15 @@ int wc_Sha512_256GetHash(wc_Sha512* sha512, byte* hash);
 
     \param src Source SHA512 structure
     \param dst Destination SHA512 structure
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha512 src, dst;
-    int ret = wc_Sha512_256Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha512_256(&src);
+    if (ret == 0)
+        ret = wc_Sha512_256Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha512_256
@@ -883,6 +1015,46 @@ void wc_Sha384Free(wc_Sha384* sha);
 
 /*!
     \ingroup SHA
+
+    \brief Resets the sha structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha384Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha Pointer to the sha structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha384 sha;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA384_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha384(&sha)) == 0) {
+        wc_Sha384Update(&sha, data, sizeof(data));
+        wc_Sha384Reset(&sha); /* discard the partially hashed message */
+        wc_Sha384Update(&sha, data2, sizeof(data2));
+        wc_Sha384Final(&sha, hash);
+        wc_Sha384Free(&sha);
+    }
+    \endcode
+
+    \sa wc_InitSha384
+    \sa wc_Sha384Final
+    \sa wc_Sha384Free
+*/
+int wc_Sha384Reset(wc_Sha384* sha);
+
+/*!
+    \ingroup SHA
     \brief Gets SHA384 hash without finalizing.
 
     \return 0 on success
@@ -911,11 +1083,15 @@ int wc_Sha384GetHash(wc_Sha384* sha384, byte* hash);
 
     \param src Source SHA384 structure
     \param dst Destination SHA384 structure
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha384 src, dst;
-    int ret = wc_Sha384Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha384(&src);
+    if (ret == 0)
+        ret = wc_Sha384Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha384

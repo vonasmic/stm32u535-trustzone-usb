@@ -19,20 +19,40 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_WC_SLHDSA_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
-#if FIPS_VERSION3_GE(2,0,0)
-    /* set NO_WRAPPERS before headers, use direct internal f()s not wrappers */
-    #define FIPS_NO_WRAPPERS
+#ifdef WOLFSSL_HAVE_SLHDSA
+
+#if FIPS_VERSION3_GE(7,0,0)
+    #ifdef USE_WINDOWS_API
+        #pragma code_seg(".fipsA$ni")
+        #pragma const_seg(".fipsB$ni")
+    #endif
 #endif
 
 #include <wolfssl/wolfcrypt/wc_slhdsa.h>
 
-#ifdef WOLFSSL_HAVE_SLHDSA
+#if FIPS_VERSION3_GE(7,0,0) && defined(WOLFSSL_SLHDSA_VERIFY_ONLY) && \
+    !defined(WOLFSSL_FIPS_DEV)
+    #error "SLH-DSA signing is required for the v7 FIPS module"
+#endif
 
 #include <wolfssl/wolfcrypt/asn.h>
+
+#if FIPS_VERSION3_GE(7,0,0)
+    const unsigned int wolfCrypt_FIPS_slhdsa_ro_sanity[2] =
+                                                     { 0x1a2b3c4d, 0x00000021 };
+    int wolfCrypt_FIPS_SLHDSA_sanity(void)
+    {
+        return 0;
+    }
+#endif
 #include <wolfssl/wolfcrypt/cpuid.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+#include <wolfssl/wolfcrypt/memory.h>
 #ifdef NO_INLINE
     #include <wolfssl/wolfcrypt/misc.h>
 #else
@@ -47,10 +67,13 @@
     #include <wolfssl/wolfcrypt/hmac.h>
 #endif
 
-#ifdef WC_SLHDSA_NO_ASM
+#if defined(WC_SLHDSA_NO_ASM) || defined(WC_SHA3_NO_ASM)
     #undef USE_INTEL_SPEEDUP
     #undef WOLFSSL_ARMASM
     #undef WOLFSSL_RISCV_ASM
+#endif
+#ifdef WOLFSSL_X86_BUILD
+    #undef USE_INTEL_SPEEDUP
 #endif
 
 #if defined(USE_INTEL_SPEEDUP)
@@ -65,20 +88,28 @@ static cpuid_flags_t cpuid_flags = WC_CPUID_INITIALIZER;
 #define SLHDSA_WM1              (SLHDSA_W - 1)
 
 
-#ifndef WOLFSSL_SLHDSA_PARAM_NO_256
+/* The buffer-sizing maxima below (SLHDSA_MAX_N/A/H_M/INDICES_SZ/MD) size
+ * stack/heap buffers that are later written using the true n/a/h_m taken from
+ * key->params at runtime, so they must stay large enough for every compiled-in
+ * parameter set across BOTH hash families. They key off the combined
+ * WC_SLHDSA_ALL_NO_* guards (derived in wc_slhdsa.h), NOT the per-family SHAKE
+ * 'NO' guards, otherwise a SHA2-only build (SHAKE disabled) would collapse the
+ * maxima below the SHA2 parameters' true needs and overflow the FORS/XMSS
+ * 'nodes' buffers. */
+#ifndef WC_SLHDSA_ALL_NO_256
     /* Maximum size of hash output. */
     #define SLHDSA_MAX_N                32
-    #ifndef WOLFSSL_SLHDSA_PARAM_NO_FAST
+    #ifndef WC_SLHDSA_ALL_NO_FAST
         /* Maximum number of indices for FORS signatures. */
         #define SLHDSA_MAX_INDICES_SZ   35
     #else
         /* Maximum number of indices for FORS signatures. */
         #define SLHDSA_MAX_INDICES_SZ   22
     #endif
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192)
+#elif !defined(WC_SLHDSA_ALL_NO_192)
     /* Maximum size of hash output. */
     #define SLHDSA_MAX_N                24
-    #ifndef WOLFSSL_SLHDSA_PARAM_NO_FAST
+    #ifndef WC_SLHDSA_ALL_NO_FAST
         /* Maximum number of indices for FORS signatures. */
         #define SLHDSA_MAX_INDICES_SZ   33
     #else
@@ -88,7 +119,7 @@ static cpuid_flags_t cpuid_flags = WC_CPUID_INITIALIZER;
 #else
     /* Maximum size of hash output. */
     #define SLHDSA_MAX_N                16
-    #ifndef WOLFSSL_SLHDSA_PARAM_NO_FAST
+    #ifndef WC_SLHDSA_ALL_NO_FAST
         /* Maximum number of indices for FORS signatures. */
         #define SLHDSA_MAX_INDICES_SZ   33
     #else
@@ -97,11 +128,11 @@ static cpuid_flags_t cpuid_flags = WC_CPUID_INITIALIZER;
     #endif
 #endif
 
-#ifndef WOLFSSL_SLHDSA_PARAM_NO_SMALL
-    #if !defined(WOLFSSL_SLHDSA_PARAM_NO_256)
+#ifndef WC_SLHDSA_ALL_NO_SMALL
+    #if !defined(WC_SLHDSA_ALL_NO_256)
         /* Maximum number of trees for FORS. */
         #define SLHDSA_MAX_A            14
-    #elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192)
+    #elif !defined(WC_SLHDSA_ALL_NO_192)
         /* Maximum number of trees for FORS. */
         #define SLHDSA_MAX_A            14
     #else
@@ -109,10 +140,10 @@ static cpuid_flags_t cpuid_flags = WC_CPUID_INITIALIZER;
         #define SLHDSA_MAX_A            12
     #endif
 #else
-    #if !defined(WOLFSSL_SLHDSA_PARAM_NO_256)
+    #if !defined(WC_SLHDSA_ALL_NO_256)
         /* Maximum number of trees for FORS. */
         #define SLHDSA_MAX_A            9
-    #elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192)
+    #elif !defined(WC_SLHDSA_ALL_NO_192)
         /* Maximum number of trees for FORS. */
         #define SLHDSA_MAX_A            8
     #else
@@ -121,7 +152,7 @@ static cpuid_flags_t cpuid_flags = WC_CPUID_INITIALIZER;
     #endif
 #endif
 
-#ifndef WOLFSSL_SLHDSA_PARAM_NO_SMALL
+#ifndef WC_SLHDSA_ALL_NO_SMALL
     /* Maximum height of Merkle tree. */
     #define SLHDSA_MAX_H_M              9
 #else
@@ -142,19 +173,19 @@ wc_static_assert(SLHDSA_MAX_MSG_SZ <= 255);
  * declarations and the ForceZero() sizes so they cannot drift. */
 #define SLHDSA_SHAKE_X4_STATE_W     (25 * 4)
 
-#ifndef WOLFSSL_SLHDSA_PARAM_NO_256F
+#ifndef WC_SLHDSA_ALL_NO_256F
     /* Maximum number of bytes to produce from digest of message. */
     #define SLHDSA_MAX_MD               49
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_256S)
+#elif !defined(WC_SLHDSA_ALL_NO_256S)
     /* Maximum number of bytes to produce from digest of message. */
     #define SLHDSA_MAX_MD               47
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192F)
+#elif !defined(WC_SLHDSA_ALL_NO_192F)
     /* Maximum number of bytes to produce from digest of message. */
     #define SLHDSA_MAX_MD               42
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192S)
+#elif !defined(WC_SLHDSA_ALL_NO_192S)
     /* Maximum number of bytes to produce from digest of message. */
     #define SLHDSA_MAX_MD               39
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_128F)
+#elif !defined(WC_SLHDSA_ALL_NO_128F)
     /* Maximum number of bytes to produce from digest of message. */
     #define SLHDSA_MAX_MD               34
 #else
@@ -294,8 +325,12 @@ wc_static_assert(SLHDSA_MAX_MSG_SZ <= 255);
  */
 
 /* HashAddress type. */
+#ifndef WC_HASHADDRESS_TYPE_DEFINED
 typedef word32 HashAddress[8];
+    #define WC_HASHADDRESS_TYPE_DEFINED
+#endif
 
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 /* Encode a HashAddress.
  *
  * @param [in]  adrs     HashAddress to encode.
@@ -320,6 +355,7 @@ static void HA_Encode(const word32* adrs, byte* address)
     }
 #endif
 }
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 /******************************************************************************
  * Index Tree - 3 x 32-bit words
@@ -427,6 +463,11 @@ static const SlhDsaParameters SlhDsaParams[] =
 /******************************************************************************
  * Hashes
  ******************************************************************************/
+
+/* Everything from here to the SLH-DSA API section is the software
+ * implementation: hashes, WOTS+, XMSS, the hypertree and FORS. Under
+ * WOLF_CRYPTO_CB_ONLY_SLHDSA the registered device performs all of it. */
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 
 #ifndef WOLFSSL_WC_SLHDSA_SMALL
 /* Hash three data elements with SHAKE-256.
@@ -992,6 +1033,11 @@ static int slhdsakey_hash_prf_sha2(SlhDsaKey* key, const byte* pk_seed,
     }
     if (ret == 0) {
         ret = wc_Sha256Final(&key->hash.sha2.sha256, digest);
+        /* digest now holds the secret PRF output (WOTS+/FORS key); register it
+         * before it is copied out so any later exit is covered. */
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Add("slhdsa prf digest", digest, sizeof(digest));
+#endif
     }
     if (ret == 0) {
         XMEMCPY(hash, digest, n);
@@ -999,6 +1045,9 @@ static int slhdsakey_hash_prf_sha2(SlhDsaKey* key, const byte* pk_seed,
 
     /* digest holds the secret PRF output (WOTS+/FORS key). */
     ForceZero(digest, sizeof(digest));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(digest, sizeof(digest));
+#endif
     return ret;
 }
 #endif /* !WOLFSSL_SLHDSA_VERIFY_ONLY */
@@ -1701,7 +1750,10 @@ static void slhdsakey_base_2b(const byte* x, byte b, byte outLen, word16* baseb)
     int j;
     int i = 0;
     int bits = 0;
-    int total = 0;
+    /* total accumulates unmasked via << 8 and must be unsigned: a signed
+     * type overflows from the 4th consumed byte (UB). High bits are
+     * discarded by mask, so the output is unaffected. */
+    word32 total = 0;
     word16 mask = (word16)((1 << b) - 1);
 
     for (j = 0; j < outLen; j++) {
@@ -1807,14 +1859,14 @@ do {                                                                        \
  */
 #define SHAKE256_SET_HASH_X4_16(state, hash)                                \
 do {                                                                        \
-    (state)[24] = ((word64*)((hash) + 0 * 16))[0];                          \
-    (state)[25] = ((word64*)((hash) + 1 * 16))[0];                          \
-    (state)[26] = ((word64*)((hash) + 2 * 16))[0];                          \
-    (state)[27] = ((word64*)((hash) + 3 * 16))[0];                          \
-    (state)[28] = ((word64*)((hash) + 0 * 16))[1];                          \
-    (state)[29] = ((word64*)((hash) + 1 * 16))[1];                          \
-    (state)[30] = ((word64*)((hash) + 2 * 16))[1];                          \
-    (state)[31] = ((word64*)((hash) + 3 * 16))[1];                          \
+    (state)[24] = readUnalignedWord64((hash) + 0 * 16 + 0 * 8);             \
+    (state)[25] = readUnalignedWord64((hash) + 1 * 16 + 0 * 8);             \
+    (state)[26] = readUnalignedWord64((hash) + 2 * 16 + 0 * 8);             \
+    (state)[27] = readUnalignedWord64((hash) + 3 * 16 + 0 * 8);             \
+    (state)[28] = readUnalignedWord64((hash) + 0 * 16 + 1 * 8);             \
+    (state)[29] = readUnalignedWord64((hash) + 1 * 16 + 1 * 8);             \
+    (state)[30] = readUnalignedWord64((hash) + 2 * 16 + 1 * 8);             \
+    (state)[31] = readUnalignedWord64((hash) + 3 * 16 + 1 * 8);             \
 } while (0)
 
 /* Get the four SHAKE-256 16-byte hash results.
@@ -1824,14 +1876,14 @@ do {                                                                        \
  */
 #define SHAKE256_GET_HASH_X4_16(state, hash)                                \
 do {                                                                        \
-    ((word64*)((hash) + 0 * 16))[0] = (state)[0];                           \
-    ((word64*)((hash) + 1 * 16))[0] = (state)[1];                           \
-    ((word64*)((hash) + 2 * 16))[0] = (state)[2];                           \
-    ((word64*)((hash) + 3 * 16))[0] = (state)[3];                           \
-    ((word64*)((hash) + 0 * 16))[1] = (state)[4];                           \
-    ((word64*)((hash) + 1 * 16))[1] = (state)[5];                           \
-    ((word64*)((hash) + 2 * 16))[1] = (state)[6];                           \
-    ((word64*)((hash) + 3 * 16))[1] = (state)[7];                           \
+    writeUnalignedWord64((hash) + 0 * 16 + 0 * 8, (state)[0]);              \
+    writeUnalignedWord64((hash) + 1 * 16 + 0 * 8, (state)[1]);              \
+    writeUnalignedWord64((hash) + 2 * 16 + 0 * 8, (state)[2]);              \
+    writeUnalignedWord64((hash) + 3 * 16 + 0 * 8, (state)[3]);              \
+    writeUnalignedWord64((hash) + 0 * 16 + 1 * 8, (state)[4]);              \
+    writeUnalignedWord64((hash) + 1 * 16 + 1 * 8, (state)[5]);              \
+    writeUnalignedWord64((hash) + 2 * 16 + 1 * 8, (state)[6]);              \
+    writeUnalignedWord64((hash) + 3 * 16 + 1 * 8, (state)[7]);              \
 } while (0)
 #endif
 
@@ -1868,18 +1920,18 @@ do {                                                                        \
  */
 #define SHAKE256_SET_HASH_X4_24(state, hash)                                \
 do {                                                                        \
-    (state)[28] = ((word64*)((hash) + 0 * 24))[0];                          \
-    (state)[29] = ((word64*)((hash) + 1 * 24))[0];                          \
-    (state)[30] = ((word64*)((hash) + 2 * 24))[0];                          \
-    (state)[31] = ((word64*)((hash) + 3 * 24))[0];                          \
-    (state)[32] = ((word64*)((hash) + 0 * 24))[1];                          \
-    (state)[33] = ((word64*)((hash) + 1 * 24))[1];                          \
-    (state)[34] = ((word64*)((hash) + 2 * 24))[1];                          \
-    (state)[35] = ((word64*)((hash) + 3 * 24))[1];                          \
-    (state)[36] = ((word64*)((hash) + 0 * 24))[2];                          \
-    (state)[37] = ((word64*)((hash) + 1 * 24))[2];                          \
-    (state)[38] = ((word64*)((hash) + 2 * 24))[2];                          \
-    (state)[39] = ((word64*)((hash) + 3 * 24))[2];                          \
+    (state)[28] = readUnalignedWord64((hash) + 0 * 24 + 0 * 8);             \
+    (state)[29] = readUnalignedWord64((hash) + 1 * 24 + 0 * 8);             \
+    (state)[30] = readUnalignedWord64((hash) + 2 * 24 + 0 * 8);             \
+    (state)[31] = readUnalignedWord64((hash) + 3 * 24 + 0 * 8);             \
+    (state)[32] = readUnalignedWord64((hash) + 0 * 24 + 1 * 8);             \
+    (state)[33] = readUnalignedWord64((hash) + 1 * 24 + 1 * 8);             \
+    (state)[34] = readUnalignedWord64((hash) + 2 * 24 + 1 * 8);             \
+    (state)[35] = readUnalignedWord64((hash) + 3 * 24 + 1 * 8);             \
+    (state)[36] = readUnalignedWord64((hash) + 0 * 24 + 2 * 8);             \
+    (state)[37] = readUnalignedWord64((hash) + 1 * 24 + 2 * 8);             \
+    (state)[38] = readUnalignedWord64((hash) + 2 * 24 + 2 * 8);             \
+    (state)[39] = readUnalignedWord64((hash) + 3 * 24 + 2 * 8);             \
 } while (0)
 
 /* Get the four SHAKE-256 24-byte (hash) results.
@@ -1889,18 +1941,18 @@ do {                                                                        \
  */
 #define SHAKE256_GET_HASH_X4_24(state, hash)                                \
 do {                                                                        \
-    ((word64*)((hash) + 0 * 24))[0] = (state)[ 0];                          \
-    ((word64*)((hash) + 1 * 24))[0] = (state)[ 1];                          \
-    ((word64*)((hash) + 2 * 24))[0] = (state)[ 2];                          \
-    ((word64*)((hash) + 3 * 24))[0] = (state)[ 3];                          \
-    ((word64*)((hash) + 0 * 24))[1] = (state)[ 4];                          \
-    ((word64*)((hash) + 1 * 24))[1] = (state)[ 5];                          \
-    ((word64*)((hash) + 2 * 24))[1] = (state)[ 6];                          \
-    ((word64*)((hash) + 3 * 24))[1] = (state)[ 7];                          \
-    ((word64*)((hash) + 0 * 24))[2] = (state)[ 8];                          \
-    ((word64*)((hash) + 1 * 24))[2] = (state)[ 9];                          \
-    ((word64*)((hash) + 2 * 24))[2] = (state)[10];                          \
-    ((word64*)((hash) + 3 * 24))[2] = (state)[11];                          \
+    writeUnalignedWord64((hash) + 0 * 24 + 0 * 8, (state)[ 0]);             \
+    writeUnalignedWord64((hash) + 1 * 24 + 0 * 8, (state)[ 1]);             \
+    writeUnalignedWord64((hash) + 2 * 24 + 0 * 8, (state)[ 2]);             \
+    writeUnalignedWord64((hash) + 3 * 24 + 0 * 8, (state)[ 3]);             \
+    writeUnalignedWord64((hash) + 0 * 24 + 1 * 8, (state)[ 4]);             \
+    writeUnalignedWord64((hash) + 1 * 24 + 1 * 8, (state)[ 5]);             \
+    writeUnalignedWord64((hash) + 2 * 24 + 1 * 8, (state)[ 6]);             \
+    writeUnalignedWord64((hash) + 3 * 24 + 1 * 8, (state)[ 7]);             \
+    writeUnalignedWord64((hash) + 0 * 24 + 2 * 8, (state)[ 8]);             \
+    writeUnalignedWord64((hash) + 1 * 24 + 2 * 8, (state)[ 9]);             \
+    writeUnalignedWord64((hash) + 2 * 24 + 2 * 8, (state)[10]);             \
+    writeUnalignedWord64((hash) + 3 * 24 + 2 * 8, (state)[11]);             \
 } while (0)
 #endif
 
@@ -1939,22 +1991,22 @@ do {                                                                        \
  */
 #define SHAKE256_SET_HASH_X4_32(state, hash)                                \
 do {                                                                        \
-    (state)[32] = ((word64*)((hash) + 0 * 32))[0];                          \
-    (state)[33] = ((word64*)((hash) + 1 * 32))[0];                          \
-    (state)[34] = ((word64*)((hash) + 2 * 32))[0];                          \
-    (state)[35] = ((word64*)((hash) + 3 * 32))[0];                          \
-    (state)[36] = ((word64*)((hash) + 0 * 32))[1];                          \
-    (state)[37] = ((word64*)((hash) + 1 * 32))[1];                          \
-    (state)[38] = ((word64*)((hash) + 2 * 32))[1];                          \
-    (state)[39] = ((word64*)((hash) + 3 * 32))[1];                          \
-    (state)[40] = ((word64*)((hash) + 0 * 32))[2];                          \
-    (state)[41] = ((word64*)((hash) + 1 * 32))[2];                          \
-    (state)[42] = ((word64*)((hash) + 2 * 32))[2];                          \
-    (state)[43] = ((word64*)((hash) + 3 * 32))[2];                          \
-    (state)[44] = ((word64*)((hash) + 0 * 32))[3];                          \
-    (state)[45] = ((word64*)((hash) + 1 * 32))[3];                          \
-    (state)[46] = ((word64*)((hash) + 2 * 32))[3];                          \
-    (state)[47] = ((word64*)((hash) + 3 * 32))[3];                          \
+    (state)[32] = readUnalignedWord64((hash) + 0 * 32 + 0 * 8);             \
+    (state)[33] = readUnalignedWord64((hash) + 1 * 32 + 0 * 8);             \
+    (state)[34] = readUnalignedWord64((hash) + 2 * 32 + 0 * 8);             \
+    (state)[35] = readUnalignedWord64((hash) + 3 * 32 + 0 * 8);             \
+    (state)[36] = readUnalignedWord64((hash) + 0 * 32 + 1 * 8);             \
+    (state)[37] = readUnalignedWord64((hash) + 1 * 32 + 1 * 8);             \
+    (state)[38] = readUnalignedWord64((hash) + 2 * 32 + 1 * 8);             \
+    (state)[39] = readUnalignedWord64((hash) + 3 * 32 + 1 * 8);             \
+    (state)[40] = readUnalignedWord64((hash) + 0 * 32 + 2 * 8);             \
+    (state)[41] = readUnalignedWord64((hash) + 1 * 32 + 2 * 8);             \
+    (state)[42] = readUnalignedWord64((hash) + 2 * 32 + 2 * 8);             \
+    (state)[43] = readUnalignedWord64((hash) + 3 * 32 + 2 * 8);             \
+    (state)[44] = readUnalignedWord64((hash) + 0 * 32 + 3 * 8);             \
+    (state)[45] = readUnalignedWord64((hash) + 1 * 32 + 3 * 8);             \
+    (state)[46] = readUnalignedWord64((hash) + 2 * 32 + 3 * 8);             \
+    (state)[47] = readUnalignedWord64((hash) + 3 * 32 + 3 * 8);             \
 } while (0)
 
 /* Get the four SHAKE-256 32-byte hash results.
@@ -1964,22 +2016,22 @@ do {                                                                        \
  */
 #define SHAKE256_GET_HASH_X4_32(state, hash)                                \
 do {                                                                        \
-    ((word64*)((hash) + 0 * 32))[0] = (state)[ 0];                          \
-    ((word64*)((hash) + 1 * 32))[0] = (state)[ 1];                          \
-    ((word64*)((hash) + 2 * 32))[0] = (state)[ 2];                          \
-    ((word64*)((hash) + 3 * 32))[0] = (state)[ 3];                          \
-    ((word64*)((hash) + 0 * 32))[1] = (state)[ 4];                          \
-    ((word64*)((hash) + 1 * 32))[1] = (state)[ 5];                          \
-    ((word64*)((hash) + 2 * 32))[1] = (state)[ 6];                          \
-    ((word64*)((hash) + 3 * 32))[1] = (state)[ 7];                          \
-    ((word64*)((hash) + 0 * 32))[2] = (state)[ 8];                          \
-    ((word64*)((hash) + 1 * 32))[2] = (state)[ 9];                          \
-    ((word64*)((hash) + 2 * 32))[2] = (state)[10];                          \
-    ((word64*)((hash) + 3 * 32))[2] = (state)[11];                          \
-    ((word64*)((hash) + 0 * 32))[3] = (state)[12];                          \
-    ((word64*)((hash) + 1 * 32))[3] = (state)[13];                          \
-    ((word64*)((hash) + 2 * 32))[3] = (state)[14];                          \
-    ((word64*)((hash) + 3 * 32))[3] = (state)[15];                          \
+    writeUnalignedWord64((hash) + 0 * 32 + 0 * 8, (state)[ 0]);             \
+    writeUnalignedWord64((hash) + 1 * 32 + 0 * 8, (state)[ 1]);             \
+    writeUnalignedWord64((hash) + 2 * 32 + 0 * 8, (state)[ 2]);             \
+    writeUnalignedWord64((hash) + 3 * 32 + 0 * 8, (state)[ 3]);             \
+    writeUnalignedWord64((hash) + 0 * 32 + 1 * 8, (state)[ 4]);             \
+    writeUnalignedWord64((hash) + 1 * 32 + 1 * 8, (state)[ 5]);             \
+    writeUnalignedWord64((hash) + 2 * 32 + 1 * 8, (state)[ 6]);             \
+    writeUnalignedWord64((hash) + 3 * 32 + 1 * 8, (state)[ 7]);             \
+    writeUnalignedWord64((hash) + 0 * 32 + 2 * 8, (state)[ 8]);             \
+    writeUnalignedWord64((hash) + 1 * 32 + 2 * 8, (state)[ 9]);             \
+    writeUnalignedWord64((hash) + 2 * 32 + 2 * 8, (state)[10]);             \
+    writeUnalignedWord64((hash) + 3 * 32 + 2 * 8, (state)[11]);             \
+    writeUnalignedWord64((hash) + 0 * 32 + 3 * 8, (state)[12]);             \
+    writeUnalignedWord64((hash) + 1 * 32 + 3 * 8, (state)[13]);             \
+    writeUnalignedWord64((hash) + 2 * 32 + 3 * 8, (state)[14]);             \
+    writeUnalignedWord64((hash) + 3 * 32 + 3 * 8, (state)[15]);             \
 } while (0)
 #endif
 
@@ -2076,10 +2128,10 @@ static void slhdsakey_shake256_get_hash_x4(const word64* state, byte* hash,
     int i;
 
     for (i = 0; i < (n / 8); i++) {
-        ((word64*)(hash + 0 * n))[i] = state[4 * i + 0];
-        ((word64*)(hash + 1 * n))[i] = state[4 * i + 1];
-        ((word64*)(hash + 2 * n))[i] = state[4 * i + 2];
-        ((word64*)(hash + 3 * n))[i] = state[4 * i + 3];
+        writeUnalignedWord64(hash + 0 * n + i * 8, state[4 * i + 0]);
+        writeUnalignedWord64(hash + 1 * n + i * 8, state[4 * i + 1]);
+        writeUnalignedWord64(hash + 2 * n + i * 8, state[4 * i + 2]);
+        writeUnalignedWord64(hash + 3 * n + i * 8, state[4 * i + 3]);
     }
 }
 
@@ -3278,6 +3330,8 @@ static int slhdsakey_wots_pkgen_chain_c(SlhDsaKey* key, const byte* sk_seed,
 
     WC_ALLOC_VAR_EX(sk, byte, (SLHDSA_MAX_MSG_SZ + 3) * SLHDSA_MAX_N,
         key->heap, DYNAMIC_TYPE_SLHDSA, ret = MEMORY_E);
+    if (ret == 0)
+        XMEMSET(sk, 0, (SLHDSA_MAX_MSG_SZ + 3) * SLHDSA_MAX_N);
     if (ret == 0) {
         /* Step 4. len consecutive addresses. */
         for (i = 0; i < len; i++) {
@@ -3339,7 +3393,13 @@ static int slhdsakey_wots_pkgen_chain_c(SlhDsaKey* key, const byte* sk_seed,
     /* On error sk still holds a secret WOTS+ leaf; on success it is overwritten
      * with a public chain value. */
     if (ret != 0) {
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Add("slhdsa wots sk", sk, n);
+#endif
         ForceZero(sk, n);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Check(sk, n);
+#endif
     }
 #endif
 
@@ -3842,6 +3902,12 @@ static int slhdsakey_wots_sign(SlhDsaKey* key, const byte* m,
     {
         byte sk[SLHDSA_MAX_N];
 
+        /* sk will hold secret WOTS+ leaves; baseline-zero and register it up
+         * front (block has a single exit through the ForceZero below). */
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        XMEMSET(sk, 0, n);
+        wc_MemZero_Add("slhdsa wots sk", sk, n);
+#endif
         /* Step 11: For each value of msg. */
         for (i = 0; i < len; i++) {
             /* Step 12: Set chain address for WOTS PRF. */
@@ -3866,6 +3932,9 @@ static int slhdsakey_wots_sign(SlhDsaKey* key, const byte* m,
 
         /* sk held the secret WOTS+ leaf. */
         ForceZero(sk, n);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Check(sk, n);
+#endif
     }
 
     return ret;
@@ -5145,10 +5214,10 @@ static int slhdsakey_hash_f_ti_x4(const byte* pk_seed, byte* addr, byte* node,
         o = slhdsakey_shake256_set_seed_ha_x4(state, pk_seed, addr, n);
         SHAKE256_SET_TREE_INDEX(state, o, ti);
         for (i = 0; i < n / 8; i++) {
-            state[o + 0] = ((word64*)(node + 0 * n))[i];
-            state[o + 1] = ((word64*)(node + 1 * n))[i];
-            state[o + 2] = ((word64*)(node + 2 * n))[i];
-            state[o + 3] = ((word64*)(node + 3 * n))[i];
+            state[o + 0] = readUnalignedWord64(node + 0 * n + i * 8);
+            state[o + 1] = readUnalignedWord64(node + 1 * n + i * 8);
+            state[o + 2] = readUnalignedWord64(node + 2 * n + i * 8);
+            state[o + 3] = readUnalignedWord64(node + 3 * n + i * 8);
             o += 4;
         }
         SHAKE256_SET_END_X4(state, o);
@@ -5202,10 +5271,10 @@ static int slhdsakey_hash_h_ti_x4(const byte* pk_seed, byte* addr,
         o = slhdsakey_shake256_set_seed_ha_x4(state, pk_seed, addr, n);
         SHAKE256_SET_TREE_INDEX(state, o, ti);
         for (i = 0; i < 2 * n / 8; i++) {
-            state[o + 0] = ((const word64*)(m + 0 * n))[i];
-            state[o + 1] = ((const word64*)(m + 2 * n))[i];
-            state[o + 2] = ((const word64*)(m + 4 * n))[i];
-            state[o + 3] = ((const word64*)(m + 6 * n))[i];
+            state[o + 0] = readUnalignedWord64(m + 0 * n + i * 8);
+            state[o + 1] = readUnalignedWord64(m + 2 * n + i * 8);
+            state[o + 2] = readUnalignedWord64(m + 4 * n + i * 8);
+            state[o + 3] = readUnalignedWord64(m + 6 * n + i * 8);
             o += 4;
         }
         SHAKE256_SET_END_X4(state, o);
@@ -5911,7 +5980,7 @@ static int slhdsakey_fors_sign(SlhDsaKey* key, const byte* md,
     #if defined(USE_INTEL_SPEEDUP) && !defined(WOLFSSL_WC_SLHDSA_SMALL)
         if (!SLHDSA_IS_SHA2(key->params->param) &&
                 IS_INTEL_AVX2(cpuid_flags) &&
-                CAN_SAVE_VECTOR_REGISTERS()) {
+                (SAVE_VECTOR_REGISTERS2() == 0)) {
             word16 idx = indices[i];
             /* Step 5: For each bit: */
             for (j = 0; j < a; j++) {
@@ -5929,6 +5998,7 @@ static int slhdsakey_fors_sign(SlhDsaKey* key, const byte* md,
                 /* Update tree index. */
                 idx >>= 1;
             }
+            RESTORE_VECTOR_REGISTERS();
         }
         else
     #endif
@@ -5999,10 +6069,10 @@ static int slhdsakey_hash_f_ti4_x4(const byte* pk_seed, byte* addr,
         o = slhdsakey_shake256_set_seed_ha_x4(state, pk_seed, addr, n);
         SHAKE256_SET_TREE_INDEX_IDX(state, o, ti);
         for (i = 0; i < n / 8; i++) {
-            state[o + 0] = ((const word64*)(sig_fors + 0 * so * n))[i];
-            state[o + 1] = ((const word64*)(sig_fors + 1 * so * n))[i];
-            state[o + 2] = ((const word64*)(sig_fors + 2 * so * n))[i];
-            state[o + 3] = ((const word64*)(sig_fors + 3 * so * n))[i];
+            state[o + 0] = readUnalignedWord64(sig_fors + 0 * so * n + i * 8);
+            state[o + 1] = readUnalignedWord64(sig_fors + 1 * so * n + i * 8);
+            state[o + 2] = readUnalignedWord64(sig_fors + 2 * so * n + i * 8);
+            state[o + 3] = readUnalignedWord64(sig_fors + 3 * so * n + i * 8);
             o += 4;
         }
         SHAKE256_SET_END_X4(state, o);
@@ -6064,11 +6134,12 @@ static int slhdsakey_hash_h_2_x4(const byte* pk_seed, byte* addr, byte* node,
         for (i = 0; i < n / 8; i++) {
             for (j = 0; j < 4; j++) {
                 if (bit[j] == 0) {
-                    state[o + j] = ((const word64*)(node + j * n))[i];
+                    state[o + j] = readUnalignedWord64(node + j * n + i * 8);
                 }
                 else {
                     state[o + j] =
-                        ((const word64*)(sig_fors + j * (word32)so * n))[i];
+                        readUnalignedWord64(sig_fors + j *
+                                        (word32)so * n + i * 8);
                 }
             }
             o += 4;
@@ -6077,10 +6148,11 @@ static int slhdsakey_hash_h_2_x4(const byte* pk_seed, byte* addr, byte* node,
             for (j = 0; j < 4; j++) {
                 if (bit[j] == 0) {
                     state[o + j] =
-                        ((const word64*)(sig_fors + j * (word32)so * n))[i];
+                        readUnalignedWord64(sig_fors + j *
+                                        (word32)so * n + i * 8);
                 }
                 else {
-                    state[o + j] = ((const word64*)(node + j * n))[i];
+                    state[o + j] = readUnalignedWord64(node + j * n + i * 8);
                 }
             }
             o += 4;
@@ -6617,6 +6689,8 @@ static int slhdsakey_fors_pk_from_sig(SlhDsaKey* key, const byte* sig_fors,
     return ret;
 }
 
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
+
 /******************************************************************************
  * SLH-DSA API
  ******************************************************************************/
@@ -6904,6 +6978,7 @@ void wc_SlhDsaKey_Free(SlhDsaKey* key)
  * @param [out] t     Tree index as 3 32-bit integers.
  * @param [out] l     Tree leaf index.
  */
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 static void slhdsakey_set_ha_from_md(SlhDsaKey* key, const byte* md,
     HashAddress adrs, word32* t, word32* l)
 {
@@ -6939,6 +7014,7 @@ static void slhdsakey_set_ha_from_md(SlhDsaKey* key, const byte* md,
     /* Step 13/16: Set key pair address. */
     HA_SetKeyPairAddress(adrs, *l);
 }
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 #ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
 /* Generate an SLH-DSA key with a random number generator.
@@ -6987,6 +7063,11 @@ int wc_SlhDsaKey_MakeKey(SlhDsaKey* key, WC_RNG* rng)
     }
 #endif
 
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
     if (ret == 0) {
         /* Steps 1-5: Generate the 3 random hashes. */
         ret = wc_RNG_GenerateBlock(rng, key->sk, 3U * key->params->n);
@@ -6998,9 +7079,56 @@ int wc_SlhDsaKey_MakeKey(SlhDsaKey* key, WC_RNG* rng)
         ret = wc_SlhDsaKey_MakeKeyWithRandom(key, key->sk, n, key->sk + n, n,
             key->sk + 2 * n, n);
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
+
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
+/* Compute the public key root from the seeds already staged in the key.
+ *
+ * FIPS 205, Section 9.1, Algorithm 18, steps 1 to 3.
+ *
+ * Deliberately does not dispatch to a crypto callback. Callers that must stay
+ * in software use this directly: wc_SlhDsaKey_CheckKey recomputes the root to
+ * compare against the stored one, and dispatching there would ask the device
+ * to generate a key instead of validating the one it was given.
+ *
+ * @param [in, out]  key  SLH-DSA key with SK.seed, SK.prf and PK.seed set.
+ * @return  0 on success.
+ * @return  MEMORY_E on dynamic memory allocation failure.
+ * @return  Digest error return code on failure.
+ */
+static int slhdsakey_compute_root(SlhDsaKey* key)
+{
+    int         ret = 0;
+    byte        n   = key->params->n;
+    HashAddress adrs;
+
+#ifdef WOLFSSL_SLHDSA_SHA2
+    /* Pre-compute SHA2 midstates now that PK.seed is set. */
+    if (SLHDSA_IS_SHA2(key->params->param)) {
+        ret = slhdsakey_precompute_sha2_midstates(key);
+    }
+    if (ret != 0) {
+        return ret;
+    }
+#endif
+
+    /* Step 1: Set address to all zeroes. */
+    HA_Init(adrs);
+    /* Step 2: Set the address layer to the top of the subtree. */
+    HA_SetLayerAddress(adrs, key->params->d - 1);
+    /* Step 3: Compute the root node. */
+    ret = slhdsakey_xmss_node(key, key->sk, 0, key->params->h_m,
+        key->sk + 2 * n, adrs, &key->sk[3 * n]);
+    if (ret == 0) {
+        key->flags = WC_SLHDSA_FLAG_BOTH_KEYS;
+    }
+
+    return ret;
+}
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 /* Generate an SLH-DSA key pair.
  *
@@ -7026,6 +7154,8 @@ int wc_SlhDsaKey_MakeKey(SlhDsaKey* key, WC_RNG* rng)
  * @return  BAD_FUNC_ARG when pk_seed is NULL or length is not n.
  * @return  MEMORY_E on dynamic memory allocation failure.
  * @return  SHAKE-256 error return code on digest failure.
+ * @return  SLH_DSA_PCT_E when the key pair fails its consistency test.  The
+ *          key is freed in that case and must be re-initialised before reuse.
  */
 int wc_SlhDsaKey_MakeKeyWithRandom(SlhDsaKey* key, const byte* sk_seed,
     word32 sk_seed_len, const byte* sk_prf, word32 sk_prf_len,
@@ -7051,7 +7181,6 @@ int wc_SlhDsaKey_MakeKeyWithRandom(SlhDsaKey* key, const byte* sk_seed,
     }
     else {
         byte n = key->params->n;
-        HashAddress adrs;
 
         /* Step 4: Copy the seeds into the key if they didn't come from the key.
          */
@@ -7060,28 +7189,85 @@ int wc_SlhDsaKey_MakeKeyWithRandom(SlhDsaKey* key, const byte* sk_seed,
             XMEMCPY(key->sk +     n, sk_prf , n);
             XMEMCPY(key->sk + 2 * n, pk_seed, n);
         }
+    }
 
-#ifdef WOLFSSL_SLHDSA_SHA2
-        /* Pre-compute SHA2 midstates now that PK.seed is set. */
-        if (SLHDSA_IS_SHA2(key->params->param)) {
-            ret = slhdsakey_precompute_sha2_midstates(key);
-        }
-        if (ret != 0) {
-            return ret;
-        }
-#endif
-
-        /* Step 1: Set address to all zeroes. */
-        HA_Init(adrs);
-        /* Step 2: Set the address layer to the top of the subtree. */
-        HA_SetLayerAddress(adrs, key->params->d - 1);
-        /* Step 3: Compute the root node. */
-        ret = slhdsakey_xmss_node(key, sk_seed, 0, key->params->h_m, pk_seed,
-             adrs, &key->sk[3 * n]);
-        if (ret == 0) {
-            key->flags = WC_SLHDSA_FLAG_BOTH_KEYS;
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            /* The seeds are now staged in the key as the contiguous
+             * SK.seed || SK.prf || PK.seed the callback expects. */
+            ret = wc_CryptoCb_MakePqcSignatureKeyEx(NULL,
+                WC_PQC_SIG_TYPE_SLHDSA, (int)key->params->param, key->sk,
+                3U * key->params->n, key);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE))
+                return ret;
+            /* fall-through when unavailable */
+            ret = 0;
         }
     }
+#endif
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        /* The seeds are staged in the key above, so the shared helper works
+         * from key->sk for both this caller and the CheckKey fallback. */
+        ret = slhdsakey_compute_root(key);
+    }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
+
+/* ML-KEM, ML-DSA, SLH-DSA, LMS and XMSS were never FIPS approved before the v7
+ * module, so this test stays gated on v7 and must never be widened to plain
+ * HAVE_FIPS.  WOLFSSL_VALIDATE_SLHDSA_KEYGEN opts a non-FIPS build in, off by
+ * default. */
+#if FIPS_VERSION3_GE(7,0,0) || defined(WOLFSSL_VALIDATE_SLHDSA_KEYGEN)
+    /* Test every new key pair.  ISO/IEC 19790:2012 sec 7.10.3.3.  Here
+     * because every generation path reaches this function.
+     *
+     * PK.SEED is the check FIPS 140-3 IG 10.3.A Additional Comment 1 names,
+     * but it always passes here: the public key is a slice of the private
+     * one.  So the root recompute does the real work, at a tenth the cost of
+     * signing and verifying. */
+    if (ret == 0) {
+        byte        n = key->params->n;
+        byte        pct_root[SLHDSA_MAX_N];
+        byte        pct_pub[2 * SLHDSA_MAX_N];
+        word32      pct_pubLen = (word32)(n * 2);
+        HashAddress pct_adrs;
+
+        /* The key identifier the IG names. */
+        ret = wc_SlhDsaKey_ExportPublic(key, pct_pub, &pct_pubLen);
+        if ((ret == 0) && (XMEMCMP(pct_pub, key->sk + 2 * n, n) != 0)) {
+            ret = SLH_DSA_PCT_E;
+        }
+
+        /* The public root, recomputed from the private seed. */
+        if (ret == 0) {
+            HA_Init(pct_adrs);
+            HA_SetLayerAddress(pct_adrs, key->params->d - 1);
+            ret = slhdsakey_xmss_node(key, key->sk, 0, key->params->h_m,
+                    key->sk + 2 * n, pct_adrs, pct_root);
+            if ((ret == 0) && (XMEMCMP(pct_root, key->sk + 3 * n, n) != 0)) {
+                ret = SLH_DSA_PCT_E;
+            }
+            ForceZero(pct_root, sizeof(pct_root));
+        }
+
+        /* Free a key that failed the test, so a caller ignoring the return
+         * value cannot sign with it.  ISO/IEC 19790:2012 sec 7.10.1 forbids using
+         * anything that failed a self-test.  MEMORY_E is excluded: it
+         * means the test never ran, so the key is not implicated. */
+        if ((ret != 0) && (ret != WC_NO_ERR_TRACE(MEMORY_E))) {
+            wc_SlhDsaKey_Free(key);
+        }
+    }
+#endif /* FIPS v7 or WOLFSSL_VALIDATE_SLHDSA_KEYGEN */
 
     return ret;
 }
@@ -7116,6 +7302,7 @@ int wc_SlhDsaKey_MakeKeyWithRandom(SlhDsaKey* key, const byte* sk_seed,
  * @return  MEMORY_E on dynamic memory allocation failure.
  * @return  SHAKE-256 error return code on digest failure.
  */
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 static int slhdsakey_sign(SlhDsaKey* key, byte* md, byte* sig)
 {
     int ret;
@@ -7281,7 +7468,8 @@ static int slhdsakey_sign_external(SlhDsaKey* key, const byte* ctx, byte ctxSz,
 
     /* Validate parameters. */
     if ((key == NULL) || (key->params == NULL) ||
-            ((ctx == NULL) && (ctxSz > 0)) || (msg == NULL) || (sig == NULL) ||
+            ((ctx == NULL) && (ctxSz > 0)) ||
+            ((msg == NULL) && (msgSz != 0)) || (sig == NULL) ||
             (sigSz == NULL)) {
         ret = BAD_FUNC_ARG;
     }
@@ -7380,6 +7568,7 @@ static int slhdsakey_sign_external(SlhDsaKey* key, const byte* ctx, byte ctxSz,
 
     return ret;
 }
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 /* Generate a deterministic SLH-DSA signature.
  *
@@ -7397,7 +7586,8 @@ static int slhdsakey_sign_external(SlhDsaKey* key, const byte* ctx, byte ctxSz,
  * @return  BAD_FUNC_ARG when key, key's parameters, msg or sig is NULL.
  * @return  BAD_FUNC_ARG when ctx is NULL but ctx length is greater than 0.
  * @return  BAD_LENGTH_E when sigSz is less than required signature length.
- * @return  MISSING_KEY when private key not set.
+ * @return  MISSING_KEY when the public key seed is not set, or when
+ *          there is no device and no private key to sign with.
  * @return  MEMORY_E on dynamic memory allocation failure.
  * @return  SHAKE-256 error return code on digest failure.
  */
@@ -7410,10 +7600,15 @@ int wc_SlhDsaKey_SignDeterministic(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     if ((key == NULL) || (key->params == NULL)) {
         ret = BAD_FUNC_ARG;
     }
+    /* addrnd is the public key seed (PK.seed) and must be present for
+     * signing. */
+    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
+        ret = MISSING_KEY;
+    }
     else {
-        /* Pure sign. */
-        ret = slhdsakey_sign_external(key, ctx, ctxSz, msg, msgSz, sig, sigSz,
-            key->sk + 2 * key->params->n);
+        /* Alg 22, Step 3: addrnd is the public key seed. */
+        ret = wc_SlhDsaKey_SignWithRandom(key, ctx, ctxSz, msg, msgSz, sig,
+            sigSz, key->sk + 2 * key->params->n);
     }
 
     return ret;
@@ -7441,9 +7636,59 @@ int wc_SlhDsaKey_SignDeterministic(SlhDsaKey* key, const byte* ctx, byte ctxSz,
 int wc_SlhDsaKey_SignWithRandom(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     const byte* msg, word32 msgSz, byte* sig, word32* sigSz, const byte* addRnd)
 {
-    /* Pure sign. */
-    return slhdsakey_sign_external(key, ctx, ctxSz, msg, msgSz, sig, sigSz,
-        addRnd);
+    int ret = 0;
+
+    /* Validate parameters. */
+    if ((key == NULL) || (key->params == NULL) ||
+            ((ctx == NULL) && (ctxSz > 0)) || (msg == NULL) || (sig == NULL) ||
+            (sigSz == NULL)) {
+        ret = BAD_FUNC_ARG;
+    }
+    /* Check sig buffer is large enough to hold generated signature. */
+    else if (*sigSz < key->params->sigLen) {
+        ret = BAD_LENGTH_E;
+    }
+    /* Alg 22, Step 5: Check addrnd is not NULL. */
+    else if (addRnd == NULL) {
+        /* Alg 22, Step 6: Return error. */
+        ret = BAD_FUNC_ARG;
+    }
+
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            ret = wc_CryptoCb_PqcSignEx(msg, msgSz, sig, sigSz, ctx, ctxSz,
+                WC_HASH_TYPE_NONE, NULL, addRnd, key->params->n,
+                WC_PQC_SIG_TYPE_SLHDSA, key);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE))
+                return ret;
+            /* fall-through when unavailable */
+            ret = 0;
+        }
+    }
+#endif
+
+    /* Check we have a private key to sign with */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        /* Pure sign. */
+        ret = slhdsakey_sign_external(key, ctx, ctxSz, msg, msgSz, sig, sigSz,
+            addRnd);
+    }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
+
+    return ret;
 }
 
 /* Generate a pure SLH-DSA signature with a random number generator.
@@ -7474,7 +7719,8 @@ int wc_SlhDsaKey_Sign(SlhDsaKey* key, const byte* ctx, byte ctxSz,
 
     /* Validate parameters before generating random. */
     if ((key == NULL) || (key->params == NULL) ||
-            ((ctx == NULL) && (ctxSz > 0)) || (msg == NULL) || (sig == NULL) ||
+            ((ctx == NULL) && (ctxSz > 0)) ||
+            ((msg == NULL) && (msgSz != 0)) || (sig == NULL) ||
             (sigSz == NULL) || (rng == NULL)) {
         ret = BAD_FUNC_ARG;
     }
@@ -7482,9 +7728,13 @@ int wc_SlhDsaKey_Sign(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     else if (*sigSz < key->params->sigLen) {
         ret = BAD_LENGTH_E;
     }
-    /* Check we have a private key to sign with. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
-        ret = MISSING_KEY;
+
+    /* An empty message may be passed as (NULL, 0); canonicalize it to a
+     * readable stand-in so that downstream consumers -- hash updates and
+     * crypto callbacks -- never see a NULL pointer. */
+    if ((ret == 0) && (msg == NULL)) {
+        static const byte slhdsa_empty_msg = 0;
+        msg = &slhdsa_empty_msg;
     }
 
 #ifdef WOLF_CRYPTO_CB
@@ -7503,17 +7753,38 @@ int wc_SlhDsaKey_Sign(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     }
 #endif
 
+    /* Check we have a private key to sign with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
     if (ret == 0) {
         /* Generate n bytes of random. */
         ret = wc_RNG_GenerateBlock(rng, addRnd, key->params->n);
+        /* addRnd now holds the secret signing randomness; register before the
+         * sign call so a future early-exit before the ForceZero is caught. */
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Add("slhdsa sign addRnd", addRnd, sizeof(addRnd));
+#endif
     }
     if (ret == 0) {
-        /* Pure sign. */
-        ret = wc_SlhDsaKey_SignWithRandom(key, ctx, ctxSz, msg, msgSz, sig,
-            sigSz, addRnd);
+        /* Pure sign. The device was already offered this operation above, so
+         * go straight to software rather than back through SignWithRandom. */
+        ret = slhdsakey_sign_external(key, ctx, ctxSz, msg, msgSz, sig, sigSz,
+            addRnd);
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     ForceZero(addRnd, sizeof(addRnd));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(addRnd, sizeof(addRnd));
+#endif
 
     return ret;
 }
@@ -7542,18 +7813,17 @@ int wc_SlhDsaKey_SignMsgDeterministic(SlhDsaKey* key, const byte* mprime,
 {
     int ret = 0;
 
-    if ((key == NULL) || (key->params == NULL) || (mprime == NULL) ||
-            (sig == NULL) || (sigSz == NULL)) {
+    if ((key == NULL) || (key->params == NULL)) {
         ret = BAD_FUNC_ARG;
     }
-    else if (*sigSz < key->params->sigLen) {
-        ret = BAD_LENGTH_E;
-    }
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
+    /* addrnd is the public key seed (PK.seed) and must be present for
+     * signing. */
+    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
         ret = MISSING_KEY;
     }
-    if (ret == 0) {
-        ret = slhdsakey_sign_internal_msg(key, mprime, mprimeSz, sig, sigSz,
+    else {
+        /* opt_rand is the public key seed. */
+        ret = wc_SlhDsaKey_SignMsgWithRandom(key, mprime, mprimeSz, sig, sigSz,
             key->sk + 2 * key->params->n);
     }
 
@@ -7592,13 +7862,39 @@ int wc_SlhDsaKey_SignMsgWithRandom(SlhDsaKey* key, const byte* mprime,
     else if (*sigSz < key->params->sigLen) {
         ret = BAD_LENGTH_E;
     }
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
+
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            ret = wc_CryptoCb_PqcSignMsg(mprime, mprimeSz, sig, sigSz, NULL,
+                addRnd, key->params->n, WC_PQC_SIG_TYPE_SLHDSA, key);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE))
+                return ret;
+            /* fall-through when unavailable */
+            ret = 0;
+        }
+    }
+#endif
+
+    /* Check we have a private key to sign with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
         ret = MISSING_KEY;
     }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
     if (ret == 0) {
         ret = slhdsakey_sign_internal_msg(key, mprime, mprimeSz, sig, sigSz,
             addRnd);
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
@@ -7624,6 +7920,7 @@ int wc_SlhDsaKey_SignMsgWithRandom(SlhDsaKey* key, const byte* mprime,
  * @return  MEMORY_E on dynamic memory allocation failure.
  * @return  SHAKE-256 error return code on digest failure.
  */
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 static int slhdsakey_verify(SlhDsaKey* key, byte* md, const byte* sig)
 {
     int ret;
@@ -7651,6 +7948,7 @@ static int slhdsakey_verify(SlhDsaKey* key, byte* md, const byte* sig)
 
     return ret;
 }
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 /* Verify SLH-DSA signature.
  *
@@ -7698,7 +7996,8 @@ int wc_SlhDsaKey_Verify(SlhDsaKey* key, const byte* ctx, byte ctxSz,
 
     /* Validate parameters. */
     if ((key == NULL) || (key->params == NULL) ||
-            ((ctx == NULL) && (ctxSz > 0)) || (msg == NULL) ||
+            ((ctx == NULL) && (ctxSz > 0)) ||
+            ((msg == NULL) && (msgSz != 0)) ||
             (sig == NULL)) {
         ret = BAD_FUNC_ARG;
     }
@@ -7707,9 +8006,13 @@ int wc_SlhDsaKey_Verify(SlhDsaKey* key, const byte* ctx, byte ctxSz,
         /* Alg 20, Step 2: Return error  */
         ret = BAD_LENGTH_E;
     }
-    /* Check we have a public key to verify with. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
-        ret = MISSING_KEY;
+
+    /* An empty message may be passed as (NULL, 0); canonicalize it to a
+     * readable stand-in so that downstream consumers -- hash updates and
+     * crypto callbacks -- never see a NULL pointer. */
+    if ((ret == 0) && (msg == NULL)) {
+        static const byte slhdsa_empty_msg = 0;
+        msg = &slhdsa_empty_msg;
     }
 
 #ifdef WOLF_CRYPTO_CB
@@ -7732,6 +8035,17 @@ int wc_SlhDsaKey_Verify(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     }
 #endif
 
+    /* Check we have a public key to verify with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
     if (ret == 0) {
         byte md[SLHDSA_MAX_MD];
         byte n = key->params->n;
@@ -7779,6 +8093,7 @@ int wc_SlhDsaKey_Verify(SlhDsaKey* key, const byte* ctx, byte ctxSz,
             ret = slhdsakey_verify(key, md, sig);
         }
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
@@ -7809,9 +8124,38 @@ int wc_SlhDsaKey_VerifyMsg(SlhDsaKey* key, const byte* mprime,
     else if (sigSz != key->params->sigLen) {
         ret = BAD_LENGTH_E;
     }
-    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
+
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            int res = 0;
+            ret = wc_CryptoCb_PqcVerifyMsg(sig, sigSz, mprime, mprimeSz, &res,
+                WC_PQC_SIG_TYPE_SLHDSA, key);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE)) {
+                if (ret != 0)
+                    return ret;
+                return (res == 1) ? 0 : SIG_VERIFY_E;
+            }
+            /* fall-through when unavailable */
+            ret = 0;
+        }
+    }
+#endif
+
+    /* Check we have a public key to verify with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0)) {
         ret = MISSING_KEY;
     }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
     if (ret == 0) {
         byte md[SLHDSA_MAX_MD];
         byte n = key->params->n;
@@ -7848,6 +8192,7 @@ int wc_SlhDsaKey_VerifyMsg(SlhDsaKey* key, const byte* mprime,
             ret = slhdsakey_verify(key, md, sig);
         }
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
@@ -7870,6 +8215,7 @@ int wc_SlhDsaKey_VerifyMsg(SlhDsaKey* key, const byte* mprime,
                                          WC_MAX_DIGEST_SIZE)
 wc_static_assert(WC_MAX_DIGEST_SIZE >= SLHDSA_LARGEST_APPROVED_PHM_LEN);
 
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 #ifdef WOLFSSL_SHA224
 /* OID for SHA-224 for hash signing/verification. */
 static const byte slhdsakey_oid_sha224[] = {
@@ -7945,7 +8291,46 @@ static const byte slhdsakey_oid_sha3_512[] = {
 #endif
 #endif
 
-/* Validate the caller-supplied pre-hashed digest length and look up the
+/* The CMVP PQC validation worksheet requires the pre-hash to provide classical
+ * security strength at least equal to the parameter set that uses it (item 2.5,
+ * citing FIPS 205 sec. 10.2).  A hash gives half its digest size in collision
+ * strength, and sec. 11 ties the category to n, so both are compared in bytes:
+ * the pre-hash strength must be >= n.  This also gives the sec. 10.2.2 rule
+ * that SHA-256 and SHAKE128 are category 1 only.
+ * Returns 0 if allowed, else BAD_FUNC_ARG. */
+static int slhdsa_check_hash_for_n(enum wc_HashType hashType, byte n)
+{
+    byte strength;
+
+    switch ((int)hashType) {
+        case WC_HASH_TYPE_SHA256:
+        case WC_HASH_TYPE_SHA512_256:
+        case WC_HASH_TYPE_SHA3_256:
+        case WC_HASH_TYPE_SHAKE128:
+            strength = WC_SLHDSA_N_128;
+            break;
+        case WC_HASH_TYPE_SHA384:
+        case WC_HASH_TYPE_SHA3_384:
+            strength = WC_SLHDSA_N_192;
+            break;
+        case WC_HASH_TYPE_SHA512:
+        case WC_HASH_TYPE_SHA3_512:
+        case WC_HASH_TYPE_SHAKE256:
+            strength = WC_SLHDSA_N_256;
+            break;
+        default:
+            /* Includes SHA-224 and friends, which are below every category. */
+            return BAD_FUNC_ARG;
+    }
+
+    return (strength >= n) ? 0 : BAD_FUNC_ARG;
+}
+
+/* Both callers run slhdsa_check_hash_for_n() first, so the entries below that
+ * are too weak for any parameter set are already rejected by the time this
+ * runs.  The table stays complete so the two concerns remain separate.
+ *
+ * Validate the caller-supplied pre-hashed digest length and look up the
  * corresponding OID for the chosen hash algorithm.
  *
  * The HashSLH-DSA family takes the digest as input rather than the full
@@ -8072,8 +8457,11 @@ static int slhdsakey_validate_prehash(word32 hashSz,
 
     return ret;
 }
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
 #ifndef WOLFSSL_SLHDSA_VERIFY_ONLY
+
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
 /* Generate pre-hash SLH-DSA signature.
  *
  * FIPS 205. Section 10.2.2. Algorithm 23.
@@ -8170,6 +8558,11 @@ static int slhdsakey_signhash_external(SlhDsaKey* key, const byte* ctx,
     else if (addRnd == NULL) {
         /* Alg 23, Step 6: Return error. */
         ret = BAD_FUNC_ARG;
+    }
+    /* Covers SignHashDeterministic and SignHashWithRandom, which reach here
+     * without passing the check in wc_SlhDsaKey_SignHash. */
+    if (ret == 0) {
+        ret = slhdsa_check_hash_for_n(hashType, key->params->n);
     }
     if (ret == 0) {
         /* Alg 23, Steps 8-23: Validate caller-supplied pre-hashed digest length
@@ -8268,6 +8661,8 @@ static int slhdsakey_signhash_external(SlhDsaKey* key, const byte* ctx,
     return ret;
 }
 
+#endif /* !WOLF_CRYPTO_CB_ONLY_SLHDSA */
+
 /* Generate a deterministic HashSLH-DSA signature.
  *
  * addrnd is the public key seed. The caller MUST pre-hash the application
@@ -8289,7 +8684,8 @@ static int slhdsakey_signhash_external(SlhDsaKey* key, const byte* ctx,
  * @return  BAD_FUNC_ARG when ctx is NULL but ctx length is greater than 0.
  * @return  BAD_LENGTH_E when sigSz is less than required signature length, or
  *          when hashSz does not equal the digest size for hashType.
- * @return  MISSING_KEY when private key not set.
+ * @return  MISSING_KEY when the public key seed is not set, or when
+ *          there is no device and no private key to sign with.
  * @return  MEMORY_E on dynamic memory allocation failure.
  * @return  SHAKE-256 error return code on digest failure.
  */
@@ -8303,13 +8699,14 @@ int wc_SlhDsaKey_SignHashDeterministic(SlhDsaKey* key, const byte* ctx,
     if ((key == NULL) || (key->params == NULL)) {
         ret = BAD_FUNC_ARG;
     }
-    /* Check we have a private key to sign with. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
+    /* addrnd is the public key seed (PK.seed) and must be present for
+     * signing. */
+    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
         ret = MISSING_KEY;
     }
     else {
-        /* HashSLH-DSA sign with caller-supplied digest. */
-        ret = slhdsakey_signhash_external(key, ctx, ctxSz, hash, hashSz,
+        /* Alg 23, Step 3: addrnd is the public key seed. */
+        ret = wc_SlhDsaKey_SignHashWithRandom(key, ctx, ctxSz, hash, hashSz,
             hashType, sig, sigSz, key->sk + 2 * key->params->n);
     }
 
@@ -8347,9 +8744,70 @@ int wc_SlhDsaKey_SignHashWithRandom(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     const byte* hash, word32 hashSz, enum wc_HashType hashType, byte* sig,
     word32* sigSz, const byte* addRnd)
 {
-    /* HashSLH-DSA sign with caller-supplied digest. */
-    return slhdsakey_signhash_external(key, ctx, ctxSz, hash, hashSz, hashType,
-        sig, sigSz, addRnd);
+    int ret = 0;
+
+    /* Validate parameters. */
+    if ((key == NULL) || (key->params == NULL) ||
+            ((ctx == NULL) && (ctxSz > 0)) || (hash == NULL) || (sig == NULL) ||
+            (sigSz == NULL)) {
+        ret = BAD_FUNC_ARG;
+    }
+    /* Check sig buffer is large enough to hold generated signature. */
+    else if (*sigSz < key->params->sigLen) {
+        ret = BAD_LENGTH_E;
+    }
+    /* Alg 23, Step 5: Check addrnd is not NULL. */
+    else if (addRnd == NULL) {
+        /* Alg 23, Step 6: Return error. */
+        ret = BAD_FUNC_ARG;
+    }
+    /* First sanity check on hashType before the detailed validation. */
+    else if ((word32)hashType > (word32)WC_HASH_TYPE_MAX) {
+        ret = BAD_FUNC_ARG;
+    }
+    /* Rejected before any dispatch: the callback interface spells a pure
+     * signature as WC_HASH_TYPE_NONE, so a pre-hash call carrying it would
+     * reach a device as a pure signature. */
+    else if (hashType == WC_HASH_TYPE_NONE) {
+        ret = NOT_COMPILED_IN;
+    }
+
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            ret = wc_CryptoCb_PqcSignEx(hash, hashSz, sig, sigSz, ctx, ctxSz,
+                (word32)hashType, NULL, addRnd, key->params->n,
+                WC_PQC_SIG_TYPE_SLHDSA, key);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE))
+                return ret;
+            /* fall-through when unavailable */
+            ret = 0;
+        }
+    }
+#endif
+
+    /* Check we have a private key to sign with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        /* HashSLH-DSA sign with caller-supplied digest. */
+        ret = slhdsakey_signhash_external(key, ctx, ctxSz, hash, hashSz,
+            hashType, sig, sigSz, addRnd);
+    }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
+
+    return ret;
 }
 
 /* Generate a HashSLH-DSA signature using an RNG for added randomness.
@@ -8386,11 +8844,9 @@ int wc_SlhDsaKey_SignHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     int ret = 0;
     byte addRnd[SLHDSA_MAX_N];
 
-    /* Validate parameters before generating random.
-     * hashSz / hashType validation lives in the internal worker and therefore
-     * runs after wc_RNG_GenerateBlock. A call with a bad hashSz/hashType will
-     * waste n bytes of DRBG output before the error is reported (similar to
-     * ML-DSA pre-hash handling). */
+    /* Validate parameters before generating random.  hashType is checked
+     * here; only hashSz is left to the internal worker, so a bad hashSz still
+     * costs n bytes of DRBG output before the error comes back. */
     if ((key == NULL) || (key->params == NULL) ||
             ((ctx == NULL) && (ctxSz > 0)) || (hash == NULL) || (sig == NULL) ||
             (sigSz == NULL) || (rng == NULL)) {
@@ -8400,13 +8856,10 @@ int wc_SlhDsaKey_SignHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     else if (*sigSz < key->params->sigLen) {
         ret = BAD_LENGTH_E;
     }
-    /* Check we have a private key to sign with. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
-        ret = MISSING_KEY;
-    }
-    /* First sanity check on hashType; the downstream prehash validator does
-     * the detailed check for the actual type. */
-    else if ((word32)hashType > (word32)WC_HASH_TYPE_MAX) {
+    /* Rejected before any dispatch: the callback interface spells a pure
+     * signature as WC_HASH_TYPE_NONE, so a pre-hash call carrying it would
+     * reach a device as a pure signature. */
+    else if (hashType == WC_HASH_TYPE_NONE) {
         ret = BAD_FUNC_ARG;
     }
 
@@ -8426,17 +8879,52 @@ int wc_SlhDsaKey_SignHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     }
 #endif
 
+    /* Check we have a private key to sign with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        const byte* oid = NULL;
+        byte oidLen = 0;
+
+        /* Alg 23, Steps 8-23: Validate the caller-supplied digest length and
+         * that the hash algorithm is approved and strong enough for the
+         * parameter set. Done before the random is drawn, and only here: the
+         * device was already offered the operation above, so this host side
+         * policy cannot keep it from a pre-hash it supports. */
+        ret = slhdsa_check_hash_for_n(hashType, key->params->n);
+        if (ret == 0) {
+            ret = slhdsakey_validate_prehash(hashSz, hashType, &oid, &oidLen);
+        }
+    }
     if (ret == 0) {
         /* Generate n bytes of random. */
         ret = wc_RNG_GenerateBlock(rng, addRnd, key->params->n);
+        /* addRnd now holds the secret signing randomness; register before the
+         * sign call so a future early-exit before the ForceZero is caught. */
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Add("slhdsa sign_hash addRnd", addRnd, sizeof(addRnd));
+#endif
     }
     if (ret == 0) {
-        /* HashSLH-DSA sign with caller-supplied digest. */
-        ret = wc_SlhDsaKey_SignHashWithRandom(key, ctx, ctxSz, hash, hashSz,
+        /* HashSLH-DSA sign with caller-supplied digest. The device was
+         * already offered this operation above, so go straight to software. */
+        ret = slhdsakey_signhash_external(key, ctx, ctxSz, hash, hashSz,
             hashType, sig, sigSz, addRnd);
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     ForceZero(addRnd, sizeof(addRnd));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(addRnd, sizeof(addRnd));
+#endif
 
     return ret;
 }
@@ -8511,8 +8999,10 @@ int wc_SlhDsaKey_VerifyHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     word32 sigSz)
 {
     int ret = 0;
+#ifndef WOLF_CRYPTO_CB_ONLY_SLHDSA
     const byte* oid = NULL;
     byte oidLen = 0;
+#endif
 
     /* Validate parameters. */
     if ((key == NULL) || (key->params == NULL) ||
@@ -8524,13 +9014,10 @@ int wc_SlhDsaKey_VerifyHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
         /* Alg 20, Step 2: Return error  */
         ret = BAD_LENGTH_E;
     }
-    /* Check we have a public key to verify with. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
-        ret = MISSING_KEY;
-    }
-    /* First sanity check on hashType; the downstream prehash validator does
-     * the detailed check for the actual type. */
-    else if ((word32)hashType > (word32)WC_HASH_TYPE_MAX) {
+    /* Rejected before any dispatch: the callback interface spells a pure
+     * signature as WC_HASH_TYPE_NONE, so a pre-hash call carrying it would
+     * reach a device as a pure signature. */
+    else if (hashType == WC_HASH_TYPE_NONE) {
         ret = BAD_FUNC_ARG;
     }
 
@@ -8554,10 +9041,27 @@ int wc_SlhDsaKey_VerifyHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
     }
 #endif
 
+    /* Check we have a public key to verify with. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0)) {
+        ret = MISSING_KEY;
+    }
+
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
     if (ret == 0) {
-        /* Alg 25, Steps 4-19: Validate caller-supplied pre-hashed digest length
-         * and select OID for the chosen hash algorithm. */
-        ret = slhdsakey_validate_prehash(hashSz, hashType, &oid, &oidLen);
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        /* Alg 25, Steps 4-19: Validate caller-supplied pre-hashed digest
+         * length, that the hash is strong enough for the parameter set, and
+         * select its OID. Only here: the device was already offered the
+         * operation above, so this host side policy cannot keep it from a
+         * pre-hash it supports. */
+        ret = slhdsa_check_hash_for_n(hashType, key->params->n);
+        if (ret == 0) {
+            ret = slhdsakey_validate_prehash(hashSz, hashType, &oid, &oidLen);
+        }
     }
     if (ret == 0) {
         byte n = key->params->n;
@@ -8615,6 +9119,7 @@ int wc_SlhDsaKey_VerifyHash(SlhDsaKey* key, const byte* ctx, byte ctxSz,
             ret = slhdsakey_verify(key, md, sig);
         }
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
@@ -8647,7 +9152,9 @@ int wc_SlhDsaKey_ImportPrivate(SlhDsaKey* key, const byte* priv, word32 privLen)
         /* Copy private and public key data into SLH-DSA key object. */
         XMEMCPY(key->sk, priv, 4U * key->params->n);
         key->flags = WC_SLHDSA_FLAG_BOTH_KEYS;
-#ifdef WOLFSSL_SLHDSA_SHA2
+/* Under crypto callback only the device performs every hash, so it derives
+ * the SHA2 midstates for the imported PK.seed itself. */
+#if defined(WOLFSSL_SLHDSA_SHA2) && !defined(WOLF_CRYPTO_CB_ONLY_SLHDSA)
         if (SLHDSA_IS_SHA2(key->params->param)) {
             ret = slhdsakey_precompute_sha2_midstates(key);
         }
@@ -8683,7 +9190,9 @@ int wc_SlhDsaKey_ImportPublic(SlhDsaKey* key, const byte* pub, word32 pubLen)
         /* Copy public key data into SLH-DSA key object. */
         XMEMCPY(key->sk + 2U * key->params->n, pub, 2U * key->params->n);
         key->flags |= WC_SLHDSA_FLAG_PUBLIC;
-#ifdef WOLFSSL_SLHDSA_SHA2
+/* Under crypto callback only the device performs every hash, so it derives
+ * the SHA2 midstates for the imported PK.seed itself. */
+#if defined(WOLFSSL_SLHDSA_SHA2) && !defined(WOLF_CRYPTO_CB_ONLY_SLHDSA)
         if (SLHDSA_IS_SHA2(key->params->param)) {
             ret = slhdsakey_precompute_sha2_midstates(key);
         }
@@ -8713,23 +9222,62 @@ int wc_SlhDsaKey_CheckKey(SlhDsaKey* key)
     if ((key == NULL) || (key->params == NULL)) {
         ret = BAD_FUNC_ARG;
     }
-    /* Check we have a private key to validate. */
-    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
+
+#ifdef WOLF_CRYPTO_CB
+    if (ret == 0) {
+    #ifndef WOLF_CRYPTO_CB_FIND
+        if (key->devId != INVALID_DEVID)
+    #endif
+        {
+            const byte* pub = NULL;
+            word32 pubSz = 0;
+
+            /* Public key is PK.seed || PK.root at the end of the key data.
+             * A device or id backed key has none locally. */
+            if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) != 0) {
+                pub = key->sk + 2 * key->params->n;
+                pubSz = 2U * key->params->n;
+            }
+            ret = wc_CryptoCb_PqcSignatureCheckPrivKey(key,
+                WC_PQC_SIG_TYPE_SLHDSA, pub, pubSz);
+            if (ret != WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE))
+                return ret;
+            /* fall-through when unavailable */
+            ret = 0;
+        }
+    }
+#endif
+
+    /* Check we have a private key to validate. Done after dispatch: a
+     * device or id backed key has no local key material. */
+    if ((ret == 0) && ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0)) {
         ret = MISSING_KEY;
     }
-    if (ret == 0) {
-        byte root[SLHDSA_MAX_N];
-        byte n = key->params->n;
 
-        /* Cache the public key root as making the key overwrites. */
-        XMEMCPY(root, key->sk + 3 * n, n);
-        ret = wc_SlhDsaKey_MakeKeyWithRandom(key, key->sk, n, key->sk + n, n,
-                key->sk + 2 * n, n);
-        /* Compare computed root with what was cached. */
+#ifdef WOLF_CRYPTO_CB_ONLY_SLHDSA
+    if (ret == 0) {
+        ret = NO_VALID_DEVID;
+    }
+#else
+    if (ret == 0) {
+        byte        n = key->params->n;
+        byte        root[SLHDSA_MAX_N];
+        HashAddress adrs;
+
+        /* Recompute the public root from the private seed and compare.
+         * Done directly rather than by regenerating the key: regeneration
+         * overwrites the key being checked, and its key-pair test frees the
+         * key on failure, which a validation call must never do. */
+        HA_Init(adrs);
+        HA_SetLayerAddress(adrs, key->params->d - 1);
+        ret = slhdsakey_xmss_node(key, key->sk, 0, key->params->h_m,
+                key->sk + 2 * n, adrs, root);
         if ((ret == 0) && (XMEMCMP(root, key->sk + 3 * n, n) != 0)) {
             ret = WC_KEY_MISMATCH_E;
         }
+        ForceZero(root, sizeof(root));
     }
+#endif /* WOLF_CRYPTO_CB_ONLY_SLHDSA */
 
     return ret;
 }
@@ -8744,6 +9292,7 @@ int wc_SlhDsaKey_CheckKey(SlhDsaKey* key)
  *                            On out, length of private key.
  * @return  0 on success.
  * @return  BAD_FUNC_ARG when key, key's parameters, priv or privLen is NULL.
+ * @return  MISSING_KEY when no private key is available.
  * @return  BAD_LENGTH_E when privLen is too small for private key.
  */
 int wc_SlhDsaKey_ExportPrivate(SlhDsaKey* key, byte* priv, word32* privLen)
@@ -8754,6 +9303,10 @@ int wc_SlhDsaKey_ExportPrivate(SlhDsaKey* key, byte* priv, word32* privLen)
     if ((key == NULL) || (key->params == NULL) || (priv == NULL) ||
             (privLen == NULL)) {
         ret = BAD_FUNC_ARG;
+    }
+    /* Check we have a private key to export. */
+    else if ((key->flags & WC_SLHDSA_FLAG_PRIVATE) == 0) {
+        ret = MISSING_KEY;
     }
     /* Check private key buffer length. */
     else if (*privLen < key->params->n * 4) {
@@ -8779,6 +9332,7 @@ int wc_SlhDsaKey_ExportPrivate(SlhDsaKey* key, byte* priv, word32* privLen)
  *                           On out, length of public key.
  * @return  0 on success.
  * @return  BAD_FUNC_ARG when key, key's parameters, pub or pubLen is NULL.
+ * @return  MISSING_KEY when no public key is available.
  * @return  BAD_LENGTH_E when pubLen is too small for public key.
  */
 int wc_SlhDsaKey_ExportPublic(SlhDsaKey* key, byte* pub, word32* pubLen)
@@ -8789,6 +9343,10 @@ int wc_SlhDsaKey_ExportPublic(SlhDsaKey* key, byte* pub, word32* pubLen)
     if ((key == NULL) || (key->params == NULL) || (pub == NULL) ||
             (pubLen == NULL)) {
         ret = BAD_FUNC_ARG;
+    }
+    /* Check we have a public key to export. */
+    else if ((key->flags & WC_SLHDSA_FLAG_PUBLIC) == 0) {
+        ret = MISSING_KEY;
     }
     /* Check public key buffer length. */
     else if (*pubLen < key->params->n * 2) {
@@ -9141,6 +9699,31 @@ int wc_SlhDsaKey_PrivateKeyDecode(const byte* input, word32* inOutIdx,
         return ASN_PARSE_E;
     }
 
+#ifdef WOLFSSL_SLHDSA_SHA2
+    /* The key may have been initialised with a placeholder parameter set from a
+     * different hash family (callers pass WC_SLHDSA_DEFAULT_PARAM, a SHAKE set
+     * whenever any SHAKE parameter is built in). If the detected set uses a
+     * different hash family, re-initialise the hash objects for it so the
+     * placeholder's SHAKE objects are released via wc_SlhDsaKey_Free() instead
+     * of being orphaned when key->params switches to a SHA2 set below. */
+    if ((key->params != NULL) &&
+        (SLHDSA_IS_SHA2(key->params->param) != SLHDSA_IS_SHA2(params->param))) {
+        void* keyHeap = key->heap;
+    #ifdef WOLF_CRYPTO_CB
+        int keyDevId = key->devId;
+    #else
+        int keyDevId = INVALID_DEVID;
+    #endif
+        wc_SlhDsaKey_Free(key);
+        ret = wc_SlhDsaKey_Init(key, (enum SlhDsaParam)paramId, keyHeap,
+            keyDevId);
+        if (ret != 0) {
+            *inOutIdx = savedIdx;
+            return ret;
+        }
+    }
+#endif /* WOLFSSL_SLHDSA_SHA2 */
+
     /* RFC 9909: privateKey is a single OCTET STRING containing the raw key
      * (4*n bytes). Unlike Ed25519/Ed448, there is no nested inner OCTET
      * STRING wrapping. */
@@ -9356,6 +9939,29 @@ int wc_SlhDsaKey_PublicKeyDecode(const byte* input, word32* inOutIdx,
         return ASN_PARSE_E;
     }
 
+#ifdef WOLFSSL_SLHDSA_SHA2
+    /* The hash objects live in a union selected by family. Importing across
+     * families writes the new family's state over the old one's, orphaning it,
+     * so re-initialise for the detected set first. Mirrors the guard in
+     * wc_SlhDsaKey_PrivateKeyDecode. */
+    if ((key->params != NULL) &&
+        (SLHDSA_IS_SHA2(key->params->param) != SLHDSA_IS_SHA2(params->param))) {
+        void* keyHeap = key->heap;
+    #ifdef WOLF_CRYPTO_CB
+        int keyDevId = key->devId;
+    #else
+        int keyDevId = INVALID_DEVID;
+    #endif
+        wc_SlhDsaKey_Free(key);
+        ret = wc_SlhDsaKey_Init(key, (enum SlhDsaParam)paramId, keyHeap,
+            keyDevId);
+        if (ret != 0) {
+            *inOutIdx = savedIdx;
+            return ret;
+        }
+    }
+#endif /* WOLFSSL_SLHDSA_SHA2 */
+
     oldFlags = key->flags;
     oldParams = key->params;
     key->params = params;
@@ -9397,6 +10003,7 @@ int wc_SlhDsaKey_PublicKeyDecode(const byte* input, word32* inOutIdx,
  *          whose parameter set isn't compiled in. In practice unreachable
  *          because SlhDsaParams[] is itself gated on the build, but the
  *          contract matches wc_SlhDsaOidToParam for forward compatibility.
+ * @return  MISSING_KEY when public key not set.
  */
 int wc_SlhDsaKey_PublicKeyToDer(SlhDsaKey* key, byte* output, word32 inLen,
     int withAlg)

@@ -54,6 +54,8 @@
 #include <wolfssl/wolfcrypt/curve448.h>
 #endif
 
+#include <wolfssl/wolfcrypt/wc_compat.h>
+
 static const struct s_ent {
     const enum wc_HashType macType;
     const int nid;
@@ -3106,6 +3108,11 @@ int wolfSSL_EVP_PKEY_CTX_add1_hkdf_info(WOLFSSL_EVP_PKEY_CTX* ctx,
         WOLFSSL_MSG("WOLFSSL_EVP_PKEY type is not HKDF.");
         ret = WOLFSSL_FAILURE;
     }
+    if (ret == WOLFSSL_SUCCESS && info != NULL && infoSz > 0 &&
+            ctx->pkey->hkdfInfoSz > (WOLFSSL_MAX_32BIT - (word32)infoSz)) {
+        WOLFSSL_MSG("HKDF info length overflow.");
+        ret = WOLFSSL_FAILURE;
+    }
 
     if (ret == WOLFSSL_SUCCESS && info != NULL && infoSz > 0) {
         unsigned char* p;
@@ -3796,6 +3803,9 @@ int wolfSSL_EVP_PKEY_keygen_init(WOLFSSL_EVP_PKEY_CTX *ctx)
 #ifdef HAVE_ECC
 static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key);
 #endif
+#if !defined(NO_RSA) && defined(WOLFSSL_KEY_TO_DER)
+static int PopulateRSAEvpPkeyDer(WOLFSSL_EVP_PKEY *pkey);
+#endif
 
 int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
   WOLFSSL_EVP_PKEY **ppkey)
@@ -3803,6 +3813,12 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
     int ret = WC_NO_ERR_TRACE(WOLFSSL_FAILURE);
     int ownPkey = 0;
     WOLFSSL_EVP_PKEY* pkey;
+#if defined(WOLFSSL_KEY_GEN) && !defined(NO_RSA)
+    WOLFSSL_RSA* rsaTmp;
+#endif
+#if !defined(NO_DH) && (!defined(HAVE_FIPS) || FIPS_VERSION_GT(2,0))
+    WOLFSSL_DH* dhTmp;
+#endif
 
     WOLFSSL_ENTER("wolfSSL_EVP_PKEY_keygen");
 
@@ -3821,6 +3837,10 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
             #ifdef HAVE_CURVE448
                  ctx->pkey->type != WC_EVP_PKEY_X448 &&
             #endif
+            #if defined(HAVE_ED25519) && defined(HAVE_ED25519_KEY_EXPORT) && \
+                defined(HAVE_ED25519_MAKE_KEY)
+                 ctx->pkey->type != WC_EVP_PKEY_ED25519 &&
+            #endif
                  ctx->pkey->type != WC_EVP_PKEY_DH)) {
             WOLFSSL_MSG("Key not set or key type not supported");
             return WOLFSSL_FAILURE;
@@ -3836,13 +3856,19 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
     switch (pkey->type) {
 #if defined(WOLFSSL_KEY_GEN) && !defined(NO_RSA)
         case WC_EVP_PKEY_RSA:
-            pkey->rsa = wolfSSL_RSA_generate_key(ctx->nbits, WC_RSA_EXPONENT,
+            rsaTmp = wolfSSL_RSA_generate_key(ctx->nbits, WC_RSA_EXPONENT,
                 NULL, NULL);
-            if (pkey->rsa) {
+            if (rsaTmp != NULL) {
+                if (pkey->rsa != NULL && pkey->ownRsa == 1)
+                    wolfSSL_RSA_free(pkey->rsa);
+                pkey->rsa = rsaTmp;
                 pkey->ownRsa = 1;
-                pkey->pkey_sz = wolfSSL_i2d_RSAPrivateKey(pkey->rsa,
-                        (unsigned char**)&pkey->pkey.ptr);
-                ret = WOLFSSL_SUCCESS;
+                /* PopulateRSAEvpPkeyDer() wraps the encoding in PKCS#8 only
+                 * when the RSA key carries a header size, so take the new
+                 * key's value. A size left over from a wrapped predecessor
+                 * would make the export paths slice bytes off the encoding. */
+                pkey->pkcs8HeaderSz = rsaTmp->pkcs8HeaderSz;
+                ret = PopulateRSAEvpPkeyDer(pkey);
             }
             break;
 #endif
@@ -3852,11 +3878,15 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
              * prior call to wolfSSL_EVP_PKEY_paramgen. */
             if (pkey->ecc == NULL) {
                 pkey->ecc = wolfSSL_EC_KEY_new_by_curve_name(ctx->curveNID);
+                /* Ownership is claimed where the key is created. Claiming it
+                 * for a key that was already on the pkey would hand the free
+                 * to a second owner. */
+                if (pkey->ecc != NULL)
+                    pkey->ownEcc = 1;
             }
             if (pkey->ecc) {
                 ret = wolfSSL_EC_KEY_generate_key(pkey->ecc);
                 if (ret == WOLFSSL_SUCCESS) {
-                    pkey->ownEcc = 1;
                     if (ECC_populate_EVP_PKEY(pkey, pkey->ecc) != WOLFSSL_SUCCESS)
                         ret = WOLFSSL_FAILURE;
                 }
@@ -3865,8 +3895,13 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
 #endif
 #if !defined(NO_DH) && (!defined(HAVE_FIPS) || FIPS_VERSION_GT(2,0))
         case WC_EVP_PKEY_DH:
-            pkey->dh = wolfSSL_DH_new();
-            if (pkey->dh) {
+            dhTmp = wolfSSL_DH_new();
+            if (dhTmp != NULL) {
+                /* A caller supplied pkey may already carry a DH object, so
+                 * release it rather than overwrite the only reference to it. */
+                if (pkey->dh != NULL && pkey->ownDh == 1)
+                    wolfSSL_DH_free(pkey->dh);
+                pkey->dh = dhTmp;
                 pkey->ownDh = 1;
                 /* load DH params from CTX */
                 ret = wolfSSL_DH_LoadDer(pkey->dh,
@@ -3919,7 +3954,8 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
                     ret = MEMORY_E;
                     break;
                 }
-                if (wc_curve448_init(pkey->curve448) != 0) {
+                if (wc_curve448_init_ex(pkey->curve448, pkey->heap,
+                        INVALID_DEVID) != 0) {
                     XFREE(pkey->curve448, pkey->heap, DYNAMIC_TYPE_CURVE448);
                     pkey->curve448 = NULL;
                     break;
@@ -3932,6 +3968,86 @@ int wolfSSL_EVP_PKEY_keygen(WOLFSSL_EVP_PKEY_CTX *ctx,
                 ret = WOLFSSL_SUCCESS;
             }
             break;
+#endif
+#if defined(HAVE_ED25519) && defined(HAVE_ED25519_KEY_EXPORT) && \
+    defined(HAVE_ED25519_MAKE_KEY)
+        case WC_EVP_PKEY_ED25519: {
+            /* Only free a key THIS call allocated on the failure path; a
+             * caller-supplied key (ownEd25519 already set) must survive. */
+            int newEd25519 = 0;
+            if (pkey->ed25519 == NULL) {
+                pkey->ed25519 = wolfSSL_ED25519_new(pkey->heap, INVALID_DEVID);
+                if (pkey->ed25519 == NULL) {
+                    ret = MEMORY_E;
+                    break;
+                }
+                pkey->ownEd25519 = 1;
+                newEd25519 = 1;
+            }
+            /* Reuse the RNG already initialized on the EVP_PKEY. */
+            if (wc_ed25519_make_key(&pkey->rng, ED25519_KEY_SIZE,
+                    pkey->ed25519) == 0) {
+                /* Cache the PKCS#8 PrivateKeyInfo DER so the EVP/SSL paths
+                 * (use_PrivateKey, EVP_PKEY2PKCS8) can load and serialize the
+                 * key, mirroring the state the decode path produces. */
+                int edDerSz = wc_Ed25519PrivateKeyToDer(pkey->ed25519, NULL, 0);
+                if (edDerSz > 0) {
+                    /* DYNAMIC_TYPE_PUBLIC_KEY: the tag wolfSSL_EVP_PKEY_free()
+                     * and the d2i path use for pkey.ptr. */
+                    byte* edDer = (byte*)XMALLOC((size_t)edDerSz, pkey->heap,
+                        DYNAMIC_TYPE_PUBLIC_KEY);
+                    if (edDer != NULL) {
+                        word32 hdrIdx = 0;
+                        word32 hdrAlg = 0;
+                        /* Locate the PKCS#8 header in the DER just built: its
+                         * length marks pkey.ptr as PKCS#8-wrapped, exactly as
+                         * d2i_evp_pkey() does on the decode path, and the
+                         * i2d_PrivateKey / EVP_PKEY2PKCS8 paths rely on it.
+                         * A blob we cannot parse back is unusable, so treat a
+                         * failure here as a keygen failure rather than caching
+                         * a DER whose pkcs8HeaderSz says "not PKCS#8". */
+                        if (wc_Ed25519PrivateKeyToDer(pkey->ed25519, edDer,
+                                (word32)edDerSz) == edDerSz &&
+                                ToTraditionalInline_ex(edDer, &hdrIdx,
+                                    (word32)edDerSz, &hdrAlg) >= 0) {
+                            XFREE(pkey->pkey.ptr, pkey->heap,
+                                DYNAMIC_TYPE_PUBLIC_KEY);
+                            pkey->pkey.ptr = (char*)edDer;
+                            pkey->pkey_sz = edDerSz;
+                            pkey->pkcs8HeaderSz = (word16)hdrIdx;
+                            ret = WOLFSSL_SUCCESS;
+                        }
+                        else {
+                            ForceZero(edDer, (word32)edDerSz);
+                            XFREE(edDer, pkey->heap, DYNAMIC_TYPE_PUBLIC_KEY);
+                        }
+                    }
+                }
+            }
+            /* Do not leave a half-initialized object behind on a FAILURE
+             * return.  wc_ed25519_make_key() has already overwritten (or, on
+             * its own failure, cleared) whatever key the EVP_PKEY held, so any
+             * cached DER now describes a key that is gone - drop it even for a
+             * caller-supplied EVP_PKEY, where the key object itself must
+             * survive because we did not allocate it. */
+            if (ret != WOLFSSL_SUCCESS) {
+                if (pkey->pkey.ptr != NULL) {
+                    if (pkey->pkey_sz > 0) {
+                        ForceZero(pkey->pkey.ptr, (word32)pkey->pkey_sz);
+                    }
+                    XFREE(pkey->pkey.ptr, pkey->heap, DYNAMIC_TYPE_PUBLIC_KEY);
+                    pkey->pkey.ptr = NULL;
+                }
+                pkey->pkey_sz = 0;
+                pkey->pkcs8HeaderSz = 0;
+                if (newEd25519) {
+                    wolfSSL_ED25519_free(pkey->ed25519);
+                    pkey->ed25519 = NULL;
+                    pkey->ownEd25519 = 0;
+                }
+            }
+            break;
+        }
 #endif
         default:
             break;
@@ -4248,6 +4364,28 @@ int wolfSSL_EVP_PKEY_cmp(const WOLFSSL_EVP_PKEY *a, const WOLFSSL_EVP_PKEY *b)
         break;
     }
 #endif /* HAVE_ECC */
+#if defined(HAVE_ED25519) && defined(HAVE_ED25519_KEY_EXPORT)
+    case WC_EVP_PKEY_ED25519:
+    {
+        byte   pubA[ED25519_PUB_KEY_SIZE];
+        byte   pubB[ED25519_PUB_KEY_SIZE];
+        word32 pubASz = (word32)sizeof(pubA);
+        word32 pubBSz = (word32)sizeof(pubB);
+
+        if (a->ed25519 == NULL || b->ed25519 == NULL) {
+            return ret;
+        }
+        /* Compare the raw 32-byte public keys. */
+        if (wc_ed25519_export_public(a->ed25519, pubA, &pubASz) != 0 ||
+            wc_ed25519_export_public(b->ed25519, pubB, &pubBSz) != 0) {
+            return ret;
+        }
+        if (pubASz != pubBSz || XMEMCMP(pubA, pubB, pubASz) != 0) {
+            return WS_RETURN_CODE(ret, WOLFSSL_FAILURE);
+        }
+        break;
+    }
+#endif /* HAVE_ED25519 && HAVE_ED25519_KEY_EXPORT */
     default:
         return WS_RETURN_CODE(ret, -2);
     } /* switch (a->type) */
@@ -4796,7 +4934,7 @@ static int wolfssl_evp_md_to_hash_type(const WOLFSSL_EVP_MD *type,
     }
     else
 #endif
-#ifndef NO_MD5
+#if !defined(NO_MD5) && (!defined(HAVE_FIPS) || FIPS_VERSION3_LT(5,0,0))
     if (XSTRCMP(type, WC_SN_md5) == 0) {
         *hashType = WC_MD5;
     }
@@ -8340,8 +8478,8 @@ void wolfSSL_EVP_init(void)
                  * combines them to a new iv. EVP is given exactly *one* iv,
                  * so to pass it into chacha, we have to revert that first.
                  * The counter comes first in little-endian */
-                word32 counter = (word32)iv[0] + (word32)(iv[1] << 8) +
-                    (word32)(iv[2] << 16) + (word32)(iv[3] << 24);
+                word32 counter = (word32)iv[0] | ((word32)iv[1] << 8) |
+                    ((word32)iv[2] << 16) | ((word32)iv[3] << 24);
                 if (wc_Chacha_SetIV(&ctx->cipher.chacha,
                                     iv + sizeof(counter), counter) != 0) {
 
@@ -9016,9 +9154,9 @@ void wolfSSL_EVP_init(void)
             case WC_DES_CBC_TYPE :
                 WOLFSSL_MSG("DES CBC");
                 if (ctx->enc)
-                    wc_Des_CbcEncrypt(&ctx->cipher.des, dst, src, len);
+                    ret = wc_Des_CbcEncrypt(&ctx->cipher.des, dst, src, len);
                 else
-                    wc_Des_CbcDecrypt(&ctx->cipher.des, dst, src, len);
+                    ret = wc_Des_CbcDecrypt(&ctx->cipher.des, dst, src, len);
                 if (ret == 0)
                     ret = (int)((len / DES_BLOCK_SIZE) * DES_BLOCK_SIZE);
                 break;
@@ -9225,6 +9363,59 @@ static void clearEVPPkeyKeys(WOLFSSL_EVP_PKEY *pkey)
     }
     pkey->ownEcc = 0;
 #endif
+#ifdef HAVE_ED25519
+    if (pkey->ed25519 != NULL && pkey->ownEd25519 == 1) {
+        wc_ed25519_free(pkey->ed25519);
+        XFREE(pkey->ed25519, pkey->heap, DYNAMIC_TYPE_ED25519);
+        pkey->ed25519 = NULL;
+    }
+    pkey->ownEd25519 = 0;
+#endif
+#ifdef HAVE_ED448
+    if (pkey->ed448 != NULL && pkey->ownEd448 == 1) {
+        wc_ed448_free(pkey->ed448);
+        XFREE(pkey->ed448, pkey->heap, DYNAMIC_TYPE_ED448);
+        pkey->ed448 = NULL;
+    }
+    pkey->ownEd448 = 0;
+#endif
+#ifdef HAVE_CURVE25519
+    if (pkey->curve25519 != NULL && pkey->ownCurve25519 == 1) {
+        wc_curve25519_free(pkey->curve25519);
+        XFREE(pkey->curve25519, pkey->heap, DYNAMIC_TYPE_CURVE25519);
+        pkey->curve25519 = NULL;
+    }
+    pkey->ownCurve25519 = 0;
+#endif
+#ifdef HAVE_CURVE448
+    if (pkey->curve448 != NULL && pkey->ownCurve448 == 1) {
+        wc_curve448_free(pkey->curve448);
+        XFREE(pkey->curve448, pkey->heap, DYNAMIC_TYPE_CURVE448);
+        pkey->curve448 = NULL;
+    }
+    pkey->ownCurve448 = 0;
+#endif
+#ifdef HAVE_HKDF
+    XFREE(pkey->hkdfSalt, NULL, DYNAMIC_TYPE_SALT);
+    pkey->hkdfSalt = NULL;
+    if (pkey->hkdfKey != NULL && pkey->hkdfKeySz > 0) {
+        ForceZero(pkey->hkdfKey, pkey->hkdfKeySz);
+    }
+    XFREE(pkey->hkdfKey, NULL, DYNAMIC_TYPE_KEY);
+    pkey->hkdfKey = NULL;
+    XFREE(pkey->hkdfInfo, NULL, DYNAMIC_TYPE_INFO);
+    pkey->hkdfInfo = NULL;
+    pkey->hkdfSaltSz = 0;
+    pkey->hkdfKeySz = 0;
+    pkey->hkdfInfoSz = 0;
+#endif
+#if defined(WOLFSSL_CMAC) && defined(OPENSSL_EXTRA) && \
+    defined(WOLFSSL_AES_DIRECT)
+    if (pkey->cmacCtx != NULL) {
+        wolfSSL_CMAC_CTX_free(pkey->cmacCtx);
+        pkey->cmacCtx = NULL;
+    }
+#endif
 }
 
 #ifndef NO_RSA
@@ -9273,23 +9464,53 @@ static int PopulateRSAEvpPkeyDer(WOLFSSL_EVP_PKEY *pkey)
     }
 
 #ifdef WOLFSSL_NO_REALLOC
+    /* The new buffer can be smaller than the old encoding, and the encoding
+     * below fills it completely, so nothing is carried over. Allocate before
+     * the old buffer is touched, so that a failure here leaves the encoding
+     * held so far in place. */
     derBuf = (byte*)XMALLOC((size_t)derSz, pkey->heap, DYNAMIC_TYPE_DER);
     if (derBuf != NULL) {
-        XMEMCPY(derBuf, pkey->pkey.ptr, (size_t)pkey->pkey_sz);
+        /* On a private key the outgoing buffer holds a full RSA DER, so wipe
+         * it before it is returned to the allocator. The size is dropped with
+         * the contents so a failure below cannot leave pkey_sz describing a
+         * buffer that no longer holds an encoding. */
+        if (pkey->pkey.ptr != NULL && pkey->pkey_sz > 0) {
+            ForceZero(pkey->pkey.ptr, (word32)pkey->pkey_sz);
+        }
         XFREE(pkey->pkey.ptr, pkey->heap, DYNAMIC_TYPE_DER);
         pkey->pkey.ptr = NULL;
+        pkey->pkey_sz = 0;
     }
 #else
+    /* XREALLOC consumes the old pointer, so the buffer has to be wiped before
+     * the call: on a private key it holds a full RSA DER. Nothing is carried
+     * over, as the encoding below fills the new buffer completely. The size is
+     * dropped with the contents so a failure below cannot leave pkey_sz
+     * describing a buffer that no longer holds an encoding. */
+    if (pkey->pkey.ptr != NULL && pkey->pkey_sz > 0) {
+        ForceZero(pkey->pkey.ptr, (word32)pkey->pkey_sz);
+        pkey->pkey_sz = 0;
+    }
+
     derBuf = (byte*)XREALLOC(pkey->pkey.ptr, (size_t)derSz,
             pkey->heap, DYNAMIC_TYPE_DER);
 #endif
     if (derBuf == NULL) {
         WOLFSSL_MSG("PopulateRSAEvpPkeyDer malloc failed");
+        if (pkey->pkey_sz == 0) {
+            /* No encoding is described any more, so the header size has to go
+             * as well or the export paths subtract it from zero and
+             * underflow. */
+            pkey->pkcs8HeaderSz = 0;
+        }
         return WOLFSSL_FAILURE;
     }
 
-    /* Old pointer is invalid from this point on */
+    /* Old pointer is invalid from this point on. The new buffer holds no
+     * encoding yet and can be smaller than the old one, so drop the old size
+     * rather than let a failure below return with the two out of step. */
     pkey->pkey.ptr = (char*)derBuf;
+    pkey->pkey_sz = 0;
 
     if (rsa->type == RSA_PRIVATE) {
         ret = wc_RsaKeyToDer(rsa, derBuf, (word32)derSz);
@@ -9307,10 +9528,16 @@ static int PopulateRSAEvpPkeyDer(WOLFSSL_EVP_PKEY *pkey)
                 if (derBuf != NULL) {
                     ret = wc_CreatePKCS8Key(derBuf, &sz, keyBuf, (word32)keySz,
                         RSAk, NULL, 0);
+                    /* keyBuf holds the unwrapped private key. */
+                    ForceZero(keyBuf, (word32)keySz);
                     XFREE(keyBuf, pkey->heap, DYNAMIC_TYPE_DER);
                     pkey->pkey.ptr = (char*)derBuf;
+                    pkey->pkey_sz  = (int)pkcs8Sz;
                 }
                 else {
+                    /* The encoding is abandoned but keyBuf stays on the pkey,
+                     * so do not leave the key material behind in it. */
+                    ForceZero(keyBuf, (word32)keySz);
                     ret = MEMORY_E;
                 }
                 derSz = (int)sz;
@@ -9327,6 +9554,8 @@ static int PopulateRSAEvpPkeyDer(WOLFSSL_EVP_PKEY *pkey)
 
     if (ret < 0) {
         WOLFSSL_MSG("PopulateRSAEvpPkeyDer failed");
+        /* As above: pkey_sz is zero here, so the header size cannot stay. */
+        pkey->pkcs8HeaderSz = 0;
         return WOLFSSL_FAILURE;
     }
     else {
@@ -9564,6 +9793,17 @@ WOLFSSL_EC_KEY* wolfSSL_EVP_PKEY_get1_EC_KEY(WOLFSSL_EVP_PKEY* key)
                         WOLFSSL_EC_KEY_LOAD_PUBLIC) != WOLFSSL_SUCCESS) {
 
                     wolfSSL_EC_KEY_free(local);
+                    /* The pkey must not keep a pointer to the freed key. */
+                    key->ecc = NULL;
+                    local = NULL;
+                }
+            }
+            if (local != NULL) {
+                /* The key was created with a single reference. It stays on the
+                 * pkey, so that one belongs to the pkey and the caller needs
+                 * its own, which it releases as the get1 contract requires. */
+                key->ownEcc = 1;
+                if (wolfSSL_EC_KEY_up_ref(local) != WOLFSSL_SUCCESS) {
                     local = NULL;
                 }
             }
@@ -9761,6 +10001,7 @@ int wolfSSL_EVP_PKEY_assign(WOLFSSL_EVP_PKEY *pkey, int type, void *key)
 static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key)
 {
     int derSz = 0;
+    word32 derSzOut = 0;
     byte* derBuf = NULL;
     ecc_key* ecc;
 
@@ -9772,12 +10013,22 @@ static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key)
 #ifdef HAVE_PKCS8
         if (key->pkcs8HeaderSz) {
             /* when key has pkcs8 header the pkey should too */
-            if (wc_EccKeyToPKCS8(ecc, NULL, (word32*)&derSz) == WC_NO_ERR_TRACE(LENGTH_ONLY_E)) {
+            if (wc_EccKeyToPKCS8(ecc, NULL, &derSzOut) ==
+                    WC_NO_ERR_TRACE(LENGTH_ONLY_E)) {
+                derSz = (int)derSzOut;
                 derBuf = (byte*)XMALLOC((size_t)derSz, pkey->heap,
                     DYNAMIC_TYPE_OPENSSL);
                 if (derBuf) {
-                    if (wc_EccKeyToPKCS8(ecc, derBuf, (word32*)&derSz) >= 0) {
+                    if (wc_EccKeyToPKCS8(ecc, derBuf, &derSzOut) >= 0) {
+                        derSz = (int)derSzOut;
                         if (pkey->pkey.ptr) {
+                            /* The outgoing buffer can hold a private key
+                             * encoding, so wipe it before it is returned to
+                             * the allocator. */
+                            if (pkey->pkey_sz > 0) {
+                                ForceZero(pkey->pkey.ptr,
+                                    (word32)pkey->pkey_sz);
+                            }
                             XFREE(pkey->pkey.ptr, pkey->heap, DYNAMIC_TYPE_OPENSSL);
                         }
                         pkey->pkey_sz = (int)derSz;
@@ -9817,10 +10068,21 @@ static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key)
                 if (derBuf) {
                     if (wc_EccKeyToDer(ecc, derBuf, (word32)derSz) >= 0) {
                         if (pkey->pkey.ptr) {
+                            /* As above, the outgoing buffer can hold a
+                             * private key encoding. */
+                            if (pkey->pkey_sz > 0) {
+                                ForceZero(pkey->pkey.ptr,
+                                    (word32)pkey->pkey_sz);
+                            }
                             XFREE(pkey->pkey.ptr, pkey->heap, DYNAMIC_TYPE_OPENSSL);
                         }
                         pkey->pkey_sz = (int)derSz;
                         pkey->pkey.ptr = (char*)derBuf;
+                        /* The encoding carries no PKCS#8 wrapper, so a header
+                         * size left from a wrapped predecessor has to go with
+                         * it, or the export paths start inside the new
+                         * encoding. */
+                        pkey->pkcs8HeaderSz = 0;
                         return WOLFSSL_SUCCESS;
                     }
                     else {
@@ -9834,13 +10096,44 @@ static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key)
     else if (ecc->type == ECC_PUBLICKEY) {
         if ((derSz = wc_EccPublicKeyDerSize(ecc, 1)) > 0) {
         #ifdef WOLFSSL_NO_REALLOC
-            derBuf = (byte*)XMALLOC((size_t)derSz, pkey->heap, DYNAMIC_TYPE_OPENSSL);
+            /* The encoding below fills the new buffer, so nothing is carried
+             * over from the old one. It can be smaller than the old encoding.
+             * Allocate before the old buffer is touched, so that a failure
+             * here leaves the encoding held so far in place. */
+            derBuf = (byte*)XMALLOC((size_t)derSz, pkey->heap,
+                    DYNAMIC_TYPE_OPENSSL);
             if (derBuf != NULL) {
-                XMEMCPY(derBuf, pkey->pkey.ptr, (size_t)pkey->pkey_sz);
+                /* The buffer being released can hold a private key encoding,
+                 * so wipe it first. The size is dropped with the contents so
+                 * a failure below cannot leave pkey_sz describing a buffer
+                 * that no longer holds an encoding. A SubjectPublicKeyInfo
+                 * carries no PKCS#8 wrapper, so the header size has to go
+                 * with it as well, or a header size left from a wrapped
+                 * predecessor would make the export paths start inside the
+                 * new encoding. */
+                if (pkey->pkey.ptr != NULL && pkey->pkey_sz > 0) {
+                    ForceZero(pkey->pkey.ptr, (word32)pkey->pkey_sz);
+                }
                 XFREE(pkey->pkey.ptr, pkey->heap, DYNAMIC_TYPE_OPENSSL);
                 pkey->pkey.ptr = NULL;
+                pkey->pkey_sz = 0;
+                pkey->pkcs8HeaderSz = 0;
             }
         #else
+            /* XREALLOC consumes the old pointer, so the buffer has to be
+             * wiped before the call: it can hold a private key encoding. The
+             * size is dropped with the contents so a failure below cannot
+             * leave pkey_sz describing a buffer that no longer holds an
+             * encoding. A SubjectPublicKeyInfo carries no PKCS#8 wrapper, so
+             * the header size has to go with it as well, or a header size
+             * left from a wrapped predecessor would make the export paths
+             * start inside the new encoding. */
+            if (pkey->pkey.ptr != NULL && pkey->pkey_sz > 0) {
+                ForceZero(pkey->pkey.ptr, (word32)pkey->pkey_sz);
+            }
+            pkey->pkey_sz = 0;
+            pkey->pkcs8HeaderSz = 0;
+
             derBuf = (byte*)XREALLOC(pkey->pkey.ptr, (size_t)derSz, pkey->heap,
                     DYNAMIC_TYPE_OPENSSL);
         #endif
@@ -9851,7 +10144,6 @@ static int ECC_populate_EVP_PKEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY *key)
                     XFREE(derBuf, pkey->heap, DYNAMIC_TYPE_OPENSSL);
                     derBuf = NULL;
                     pkey->pkey.ptr = NULL;
-                    pkey->pkey_sz = 0;
                 }
             }
         }
@@ -9924,6 +10216,255 @@ int wolfSSL_EVP_PKEY_assign_EC_KEY(WOLFSSL_EVP_PKEY* pkey, WOLFSSL_EC_KEY* key)
     return ret;
 }
 #endif /* HAVE_ECC */
+
+#if defined(OPENSSL_EXTRA) || defined(OPENSSL_EXTRA_X509_SMALL)
+/* Get the public key from a key as an encoded point / raw octet string.
+ *
+ * This is the implementation behind both EVP_PKEY_get1_encoded_public_key()
+ * and the deprecated (but functionally identical) EVP_PKEY_get1_tls_encodedpoint().
+ *
+ * For EC keys the encoding is the uncompressed octet point (0x04 || X || Y).
+ * For X25519/X448 keys it is the raw little-endian public key (RFC 7748).
+ *
+ * The buffer returned through ppub is allocated here and must be released by
+ * the caller with OPENSSL_free().
+ *
+ * @param [in]  pkey  Key to encode the public part of.
+ * @param [out] ppub  Reference into which the allocated buffer is returned.
+ * @return  Length of the encoding in bytes on success.
+ * @return  0 on error.
+ */
+size_t wolfSSL_EVP_PKEY_get1_encoded_public_key(WOLFSSL_EVP_PKEY* pkey,
+    unsigned char** ppub)
+{
+    size_t ret = 0;
+
+    WOLFSSL_ENTER("wolfSSL_EVP_PKEY_get1_encoded_public_key");
+
+    if ((pkey == NULL) || (ppub == NULL)) {
+        WOLFSSL_MSG("Bad parameter");
+        return 0;
+    }
+    /* Always initialize the output so the caller never uses or frees a stale
+     * pointer when this function returns 0. */
+    *ppub = NULL;
+
+    switch (pkey->type) {
+#if defined(HAVE_ECC) && defined(OPENSSL_EXTRA)
+        case WC_EVP_PKEY_EC: {
+            int len;
+            WOLFSSL_EC_KEY* ec = wolfSSL_EVP_PKEY_get1_EC_KEY(pkey);
+            if (ec == NULL) {
+                WOLFSSL_MSG("No EC key in EVP_PKEY");
+                break;
+            }
+            /* *ppub is NULL here, so i2o allocates the buffer for us. */
+            len = wolfSSL_i2o_ECPublicKey(ec, ppub);
+            wolfSSL_EC_KEY_free(ec);
+            if (len > 0) {
+                ret = (size_t)len;
+            }
+            break;
+        }
+#endif /* HAVE_ECC && OPENSSL_EXTRA */
+#ifdef HAVE_CURVE25519
+        case WC_EVP_PKEY_X25519: {
+            word32 len = CURVE25519_PUB_KEY_SIZE;
+            byte* buf;
+
+            if (pkey->curve25519 == NULL) {
+                WOLFSSL_MSG("No X25519 key in EVP_PKEY");
+                break;
+            }
+            buf = (byte*)XMALLOC(len, NULL, DYNAMIC_TYPE_OPENSSL);
+            if (buf == NULL) {
+                WOLFSSL_MSG("malloc failed");
+                break;
+            }
+            /* TLS wire format is little-endian (RFC 7748). */
+            if (wc_curve25519_export_public_ex(pkey->curve25519, buf, &len,
+                    EC25519_LITTLE_ENDIAN) != 0) {
+                WOLFSSL_MSG("wc_curve25519_export_public_ex error");
+                XFREE(buf, NULL, DYNAMIC_TYPE_OPENSSL);
+                break;
+            }
+            *ppub = buf;
+            ret = (size_t)len;
+            break;
+        }
+#endif /* HAVE_CURVE25519 */
+#ifdef HAVE_CURVE448
+        case WC_EVP_PKEY_X448: {
+            word32 len = CURVE448_PUB_KEY_SIZE;
+            byte* buf;
+
+            if (pkey->curve448 == NULL) {
+                WOLFSSL_MSG("No X448 key in EVP_PKEY");
+                break;
+            }
+            buf = (byte*)XMALLOC(len, NULL, DYNAMIC_TYPE_OPENSSL);
+            if (buf == NULL) {
+                WOLFSSL_MSG("malloc failed");
+                break;
+            }
+            /* TLS wire format is little-endian (RFC 7748). */
+            if (wc_curve448_export_public_ex(pkey->curve448, buf, &len,
+                    EC448_LITTLE_ENDIAN) != 0) {
+                WOLFSSL_MSG("wc_curve448_export_public_ex error");
+                XFREE(buf, NULL, DYNAMIC_TYPE_OPENSSL);
+                break;
+            }
+            *ppub = buf;
+            ret = (size_t)len;
+            break;
+        }
+#endif /* HAVE_CURVE448 */
+        default:
+            WOLFSSL_MSG("Unsupported key type");
+            break;
+    }
+
+    return ret;
+}
+
+/* Set the public key in a key from an encoded point / raw octet string.
+ *
+ * This is the implementation behind both EVP_PKEY_set1_encoded_public_key()
+ * and the deprecated (but functionally identical) EVP_PKEY_set1_tls_encodedpoint().
+ *
+ * For EC keys the EVP_PKEY must already hold the curve parameters; pub is
+ * decoded as an octet point. For X25519/X448 keys pkey->type must already be
+ * set; pub is the raw little-endian public key (RFC 7748).
+ *
+ * @param [in, out] pkey    Key to set the public part of.
+ * @param [in]      pub     Encoded public key.
+ * @param [in]      publen  Length of encoded public key in bytes.
+ * @return  WOLFSSL_SUCCESS on success.
+ * @return  WOLFSSL_FAILURE on error.
+ */
+int wolfSSL_EVP_PKEY_set1_encoded_public_key(WOLFSSL_EVP_PKEY* pkey,
+    const unsigned char* pub, size_t publen)
+{
+    int ret = WC_NO_ERR_TRACE(WOLFSSL_FAILURE);
+
+    WOLFSSL_ENTER("wolfSSL_EVP_PKEY_set1_encoded_public_key");
+
+    if ((pkey == NULL) || (pub == NULL) || (publen == 0) ||
+            (publen > INT_MAX)) {
+        WOLFSSL_MSG("Bad parameter");
+        return WOLFSSL_FAILURE;
+    }
+
+    switch (pkey->type) {
+#if defined(HAVE_ECC) && defined(OPENSSL_EXTRA)
+        case WC_EVP_PKEY_EC: {
+            const unsigned char* in = pub;
+            /* Need the EC key (with its group) to decode the point into. */
+            WOLFSSL_EC_KEY* ec = wolfSSL_EVP_PKEY_get1_EC_KEY(pkey);
+            if (ec == NULL) {
+                WOLFSSL_MSG("No EC parameters in EVP_PKEY");
+                break;
+            }
+            /* Decode the octet point into the external public key. */
+            if (wolfSSL_o2i_ECPublicKey(&ec, &in, (long)publen) == NULL) {
+                WOLFSSL_MSG("wolfSSL_o2i_ECPublicKey error");
+                wolfSSL_EC_KEY_free(ec);
+                break;
+            }
+            /* Push the new public point into the internal wolfCrypt key so
+             * that consumers such as EVP_PKEY_derive() can use it. */
+            ec->inSet = 0;
+            if (SetECKeyInternal(ec) != WOLFSSL_SUCCESS) {
+                WOLFSSL_MSG("SetECKeyInternal error");
+                wolfSSL_EC_KEY_free(ec);
+                break;
+            }
+            /* Refresh the cached DER representation in the EVP_PKEY. */
+            ret = ECC_populate_EVP_PKEY(pkey, ec);
+            wolfSSL_EC_KEY_free(ec);
+            break;
+        }
+#endif /* HAVE_ECC && OPENSSL_EXTRA */
+#ifdef HAVE_CURVE25519
+        case WC_EVP_PKEY_X25519: {
+            curve25519_key* key;
+
+            /* Build the replacement in a temporary first; only commit (and
+             * free the old key) once the import has succeeded, so a failure
+             * leaves the original EVP_PKEY intact. */
+            key = (curve25519_key*)XMALLOC(sizeof(curve25519_key), pkey->heap,
+                DYNAMIC_TYPE_CURVE25519);
+            if (key == NULL) {
+                WOLFSSL_MSG("malloc failed");
+                break;
+            }
+            if (wc_curve25519_init_ex(key, pkey->heap, INVALID_DEVID) != 0) {
+                XFREE(key, pkey->heap, DYNAMIC_TYPE_CURVE25519);
+                break;
+            }
+            /* Raw X25519 keys are little-endian (RFC 7748). */
+            if (wc_curve25519_import_public_ex(pub, (word32)publen, key,
+                    EC25519_LITTLE_ENDIAN) != 0) {
+                WOLFSSL_MSG("wc_curve25519_import_public_ex error");
+                wc_curve25519_free(key);
+                XFREE(key, pkey->heap, DYNAMIC_TYPE_CURVE25519);
+                break;
+            }
+            /* Import succeeded - replace any existing key. */
+            if ((pkey->curve25519 != NULL) && (pkey->ownCurve25519 == 1)) {
+                wc_curve25519_free(pkey->curve25519);
+                XFREE(pkey->curve25519, pkey->heap, DYNAMIC_TYPE_CURVE25519);
+            }
+            pkey->curve25519 = key;
+            pkey->ownCurve25519 = 1;
+            ret = WOLFSSL_SUCCESS;
+            break;
+        }
+#endif /* HAVE_CURVE25519 */
+#ifdef HAVE_CURVE448
+        case WC_EVP_PKEY_X448: {
+            curve448_key* key;
+
+            /* Build the replacement in a temporary first; only commit (and
+             * free the old key) once the import has succeeded, so a failure
+             * leaves the original EVP_PKEY intact. */
+            key = (curve448_key*)XMALLOC(sizeof(curve448_key), pkey->heap,
+                DYNAMIC_TYPE_CURVE448);
+            if (key == NULL) {
+                WOLFSSL_MSG("malloc failed");
+                break;
+            }
+            if (wc_curve448_init_ex(key, pkey->heap, INVALID_DEVID) != 0) {
+                XFREE(key, pkey->heap, DYNAMIC_TYPE_CURVE448);
+                break;
+            }
+            /* Raw X448 keys are little-endian (RFC 7748). */
+            if (wc_curve448_import_public_ex(pub, (word32)publen, key,
+                    EC448_LITTLE_ENDIAN) != 0) {
+                WOLFSSL_MSG("wc_curve448_import_public_ex error");
+                wc_curve448_free(key);
+                XFREE(key, pkey->heap, DYNAMIC_TYPE_CURVE448);
+                break;
+            }
+            /* Import succeeded - replace any existing key. */
+            if ((pkey->curve448 != NULL) && (pkey->ownCurve448 == 1)) {
+                wc_curve448_free(pkey->curve448);
+                XFREE(pkey->curve448, pkey->heap, DYNAMIC_TYPE_CURVE448);
+            }
+            pkey->curve448 = key;
+            pkey->ownCurve448 = 1;
+            ret = WOLFSSL_SUCCESS;
+            break;
+        }
+#endif /* HAVE_CURVE448 */
+        default:
+            WOLFSSL_MSG("Unsupported key type");
+            break;
+    }
+
+    return ret;
+}
+#endif /* OPENSSL_EXTRA || OPENSSL_EXTRA_X509_SMALL */
 
 #ifndef NO_WOLFSSL_STUB
 const WOLFSSL_EVP_MD* wolfSSL_EVP_ripemd160(void)
@@ -12007,8 +12548,12 @@ void wolfSSL_EVP_PKEY_free(WOLFSSL_EVP_PKEY* key)
             wc_FreeRng(&key->rng);
 
             if (key->pkey.ptr != NULL) {
+                /* Holds the private key DER for a private pkey. */
+                if (key->pkey_sz > 0)
+                    ForceZero(key->pkey.ptr, (word32)key->pkey_sz);
                 XFREE(key->pkey.ptr, key->heap, DYNAMIC_TYPE_PUBLIC_KEY);
                 key->pkey.ptr = NULL;
+                key->pkey_sz = 0;
             }
             switch(key->type)
             {
@@ -12802,7 +13347,10 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
 
     byte    buff[WOLFSSL_EVP_EXPONENT_PRINT_MAX] = { 0 };
     int     res = WC_NO_ERR_TRACE(WOLFSSL_FAILURE);
-    word32  length;
+    /* int (not word32) to match the int* out-parameter of GetSequence/GetLength;
+     * casting &length aliased a word32 and corrupted it on platforms where
+     * sizeof(int) != sizeof(word32). Values are non-negative ASN.1 lengths. */
+    int     length;
     word32  inOutIdx;
     word32  oid;
     byte    tagFound;
@@ -12838,17 +13386,17 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
         int idx;
         int wsz;
 
-        if (GetSequence(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) < 0) {
+        if (GetSequence(pkey, &inOutIdx, &length, (word32)pkeySz) < 0) {
             break;
         }
-        if (GetSequence(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) < 0) {
+        if (GetSequence(pkey, &inOutIdx, &length, (word32)pkeySz) < 0) {
             break;
         }
         if (GetObjectId(pkey, &inOutIdx, &oid, oidIgnoreType, (word32)pkeySz) <
                 0) {
             break;
         }
-        if (GetSequence(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) < 0) {
+        if (GetSequence(pkey, &inOutIdx, &length, (word32)pkeySz) < 0) {
             break;
         }
         /* get prime element */
@@ -12858,7 +13406,7 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
         if (tagFound != ASN_INTEGER) {
             break;
         }
-        if (GetLength(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) <= 0) {
+        if (GetLength(pkey, &inOutIdx, &length, (word32)pkeySz) <= 0) {
             break;
         }
         prime     = (byte*)(pkey + inOutIdx);
@@ -12872,7 +13420,7 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
         if (tagFound != ASN_INTEGER) {
             break;
         }
-        if (GetLength(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) <= 0) {
+        if (GetLength(pkey, &inOutIdx, &length, (word32)pkeySz) <= 0) {
             break;
         }
         if (length != 1) {
@@ -12888,7 +13436,7 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
         if (tagFound != ASN_BIT_STRING) {
             break;
         }
-        if (GetLength(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) <= 0) {
+        if (GetLength(pkey, &inOutIdx, &length, (word32)pkeySz) <= 0) {
             break;
         }
         inOutIdx ++;
@@ -12898,7 +13446,7 @@ static int PrintPubKeyDH(WOLFSSL_BIO* out, const byte* pkey, int pkeySz,
         if (tagFound != ASN_INTEGER) {
             break;
         }
-        if (GetLength(pkey, &inOutIdx, (int*)&length, (word32)pkeySz) <= 0) {
+        if (GetLength(pkey, &inOutIdx, &length, (word32)pkeySz) <= 0) {
             break;
         }
         publicKeySz = (int)length;
@@ -13266,6 +13814,11 @@ int wolfSSL_EVP_EncodeBlock(unsigned char *out, const unsigned char *in,
     if (inLen < 0)
         return WOLFSSL_FATAL_ERROR;
 
+    /* Reject lengths whose base64 output would overflow a positive int. This
+     * also guards against reads far past the caller's input allocation. */
+    if (inLen > (INT_MAX / 4) * 3)
+        return WOLFSSL_FATAL_ERROR;
+
     if (Base64_Encode_NoNl(in, (word32)inLen, out, &ret) == 0)
         return (int)ret;
     else
@@ -13323,6 +13876,15 @@ int  wolfSSL_EVP_EncodeUpdate(WOLFSSL_EVP_ENCODE_CTX* ctx,
         return 0;
 
     *outl = 0;
+
+    if (inl < 0)
+        return 0;
+
+    /* Reject lengths whose base64 output would overflow a positive int. This
+     * also guards against reads far past the caller's input allocation. */
+    if (inl > (INT_MAX / (BASE64_ENCODE_RESULT_BLOCK_SIZE + 1)) *
+            BASE64_ENCODE_BLOCK_SIZE)
+        return 0;
 
     /* if the remaining data exists in the ctx, add input data to them
      * to create a block(48bytes) for encoding
@@ -13457,7 +14019,7 @@ int  wolfSSL_EVP_DecodeUpdate(WOLFSSL_EVP_ENCODE_CTX* ctx,
     if (outl == NULL)
         return -1;
 
-    if (ctx == NULL || out == NULL || in == NULL) {
+    if (ctx == NULL || out == NULL || in == NULL || inl < 0) {
         *outl = 0;
         return -1;
     }
@@ -13528,6 +14090,8 @@ int  wolfSSL_EVP_DecodeUpdate(WOLFSSL_EVP_ENCODE_CTX* ctx,
         }
         e[0] = in[j++];
         if (e[0] == '\0') {
+            /* a NUL byte ends the input, nothing is left to buffer */
+            inLen = 0;
             break;
         }
         inLen--;
@@ -13607,6 +14171,15 @@ int  wolfSSL_EVP_DecodeUpdate(WOLFSSL_EVP_ENCODE_CTX* ctx,
             }
             if (c == '=') {
                 pad = 1;
+            }
+            if (i >= BASE64_DECODE_BLOCK_SIZE) {
+                /* More leftover data than one decode block can hold. The loops
+                 * above leave at most a partial block behind, so this is a
+                 * bound on the buffer and not a reachable input error. */
+                XMEMSET(ctx->data, 0, sizeof(ctx->data));
+                ctx->remaining = 0;
+                *outl = 0;
+                return -1;
             }
             ctx->data[i++] = c;
             ctx->remaining++;

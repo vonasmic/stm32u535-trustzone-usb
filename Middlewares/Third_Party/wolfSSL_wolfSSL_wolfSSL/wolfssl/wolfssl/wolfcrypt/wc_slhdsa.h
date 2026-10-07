@@ -34,6 +34,11 @@
 
 #ifdef WOLFSSL_HAVE_SLHDSA
 
+#if FIPS_VERSION3_GE(7,0,0)
+    extern const unsigned int wolfCrypt_FIPS_slhdsa_ro_sanity[2];
+    WOLFSSL_LOCAL int wolfCrypt_FIPS_SLHDSA_sanity(void);
+#endif
+
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/sha3.h>
 
@@ -88,6 +93,41 @@
 #endif
 
 #endif /* !WOLFSSL_SLHDSA_NO_SHAKE */
+
+/* Push a group-level exclusion down onto each set in that group. The parameter
+ * table and the OID lookups gate on the per-set 'NO' macros while the TLS
+ * mappings gate on the positive macros; without this, a build excluding only a
+ * group would decode a certificate the mappings cannot name. */
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_128) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_128S
+    #define WOLFSSL_SLHDSA_PARAM_NO_128S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_128) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_128F
+    #define WOLFSSL_SLHDSA_PARAM_NO_128F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_192) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_192S
+    #define WOLFSSL_SLHDSA_PARAM_NO_192S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_192) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_192F
+    #define WOLFSSL_SLHDSA_PARAM_NO_192F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_256) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_256S
+    #define WOLFSSL_SLHDSA_PARAM_NO_256S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_256) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_256F
+    #define WOLFSSL_SLHDSA_PARAM_NO_256F
+#endif
 
 /* When 'NO' defines are on then define no parameter set. */
 #if defined(WOLFSSL_SLHDSA_PARAM_NO_128S) && \
@@ -223,6 +263,39 @@
     #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_256F
     #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_256
     #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST
+#endif
+
+/* Push a group-level SHA2 exclusion down onto each set in that group, for the
+ * same reason as the SHAKE family above. */
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_128S
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_128S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_128F
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_128F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_192S
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_192S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_192F
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_192F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_256S
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_256S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256) || \
+    defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
+    #undef WOLFSSL_SLHDSA_PARAM_NO_SHA2_256F
+    #define WOLFSSL_SLHDSA_PARAM_NO_SHA2_256F
 #endif
 
 /* Derive aggregate 'NO' defines for SHA2. */
@@ -468,18 +541,85 @@
 
 #endif /* WOLFSSL_SLHDSA_SHA2 */
 
+/* ======== Combined family-absence guards ======== */
+
+/* A size/speed class is only truly absent when neither its SHAKE variant nor
+ * its SHA2 variant is compiled in. The per-family 'NO' guards above describe
+ * one family each; the SHA2 'NO' macros exist only when WOLFSSL_SLHDSA_SHA2 is
+ * defined, otherwise WOLFSSL_SLHDSA_NO_SHA2 stands for "all SHA2 absent".
+ * These combined guards let the maximum-size defines below (and the internal
+ * buffer maxima in wc_slhdsa.c) stay large enough for every compiled-in
+ * parameter set across both hash families. Without them a SHA2-only build
+ * (SHAKE disabled) would size buffers for the 128-bit level only and overflow
+ * on the 192/256-bit SHA2 parameter sets. */
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_256) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256))
+    #define WC_SLHDSA_ALL_NO_256
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_192) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192))
+    #define WC_SLHDSA_ALL_NO_192
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL))
+    #define WC_SLHDSA_ALL_NO_SMALL
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_FAST) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST))
+    #define WC_SLHDSA_ALL_NO_FAST
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_128) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128))
+    #define WC_SLHDSA_ALL_NO_128
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_256F) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256F))
+    #define WC_SLHDSA_ALL_NO_256F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_256S) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256S))
+    #define WC_SLHDSA_ALL_NO_256S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_192F) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192F))
+    #define WC_SLHDSA_ALL_NO_192F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_192S) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192S))
+    #define WC_SLHDSA_ALL_NO_192S
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_128F) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128F))
+    #define WC_SLHDSA_ALL_NO_128F
+#endif
+#if defined(WOLFSSL_SLHDSA_PARAM_NO_128S) && \
+    (defined(WOLFSSL_SLHDSA_NO_SHA2) || \
+     defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128S))
+    #define WC_SLHDSA_ALL_NO_128S
+#endif
+
 /* ======== Maximum size defines ======== */
 
 /* Determine maximum private and public key lengths based on maximum 256-bit
  * output length. SHA2 variants have identical sizes to SHAKE counterparts. */
-#ifndef WOLFSSL_SLHDSA_PARAM_NO_256
+#ifndef WC_SLHDSA_ALL_NO_256
     /* Maximum private key length. */
     #define WC_SLHDSA_MAX_PRIV_LEN          WC_SLHDSA_SHAKE256F_PRIV_LEN
     /* Maximum public key length. */
     #define WC_SLHDSA_MAX_PUB_LEN           WC_SLHDSA_SHAKE256F_PUB_LEN
     /* Maximum seed length. */
     #define WC_SLHDSA_MAX_SEED              WC_SLHDSA_SHAKE256_SEED_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192)
+#elif !defined(WC_SLHDSA_ALL_NO_192)
     /* Maximum private key length. */
     #define WC_SLHDSA_MAX_PRIV_LEN          WC_SLHDSA_SHAKE192F_PRIV_LEN
     /* Maximum public key length. */
@@ -496,55 +636,31 @@
 #endif
 
 /* Determine maximum signature length depending on the parameters compiled in.
- */
-#if !defined(WOLFSSL_SLHDSA_PARAM_NO_256) && \
-    !defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
-    /* Maximum signature length. */
+ *
+ * The signature size depends only on the parameter set, not the hash family:
+ * each SHA2 variant is byte-for-byte the same size as its SHAKE counterpart.
+ * So this keys off the per-variant combined WC_SLHDSA_ALL_NO_*F/S guards (present
+ * when that exact variant is absent from BOTH families) and references the
+ * SHAKE size constant. Using the raw per-family WOLFSSL_SLHDSA_PARAM_NO[_SHA2]_*
+ * guards here mis-fires on the SHA2 arms in a SHAKE-limited, SHA2-absent build,
+ * because the WOLFSSL_SLHDSA_PARAM_NO_SHA2_* macros are undefined when the SHA2
+ * family is off (only WOLFSSL_SLHDSA_NO_SHA2 is), so the arm is wrongly taken
+ * and expands to an undefined WC_SLHDSA_SHA2_*_SIG_LEN. Selecting on the exact
+ * variant (rather than class-plus-speed) also keeps the bound tight in
+ * mixed-family builds. The arms are ordered by descending signature size
+ * (256f > 192f > 256s > 128f > 192s > 128s). */
+#if   !defined(WC_SLHDSA_ALL_NO_256F)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE256F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256) && \
-    !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_256F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
-    /* Maximum signature length. */
+#elif !defined(WC_SLHDSA_ALL_NO_192F)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE192F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_192F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_256) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
-    /* Maximum signature length. */
+#elif !defined(WC_SLHDSA_ALL_NO_256S)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE256S_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_256S_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_128) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_FAST)
-    /* Maximum signature length. */
+#elif !defined(WC_SLHDSA_ALL_NO_128F)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE128F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_FAST)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_128F_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
-    /* Maximum signature length. */
+#elif !defined(WC_SLHDSA_ALL_NO_192S)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE192S_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_192S_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_128) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SMALL)
-    /* Maximum signature length. */
+#elif !defined(WC_SLHDSA_ALL_NO_128S)
     #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHAKE128S_SIG_LEN
-#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128) && \
-      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_SMALL)
-    /* Maximum signature length. */
-    #define WC_SLHDSA_MAX_SIG_LEN           WC_SLHDSA_SHA2_128S_SIG_LEN
 #else
     #error "No parameters defined"
 #endif
@@ -566,6 +682,48 @@ enum SlhDsaParam {
     SLHDSA_SHA2_256F = 11,  /* SLH-DSA SHA2-256f */
 #endif
 };
+
+/* A parameter set that is guaranteed to be compiled in. Use as a placeholder
+ * for wc_SlhDsaKey_Init when the real parameter set is only known later (e.g.
+ * determined from a decoded key OID or a negotiated TLS signature scheme).
+ * The SHAKE family is disabled when only the SHA2 family is enabled, so the
+ * placeholder cannot be a fixed SHAKE value. */
+/* Selection must use the same WOLFSSL_SLHDSA_PARAM_NO_* macros that gate the
+ * SlhDsaParams[] rows, or the placeholder can name a set with no table row and
+ * every wc_SlhDsaKey_Init using it fails with NOT_COMPILED_IN. */
+#if !defined(WOLFSSL_SLHDSA_PARAM_NO_128S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE128S
+#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_128F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE128F
+#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE192S
+#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_192F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE192F
+#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_256S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE256S
+#elif !defined(WOLFSSL_SLHDSA_PARAM_NO_256F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHAKE256F
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_128S
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_128F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_128F
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_192S
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_192F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_192F
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256S)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_256S
+#elif defined(WOLFSSL_SLHDSA_SHA2) && \
+      !defined(WOLFSSL_SLHDSA_PARAM_NO_SHA2_256F)
+    #define WC_SLHDSA_DEFAULT_PARAM SLHDSA_SHA2_256F
+#else
+    #error "WOLFSSL_HAVE_SLHDSA requires at least one parameter set"
+#endif
 
 /* Helper macro to detect SHA2 parameter sets. */
 #ifdef WOLFSSL_SLHDSA_SHA2
@@ -590,6 +748,14 @@ typedef struct SlhDsaParameters {
     word32 sigLen;              /* Signature length in bytes. */
 } SlhDsaParameters;
 
+/* Flags indicating which parts of the key are present in the key object.
+ * Crypto callback devices store keys within the device and clear both flags.
+ * Sign and verify dispatch before the flags are read, so for those the flags
+ * gate the software path only.
+ *
+ * The deterministic sign entry points are the exception: they read PK.seed out
+ * of the local key to pass as addrnd, so they need the public half present
+ * even when the private half lives on the device. */
 #define WC_SLHDSA_FLAG_PRIVATE       0x0001
 #define WC_SLHDSA_FLAG_PUBLIC        0x0002
 #define WC_SLHDSA_FLAG_BOTH_KEYS     (WC_SLHDSA_FLAG_PRIVATE | \
@@ -601,7 +767,7 @@ typedef struct SlhDsaParameters {
 #endif
 
 /* SLH-DSA key data and state. */
-typedef struct SlhDsaKey {
+struct SlhDsaKey {
     /* Parameters. */
     const SlhDsaParameters* params;
     /* Flags of the key. */
@@ -654,7 +820,12 @@ typedef struct SlhDsaKey {
         } sha2;
 #endif
     } hash;
-} SlhDsaKey;
+};
+
+#ifndef WC_SLHDSAKEY_TYPE_DEFINED
+    typedef struct SlhDsaKey SlhDsaKey;
+    #define WC_SLHDSAKEY_TYPE_DEFINED
+#endif
 
 WOLFSSL_API int  wc_SlhDsaKey_Init(SlhDsaKey* key, enum SlhDsaParam param,
     void* heap, int devId);

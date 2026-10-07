@@ -83,6 +83,7 @@ enum wolfSSL_ErrorCodes {
     SERVER_HINT_ERROR            = -332,   /* psk server hint error  */
     PSK_KEY_ERROR                = -333,   /* psk key error  */
     DUPE_ENTRY_E                 = -334,   /* duplicate entry error */
+    PSK_MISSING_ERROR            = -335,   /* psk missing  */
 
     GETTIME_ERROR                = -337,   /* gettimeofday failed ??? */
     GETITIMER_ERROR              = -338,   /* getitimer failed ??? */
@@ -158,7 +159,7 @@ enum wolfSSL_ErrorCodes {
     DTLS_EXPORT_VER_E            = -411,   /* export version error */
     INPUT_SIZE_E                 = -412,   /* input size too big error */
     CTX_INIT_MUTEX_E             = -413,   /* initialize ctx mutex error */
-    EXT_MASTER_SECRET_NEEDED_E   = -414,   /* need EMS enabled to resume */
+    EXT_MASTER_SECRET_NEEDED_E   = -414,   /* EMS required but not negotiated */
     DTLS_POOL_SZ_E               = -415,   /* exceeded DTLS pool size */
     DECODE_E                     = -416,   /* decode handshake message error */
     HTTP_TIMEOUT                 = -417,   /* HTTP timeout for OCSP or CRL req */
@@ -246,12 +247,16 @@ enum wolfSSL_ErrorCodes {
 
     SEQUENCE_NUMBER_E            = -520,   /* Record sequence number would wrap */
 
-    WOLFSSL_LAST_E               = -520
+    RPK_UNTRUSTED_E              = -521,   /* RFC 7250 Raw Public Key not trusted
+                                           * out of band */
+
+    OCSP_NO_URL                  = -522,   /* Cert advertises no OCSP responder
+                                            * and no override URL is set */
+
+    WOLFSSL_LAST_E               = -522
 
     /* codes -1000 to -1999 are reserved for wolfCrypt. */
 };
-
-wc_static_assert((int)WC_LAST_E <= (int)WOLFSSL_LAST_E);
 
 #ifndef WOLFSSL_NO_DILITHIUM_LEGACY_NAMES
     /* Legacy alias for code written against the pre-standardization

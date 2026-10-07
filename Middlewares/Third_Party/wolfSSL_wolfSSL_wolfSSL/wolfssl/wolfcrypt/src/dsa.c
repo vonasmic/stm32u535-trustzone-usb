@@ -261,6 +261,14 @@ int wc_MakeDsaKey(WC_RNG *rng, DsaKey *dsa)
     }
 #endif
 
+#if !(defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_NO_MALLOC)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    /* cBuf will hold the random value that becomes the private key x.
+     * Register early so any future path that skips the ForceZero is caught. */
+    XMEMSET(cBuf, 0, (size_t)cSz);
+    wc_MemZero_Add("DsaGenerateKeyPair cBuf", cBuf, (size_t)cSz);
+#endif
+
 #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_NO_MALLOC)
     if ((tmpQ = (mp_int *)XMALLOC(sizeof(*tmpQ), dsa->heap,
             DYNAMIC_TYPE_TMP_BUFFER)) == NULL)
@@ -270,7 +278,16 @@ int wc_MakeDsaKey(WC_RNG *rng, DsaKey *dsa)
 
     if (err == MP_OKAY)
 #endif
+    {
+        /* Map an init failure to MP_INIT_E, the code the cleanup below uses to
+         * mean "nothing here was constructed".  mp_init_multi() reports the
+         * backend's own error (MP_MEM from the heap backends) and, on failure,
+         * leaves every argument either cleared or never touched, so the
+         * cleanup must not mp_clear() any of them. */
         err = mp_init_multi(&dsa->x, &dsa->y, tmpQ, NULL, NULL, NULL);
+        if (err != MP_OKAY)
+            err = MP_INIT_E;
+    }
 
     if (err == MP_OKAY) {
         do {
@@ -312,20 +329,26 @@ int wc_MakeDsaKey(WC_RNG *rng, DsaKey *dsa)
     if (err == MP_OKAY)
         dsa->type = DSA_PRIVATE;
 
-    if (err != MP_OKAY) {
+    if ((err != MP_OKAY) && (err != WC_NO_ERR_TRACE(MP_INIT_E))) {
         mp_forcezero(&dsa->x);
         mp_clear(&dsa->y);
     }
 
     ForceZero(cBuf, (word32)cSz);
+#if !(defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_NO_MALLOC)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(cBuf, (size_t)cSz);
+#endif
 #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_NO_MALLOC)
     XFREE(cBuf, dsa->heap, DYNAMIC_TYPE_TMP_BUFFER);
     if (tmpQ != NULL) {
-        mp_clear(tmpQ);
+        if (err != WC_NO_ERR_TRACE(MP_INIT_E))
+            mp_clear(tmpQ);
         XFREE(tmpQ, dsa->heap, DYNAMIC_TYPE_TMP_BUFFER);
     }
 #else
-    mp_clear(tmpQ);
+    if (err != WC_NO_ERR_TRACE(MP_INIT_E))
+        mp_clear(tmpQ);
 #endif
 
     return err;
@@ -408,7 +431,15 @@ int wc_MakeDsaParameters(WC_RNG *rng, int modulus_size, DsaKey *dsa)
 
     if (err == MP_OKAY)
 #endif
+    {
+        /* Map an init failure to MP_INIT_E: the cleanup below already keys off
+         * that code to skip mp_clear() on objects the failed init never
+         * constructed, but mp_init_multi() returns the backend's own error
+         * (MP_MEM from the heap backends), so the guard never fired. */
         err = mp_init_multi(tmp, tmp2, &dsa->p, &dsa->q, &dsa->g, 0);
+        if (err != MP_OKAY)
+            err = MP_INIT_E;
+    }
 
     if (err == MP_OKAY)
         err = mp_read_unsigned_bin(tmp2, buf, (word32)(msize - qsize));
@@ -546,13 +577,17 @@ static int _DsaImportParamsRaw(DsaKey* dsa, const char* p, const char* q,
     if (err == MP_OKAY)
         err = mp_read_radix(&dsa->g, g, MP_RADIX_HEX);
 
-    /* verify (L,N) pair bit lengths */
-    pSz = mp_unsigned_bin_size(&dsa->p);
-    qSz = mp_unsigned_bin_size(&dsa->q);
+    /* verify (L,N) pair bit lengths - only when the reads above succeeded, so
+     * a more specific earlier error (e.g. DH_CHECK_PUB_E from the primality
+     * check) is not overwritten and qSz is not read from an unset q. */
+    if (err == MP_OKAY) {
+        pSz = mp_unsigned_bin_size(&dsa->p);
+        qSz = mp_unsigned_bin_size(&dsa->q);
 
-    if (CheckDsaLN(pSz * WOLFSSL_BIT_SIZE, qSz * WOLFSSL_BIT_SIZE) != 0) {
-        WOLFSSL_MSG("Invalid DSA p or q parameter size");
-        err = BAD_FUNC_ARG;
+        if (CheckDsaLN(pSz * WOLFSSL_BIT_SIZE, qSz * WOLFSSL_BIT_SIZE) != 0) {
+            WOLFSSL_MSG("Invalid DSA p or q parameter size");
+            err = BAD_FUNC_ARG;
+        }
     }
 
     if (err != MP_OKAY) {
@@ -755,7 +790,10 @@ int wc_DsaExportKeyRaw(DsaKey* dsa, byte* x, word32* xSz, byte* y, word32* ySz)
 
 int wc_DsaSign(const byte* digest, byte* out, DsaKey* key, WC_RNG* rng)
 {
-    /* use sha1 by default for backwards compatibility */
+    /* Use sha1 by default for backwards compatibility.  This API will always
+     * fail in FIPS 186-5 builds, due to the forbidden SHA-1 sign operation, as
+     * required.
+     */
     return wc_DsaSign_ex(digest, WC_SHA_DIGEST_SIZE, out, key, rng);
 }
 
@@ -787,7 +825,7 @@ int wc_DsaSign_ex(const byte* digest, word32 digestSz, byte* out, DsaKey* key,
         return BAD_FUNC_ARG;
 
     if ((digestSz > WC_MAX_DIGEST_SIZE) ||
-        (digestSz < WC_MIN_DIGEST_SIZE))
+        (digestSz < WC_MIN_DIGEST_SIZE_FOR_SIGN))
     {
         return BAD_LENGTH_E;
     }
@@ -842,6 +880,14 @@ int wc_DsaSign_ex(const byte* digest, word32 digestSz, byte* out, DsaKey* key,
             ret = BAD_FUNC_ARG;
             break;
         }
+
+#if !defined(WOLFSSL_SMALL_STACK) && defined(WOLFSSL_CHECK_MEM_ZERO)
+        /* buffer will hold the secret nonce k and blinding value b. Register
+         * now (past the MP_INIT_E exit) so any later path that skips the
+         * ForceZero is caught. */
+        XMEMSET(buffer, 0, halfSz);
+        wc_MemZero_Add("wc_DsaSign buffer", buffer, halfSz);
+#endif
 
         qMinus1 = kInv;
 
@@ -1082,6 +1128,9 @@ int wc_DsaSign_ex(const byte* digest, word32 digestSz, byte* out, DsaKey* key,
 #else /* !WOLFSSL_SMALL_STACK */
     if (ret != WC_NO_ERR_TRACE(MP_INIT_E)) {
         ForceZero(buffer, halfSz);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Check(buffer, halfSz);
+#endif
         mp_forcezero(kInv);
         mp_forcezero(k);
 #ifndef WOLFSSL_MP_INVMOD_CONSTANT_TIME
@@ -1121,12 +1170,15 @@ int wc_DsaVerify_ex(const byte* digest, word32 digestSz, const byte* sig,
     if (digest == NULL || sig == NULL || key == NULL || answer == NULL)
         return BAD_FUNC_ARG;
 
-    /* Note the min allowed digestSz here is WC_SHA_DIGEST_SIZE, not
+    /* assign default value so verification is always failed on error */
+    *answer = 0;
+
+    /* Note the min allowed digestSz here is WC_MIN_DIGEST_SIZE_FOR_VERIFY, not
      * WC_MIN_DIGEST_SIZE, to allow verify-only legacy DSA operations, as
      * expressly allowed under FIPS 186-5, FIPS 140-3, and SP 800-131A.
      */
     if ((digestSz > WC_MAX_DIGEST_SIZE) ||
-        (digestSz < WC_SHA_DIGEST_SIZE))
+        (digestSz < WC_MIN_DIGEST_SIZE_FOR_VERIFY))
     {
         return BAD_LENGTH_E;
     }

@@ -2141,6 +2141,8 @@ int  wolfSSL_get_using_nonblock(WOLFSSL*);
     SSL_ERROR_WANT_WRITE error was received and and the application needs to
     call wolfSSL_write() again.  Use wolfSSL_get_error() to get a specific
     error code.
+    \return BAD_FUNC_ARG will be returned when ssl or data is NULL, or sz
+    is negative.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param data data buffer which will be sent to peer.
@@ -2166,6 +2168,47 @@ int  wolfSSL_get_using_nonblock(WOLFSSL*);
     \sa wolfSSL_recv
 */
 int  wolfSSL_write(WOLFSSL* ssl, const void* data, int sz);
+
+/*!
+    \ingroup IO
+
+    \brief This function writes sz bytes from the buffer, data, to the SSL
+    connection, ssl, and reports the number of bytes written. It is equivalent
+    to wolfSSL_write() except that the length written is returned through wr
+    and the return value only indicates success or failure. Whether a partial
+    write counts as success depends on WOLFSSL_MODE_ENABLE_PARTIAL_WRITE having
+    been set with wolfSSL_CTX_set_mode(); without it, anything short of the
+    full length is a failure.
+
+    \return 1 on success.
+    \return 0 on failure. Call wolfSSL_get_error() for the reason.
+    \return BAD_FUNC_ARG when ssl is NULL.
+
+    \param ssl pointer to the SSL session, created with wolfSSL_new().
+    \param data data buffer to write to the SSL connection.
+    \param sz number of bytes to write.
+    \param wr pointer that receives the number of bytes written. May be NULL.
+    Set to zero before anything else is done, so it reads as zero even when
+    the call fails. This differs from wolfSSL_read_ex(), which leaves its
+    count alone unless data was read.
+
+    _Example_
+    \code
+    WOLFSSL* ssl = 0;
+    char msg[] = "hello wolfssl!";
+    size_t written = 0;
+    ...
+
+    if (wolfSSL_write_ex(ssl, msg, sizeof(msg), &written) != 1) {
+        // handle the failure, see wolfSSL_get_error()
+    }
+    \endcode
+
+    \sa wolfSSL_write
+    \sa wolfSSL_read_ex
+    \sa wolfSSL_get_error
+*/
+int wolfSSL_write_ex(WOLFSSL* ssl, const void* data, size_t sz, size_t* wr);
 
 /*!
     \ingroup IO
@@ -2198,6 +2241,8 @@ int  wolfSSL_write(WOLFSSL* ssl, const void* data, int sz);
     SSL_ERROR_WANT_WRITE error was received and and the application needs to
     call wolfSSL_read() again.  Use wolfSSL_get_error() to get a specific
     error code.
+    \return BAD_FUNC_ARG will be returned when ssl or data is NULL, or sz
+    is negative.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param data buffer where wolfSSL_read() will place data read.
@@ -2224,6 +2269,47 @@ int  wolfSSL_write(WOLFSSL* ssl, const void* data, int sz);
     \sa wolfSSL_pending
 */
 int  wolfSSL_read(WOLFSSL* ssl, void* data, int sz);
+
+/*!
+    \ingroup IO
+
+    \brief This function reads up to sz bytes of decrypted application data
+    from the SSL connection, ssl, into the buffer, data, and reports the number
+    of bytes read. It is equivalent to wolfSSL_read() except that the length
+    read is returned through rd and the return value only indicates whether any
+    application data was read.
+
+    \return 1 when application data was read.
+    \return 0 when no application data was read. Call wolfSSL_get_error() for
+    the reason.
+    \return BAD_FUNC_ARG when ssl is NULL.
+
+    \param ssl pointer to the SSL session, created with wolfSSL_new().
+    \param data buffer to hold the data read.
+    \param sz size of the buffer in bytes.
+    \param rd pointer that receives the number of bytes read. May be NULL and
+    is only set when data was read, so it keeps whatever the caller left in it
+    when the call fails. This differs from wolfSSL_write_ex(), which clears
+    its count first.
+
+    _Example_
+    \code
+    WOLFSSL* ssl = 0;
+    char reply[1024];
+    size_t bytesRead = 0;
+    ...
+
+    if (wolfSSL_read_ex(ssl, reply, sizeof(reply), &bytesRead) == 1) {
+        // "bytesRead" bytes returned into buffer "reply"
+    }
+    \endcode
+
+    \sa wolfSSL_read
+    \sa wolfSSL_write_ex
+    \sa wolfSSL_pending
+    \sa wolfSSL_get_error
+*/
+int wolfSSL_read_ex(WOLFSSL* ssl, void* data, size_t sz, size_t* rd);
 
 /*!
     \ingroup IO
@@ -2258,6 +2344,8 @@ int  wolfSSL_read(WOLFSSL* ssl, void* data, int sz);
     SSL_ERROR_WANT_READ or SSL_ERROR_WANT_WRITE error was received and and
     the application needs to call wolfSSL_peek() again. Use
     wolfSSL_get_error() to get a specific error code.
+    \return BAD_FUNC_ARG will be returned when ssl or data is NULL, or sz
+    is negative.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param data buffer where wolfSSL_peek() will place data read.
@@ -2439,6 +2527,20 @@ void wolfSSL_free(WOLFSSL* ssl);
     \return SSL_FATAL_ERROR will be returned upon failure. Call
     wolfSSL_get_error() for a more specific error code.
 
+    When the connection is already closed or reset and no close notify was
+    ever sent, the exchange can never complete and SSL_FATAL_ERROR is
+    returned, so a loop that calls this function until the shutdown completes
+    terminates. wolfSSL_get_error() then reports SOCKET_PEER_CLOSED_E, unless
+    a more specific error has already been recorded. That code is used
+    whatever closed the connection, including this side sending a fatal
+    alert, so under OPENSSL_EXTRA, where wolfSSL_get_error() reports it as
+    SSL_ERROR_SYSCALL, a locally aborted connection can surface as a syscall
+    error. Recording it also puts an entry on the OpenSSL error queue in
+    builds that have one, so an application that inspects the queue after
+    tearing down an already-aborted connection finds an entry where it
+    previously found none; call wolfSSL_ERR_clear_error() if leftover entries
+    matter.
+
     \param ssl pointer to the SSL session created with wolfSSL_new().
 
     _Example_
@@ -2458,6 +2560,51 @@ void wolfSSL_free(WOLFSSL* ssl);
     \sa wolfSSL_CTX_free
 */
 int  wolfSSL_shutdown(WOLFSSL* ssl);
+
+/*!
+    \ingroup TLS
+
+    \brief This function sends a user_canceled alert to the peer and then
+    shuts the connection down by calling wolfSSL_shutdown(). It is used when
+    the application abandons a connection for its own reasons rather than
+    because of a protocol failure.
+
+    \return WOLFSSL_SUCCESS on successful shutdown.
+    \return WOLFSSL_SHUTDOWN_NOT_DONE when the peer has yet to send its
+    close notify alert. Call wolfSSL_shutdown() again to complete the
+    bidirectional shutdown. Under WOLFSSL_ERROR_CODE_OPENSSL this value is 0,
+    which is also WOLFSSL_FAILURE, so in that configuration the return value
+    alone does not separate this case from the one below.
+    \return WOLFSSL_FAILURE when ssl is NULL or the alert could not be sent.
+    Call wolfSSL_get_error() for the reason.
+    \return WOLFSSL_FATAL_ERROR when the shutdown that follows the alert
+    fails. Call wolfSSL_get_error() for the reason.
+    \return SSL_SHUTDOWN_ALREADY_DONE_E when the connection was already shut
+    down and WOLFSSL_SHUTDOWNONCE is defined.
+
+    \param ssl pointer to the SSL session, created with wolfSSL_new().
+
+    \note RFC 9846, Section 6.1 requires this alert to be followed by a
+    close notify, which is why the shutdown is part of this call. On the
+    receiving side the alert is not itself an error: a TLS 1.3 peer keeps
+    reading until the close notify arrives, whatever AlertLevel was used.
+
+    _Example_
+    \code
+    int ret = 0;
+    WOLFSSL* ssl = 0;
+    ...
+
+    ret = wolfSSL_SendUserCanceled(ssl);
+    if (ret != WOLFSSL_SUCCESS) {
+        // failed to shut the connection down, see wolfSSL_get_error()
+    }
+    \endcode
+
+    \sa wolfSSL_shutdown
+    \sa wolfSSL_get_error
+*/
+int wolfSSL_SendUserCanceled(WOLFSSL* ssl);
 
 /*!
     \ingroup IO
@@ -2484,6 +2631,8 @@ int  wolfSSL_shutdown(WOLFSSL* ssl);
     SSL_ERROR_WANT_WRITE error was received and and the application needs to
     call wolfSSL_send() again.  Use wolfSSL_get_error() to get a specific
     error code.
+    \return BAD_FUNC_ARG will be returned when ssl or data is NULL, or sz
+    is negative.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param data data buffer to send to peer.
@@ -2544,6 +2693,8 @@ int  wolfSSL_send(WOLFSSL* ssl, const void* data, int sz, int flags);
     SSL_ERROR_WANT_WRITE error was received and and the application needs to
     call wolfSSL_recv() again.  Use wolfSSL_get_error() to get a specific
     error code.
+    \return BAD_FUNC_ARG will be returned when ssl or data is NULL, or sz
+    is negative.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param data buffer where wolfSSL_recv() will place data read.
@@ -2658,7 +2809,8 @@ int  wolfSSL_get_alert_history(WOLFSSL* ssl, WOLFSSL_ALERT_HISTORY *h);
 
     \return SSL_SUCCESS will be returned upon successfully setting the session.
     \return SSL_FAILURE will be returned on failure.  This could be caused
-    by the session cache being disabled, or if the session has timed out.
+    by the session cache being disabled, the session having timed out, or an
+    EMS session being declined because EMS is disabled.
 
     \return When OPENSSL_EXTRA and WOLFSSL_ERROR_CODE_OPENSSL are defined,
     SSL_SUCCESS will be returned even if the session has timed out.
@@ -2828,7 +2980,10 @@ int wolfSSL_GetSessionIndex(WOLFSSL* ssl);
 
     \brief This function gets the session at specified index of the session
     cache and copies it into memory. The WOLFSSL_SESSION structure holds
-    the session information.
+    the session information. The copy is independent of the cache entry: it
+    does not share the ticket buffer, peer certificate or ex_data with the
+    cache, and it stays valid after the cache entry is overwritten or evicted.
+    The caller owns the copy and releases it with wolfSSL_SESSION_free().
 
     \return SSL_SUCCESS returned if the function executed successfully and
     no errors were thrown.
@@ -2836,16 +2991,19 @@ int wolfSSL_GetSessionIndex(WOLFSSL* ssl);
     \return SSL_FAILURE returned if the function did not execute successfully.
 
     \param index an int type representing the session index.
-    \param session a pointer to the WOLFSSL_SESSION structure.
+    \param session a pointer to a WOLFSSL_SESSION structure to copy into,
+    obtained from wolfSSL_SESSION_new().
 
     _Example_
     \code
     int idx; // The index to locate the session.
-    WOLFSSL_SESSION* session;  // Buffer to copy to.
+    WOLFSSL_SESSION* session = wolfSSL_SESSION_new();  // Buffer to copy to.
     ...
     if(wolfSSL_GetSessionAtIndex(idx, session) != SSL_SUCCESS){
     	// Failure case.
     }
+    ...
+    wolfSSL_SESSION_free(session);
     \endcode
 
     \sa UnLockMutex
@@ -2907,7 +3065,11 @@ int wolfSSL_GetSessionAtIndex(int index, WOLFSSL_SESSION* session);
     side. Server mode: the verification is the same as
     SSL_VERIFY_FAIL_IF_NO_PEER_CERT except in the case of a PSK connection.
     If a PSK connection is being made then the connection will go through
-    without a peer cert.
+    without a peer cert. SSL_VERIFY_CLIENT_ONCE Accepted and ignored. It is
+    present so that OpenSSL-derived code compiles unchanged; wolfSSL does not
+    act on it, does not store it, and wolfSSL_get_verify_mode() /
+    wolfSSL_CTX_get_verify_mode() will not report it back. Including it in
+    mode has no effect on any of the other flags.
 
     \return none No return.
 
@@ -2955,7 +3117,11 @@ void wolfSSL_CTX_set_verify(WOLFSSL_CTX* ctx, int mode,
     side. Server mode: the verification is the same as
     SSL_VERIFY_FAIL_IF_NO_PEER_CERT except in the case of a PSK connection.
     If a PSK connection is being made then the connection will go through
-    without a peer cert.
+    without a peer cert. SSL_VERIFY_CLIENT_ONCE Accepted and ignored. It is
+    present so that OpenSSL-derived code compiles unchanged; wolfSSL does not
+    act on it, does not store it, and wolfSSL_get_verify_mode() /
+    wolfSSL_CTX_get_verify_mode() will not report it back. Including it in
+    mode has no effect on any of the other flags.
 
     \return none No return.
 
@@ -3042,6 +3208,7 @@ void wolfSSL_CTX_SetCertCbCtx(WOLFSSL_CTX* ctx, void* userCtx);
     available in the SSL object to be read by wolfSSL_read().
 
     \return int This function returns the number of bytes pending.
+    \return SSL_FAILURE will be returned when ssl is NULL.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
 
@@ -3252,6 +3419,14 @@ int  wolfSSL_set_session_secret_cb(WOLFSSL* ssl, SessionSecretCb cb, void* ctx);
 
     \brief This function persists the session cache to file. It doesn’t use
     memsave because of additional memory use.
+
+    \warning The file holds session master secrets and resumption credentials
+    in the clear. On POSIX systems it is created with mode 0600; on other
+    platforms the permissions are whatever the port’s XFOPEN produces, so the
+    caller must place the file where only the intended user can read it.
+    An existing file is additionally tightened with fchmod, which fails on
+    filesystems without permission bits (FAT); define WOLFSSL_NO_FCHMOD to
+    skip that step on such targets.
 
     \return SSL_SUCCESS returned if the function executed without error.
     The session cache has been written to a file.
@@ -3950,6 +4125,87 @@ int  wolfSSL_dtls_got_timeout(WOLFSSL* ssl);
     \sa wolfSSL_dtls
 */
 int wolfSSL_dtls_retransmit(WOLFSSL* ssl);
+
+/*!
+    \ingroup Setup
+
+    \brief Sends the DTLS 1.3 work that was scheduled while reading. With
+    WOLFSSL_RW_THREADED the read path never transmits, because that would race
+    the write thread over the output buffer and the sending key schedule, so
+    ACKs, retransmissions and a KeyUpdate the peer asked for are only sent from
+    the write side. An application that reads without writing must call this,
+    from the same thread it uses for writing, or those messages are never sent
+    and the peer keeps retransmitting what it is waiting to have acknowledged.
+    Not for write-dup applications, which drain through wolfSSL_write().
+
+    A KeyUpdate is only sent while none of ours is still unacknowledged, since
+    DTLS must not have two in flight. Completing one we started needs the
+    peer's acknowledgement processed, which rotates the sending keys and so
+    does not happen here, so in a WOLFSSL_RW_THREADED build a peer request
+    arriving after that point is held rather than answered.
+
+    A send that could only write part of a record returns WOLFSSL_FATAL_ERROR
+    with wolfSSL_get_error() reporting SSL_ERROR_WANT_WRITE. That is not a
+    failure of the connection: the record is held and the next call sends the
+    rest, so wolfSSL_dtls13_pending_work() keeps reporting work until it is
+    out. Treat it as a retry rather than as a reason to stop draining.
+
+    \return WOLFSSL_SUCCESS on success, including when there was nothing to do.
+    \return WOLFSSL_FATAL_ERROR if ssl is NULL, is not a DTLS 1.3 object, is
+    part of a write-dup pair, or the send failed. Call wolfSSL_get_error() to
+    tell a retryable SSL_ERROR_WANT_WRITE from a real failure.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+
+    _Example_
+    \code
+    WOLFSSL* ssl;
+    ...
+    while (wolfSSL_dtls13_pending_work(ssl)) {
+        if (wolfSSL_dtls13_do_scheduled_work(ssl) != WOLFSSL_SUCCESS) {
+            if (wolfSSL_get_error(ssl, 0) == SSL_ERROR_WANT_WRITE) {
+                // the socket is full, wait for it and call again
+                break;
+            }
+            // a real error
+            break;
+        }
+    }
+    \endcode
+
+    \sa wolfSSL_dtls13_pending_work
+    \sa wolfSSL_dtls_retransmit
+*/
+int wolfSSL_dtls13_do_scheduled_work(WOLFSSL* ssl);
+
+/*!
+    \ingroup Setup
+
+    \brief Reports whether the object has DTLS 1.3 work waiting to be sent by
+    wolfSSL_dtls13_do_scheduled_work(). Only meaningful with
+    WOLFSSL_RW_THREADED. The answer is advisory and can change as soon as it is
+    returned. Only work the pump can actually carry out is reported, so a drain
+    loop over the pair terminates; waiting for the peer to acknowledge a key
+    update we sent is not reported, as there is nothing to send for it. A
+    record the pump could only write in part is reported, so that the retry it
+    owes is not lost.
+
+    \return 1 if there is work to send, or if it could not be determined.
+    \return 0 if there is nothing to do, or ssl is not supported here.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+
+    _Example_
+    \code
+    WOLFSSL* ssl;
+    ...
+    if (wolfSSL_dtls13_pending_work(ssl))
+        wolfSSL_dtls13_do_scheduled_work(ssl);
+    \endcode
+
+    \sa wolfSSL_dtls13_do_scheduled_work
+*/
+int wolfSSL_dtls13_pending_work(WOLFSSL* ssl);
 
 /*!
     \brief This function is used to determine if the SSL session has been
@@ -5486,6 +5742,21 @@ int  wolfSSL_CTX_get_read_ahead(WOLFSSL_CTX* ctx);
     \ingroup Setup
 
     \brief This function sets the read ahead flag in the WOLFSSL_CTX structure.
+    When enabled, the record-header read pulls in up to a full TLS record in a
+    single recv(), so the body (and any following buffered records) is obtained
+    without a second syscall. The flag only changes I/O behaviour when the
+    library is built with read-ahead support (--enable-readahead /
+    WOLFSSL_TLS_READ_AHEAD); otherwise it is stored but inert.
+
+    \note With read-ahead enabled, undecrypted data can remain buffered
+    internally while the socket has no more data to read. wolfSSL_has_pending()
+    reports whether any such data is buffered, but a non-zero return does not
+    guarantee a full record is available: wolfSSL_read() may still return
+    WANT_READ when only a partial record is buffered. Event-driven applications
+    should therefore drain the connection by calling wolfSSL_read() until it
+    returns WANT_READ (or an error) before returning to select()/poll(), rather
+    than looping on wolfSSL_has_pending() alone; otherwise buffered data could
+    be missed or the loop could spin.
 
     \return SSL_SUCCESS If ctx read ahead flag set.
     \return SSL_FAILURE If ctx is NULL then SSL_FAILURE is returned.
@@ -5506,15 +5777,155 @@ int  wolfSSL_CTX_get_read_ahead(WOLFSSL_CTX* ctx);
     \sa wolfSSL_CTX_new
     \sa wolfSSL_CTX_free
     \sa wolfSSL_CTX_get_read_ahead
+    \sa wolfSSL_has_pending
 */
 int  wolfSSL_CTX_set_read_ahead(WOLFSSL_CTX* ctx, int v);
 
 /*!
     \ingroup Setup
 
-    \brief This function sets the options argument to use with OCSP.
+    \brief This function sets the read-ahead receive window size for contexts
+    created from this WOLFSSL_CTX. When read-ahead is enabled
+    (wolfSSL_CTX_set_read_ahead()), a single recv() pulls in up to \p len bytes:
+      - \p len of 0 resets the window to the one-record default. This is also
+        the window a freshly created context already carries, so the record body
+        is read together with its header without a second syscall.
+      - A \p len larger than one record lets a single recv() coalesce several
+        back-to-back records, one syscall instead of one per record.
+      - A \p len smaller than one record caps the receive buffer's footprint
+        when the peer's records are known to be small (e.g. 4 KB), saving heap
+        versus the one-record default.
+    \p len is only a speculative read window, not a hard limit: a record larger
+    than \p len is still received correctly, with the input buffer grown to the
+    record's actual size on demand (costing an extra syscall and reallocation
+    for that record) and then reallocated back down to the window once the
+    oversized record is consumed, so the retained footprint stays bounded by
+    \p len rather than by the largest record seen. The setting only affects I/O
+    when the library is built with read-ahead support (--enable-readahead /
+    WOLFSSL_TLS_READ_AHEAD); otherwise it is stored but inert. This is the
+    wolfSSL equivalent of OpenSSL's SSL_CTX_set_default_read_buffer_len(); unlike
+    OpenSSL it returns a status code (callers that ignore the return remain
+    source-compatible) and it honours sizes below one record, whereas OpenSSL
+    only ever enlarges the buffer. A \p len above WOLFSSL_MAX_READ_AHEAD_SZ
+    (16 MB) is clamped to that maximum. Because 0 and oversized values are both
+    normalised, wolfSSL_CTX_get_default_read_buffer_len() reports the effective
+    window (the one-record default rather than 0 when unset), not the raw
+    argument.
 
-    \return SSL_FAILURE If ctx or it’s cert manager is NULL.
+    \note This is a memory-vs-syscall trade-off. While read-ahead is enabled the
+    input buffer is retained (bounded to \p len) for the connection's lifetime,
+    so a large \p len multiplied by many concurrent connections is persistent
+    memory, while a small \p len bounds per-connection footprint at the cost of
+    more syscalls for records that exceed it.
+
+    \return SSL_SUCCESS If the buffer length was set.
+    \return SSL_FAILURE If ctx is NULL.
+
+    \param ctx WOLFSSL_CTX structure to set the read-ahead buffer length on.
+    \param len read-ahead coalescing buffer size in bytes (0 = one record).
+
+    _Example_
+    \code
+    WOLFSSL_CTX* ctx;
+    // setup ctx
+    wolfSSL_CTX_set_read_ahead(ctx, 1);
+    // coalesce up to four max-size records per recv()
+    wolfSSL_CTX_set_default_read_buffer_len(ctx, 4 * 16384);
+    \endcode
+
+    \sa wolfSSL_CTX_set_read_ahead
+    \sa wolfSSL_set_default_read_buffer_len
+    \sa wolfSSL_has_pending
+*/
+int  wolfSSL_CTX_set_default_read_buffer_len(WOLFSSL_CTX* ctx, size_t len);
+
+/*!
+    \ingroup Setup
+
+    \brief This function sets the read-ahead coalescing buffer size on a single
+    WOLFSSL session, overriding the value inherited from its WOLFSSL_CTX. See
+    wolfSSL_CTX_set_default_read_buffer_len() for the full description, the
+    one-record default, and the memory-vs-syscall trade-off.
+
+    \return SSL_SUCCESS If the buffer length was set.
+    \return SSL_FAILURE If ssl is NULL.
+
+    \param ssl WOLFSSL structure to set the read-ahead buffer length on.
+    \param len read-ahead coalescing buffer size in bytes (0 = one record).
+
+    \sa wolfSSL_CTX_set_default_read_buffer_len
+    \sa wolfSSL_set_read_ahead
+    \sa wolfSSL_has_pending
+*/
+int  wolfSSL_set_default_read_buffer_len(WOLFSSL* ssl, size_t len);
+
+/*!
+    \ingroup Setup
+
+    \brief This function returns the read-ahead coalescing buffer size
+    configured on a WOLFSSL_CTX by wolfSSL_CTX_set_default_read_buffer_len().
+    Because a length of 0 and oversized values are normalised when set, the
+    value reported is the effective window actually in use (the one-record
+    default rather than 0 when the length was never changed), not the raw
+    argument last passed.
+
+    \return len On success returns the read-ahead buffer length in bytes.
+    \return SSL_FAILURE If ctx is NULL.
+
+    \param ctx WOLFSSL_CTX structure to get the read-ahead buffer length from.
+
+    _Example_
+    \code
+    WOLFSSL_CTX* ctx;
+    long len;
+    // setup ctx
+    len = wolfSSL_CTX_get_default_read_buffer_len(ctx);
+    // check len
+    \endcode
+
+    \sa wolfSSL_CTX_set_default_read_buffer_len
+    \sa wolfSSL_get_default_read_buffer_len
+    \sa wolfSSL_CTX_set_read_ahead
+*/
+long wolfSSL_CTX_get_default_read_buffer_len(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+
+    \brief This function returns the read-ahead coalescing buffer size in
+    effect for a single WOLFSSL session, whether inherited from its
+    WOLFSSL_CTX or overridden by wolfSSL_set_default_read_buffer_len(). As with
+    the WOLFSSL_CTX getter, the value reported is the effective window in use,
+    not the raw argument last passed.
+
+    \return len On success returns the read-ahead buffer length in bytes.
+    \return SSL_FAILURE If ssl is NULL.
+
+    \param ssl WOLFSSL structure to get the read-ahead buffer length from.
+
+    _Example_
+    \code
+    WOLFSSL* ssl;
+    long len;
+    // setup ssl
+    len = wolfSSL_get_default_read_buffer_len(ssl);
+    // check len
+    \endcode
+
+    \sa wolfSSL_set_default_read_buffer_len
+    \sa wolfSSL_CTX_get_default_read_buffer_len
+    \sa wolfSSL_set_read_ahead
+*/
+long wolfSSL_get_default_read_buffer_len(const WOLFSSL* ssl);
+
+/*!
+    \ingroup OCSP
+
+    \brief This function sets the argument to be passed to the OCSP status
+    callback.
+
+    \return SSL_FAILURE If ctx or it’s cert manager is NULL, or stapling is
+    not set up.
     \return SSL_SUCCESS If successfully set.
 
     \param ctx WOLFSSL_CTX structure to set user argument.
@@ -5531,6 +5942,7 @@ int  wolfSSL_CTX_set_read_ahead(WOLFSSL_CTX* ctx, int v);
     //check ret value
     \endcode
 
+    \sa wolfSSL_CTX_set_tlsext_status_cb
     \sa wolfSSL_CTX_new
     \sa wolfSSL_CTX_free
 */
@@ -5565,9 +5977,9 @@ void wolfSSL_CTX_set_client_cert_cb(WOLFSSL_CTX *ctx, client_cert_cb cb);
 
     \brief Sets a generic certificate setup callback.
 
-    This function allows the application to register a callback that will be invoked
-    during certificate setup. The callback can perform custom certificate selection
-    or loading logic.
+    The callback is called whenever a certificate is about to be used, so the
+    application can inspect, set or clear certificates - for example to react
+    to a CA list sent by the peer.
 
     \param ctx The WOLFSSL_CTX object.
     \param cb  The callback function for certificate setup.
@@ -5582,6 +5994,8 @@ void wolfSSL_CTX_set_client_cert_cb(WOLFSSL_CTX *ctx, client_cert_cb cb);
     \endcode
 
     \sa wolfSSL_CTX_set_client_cert_cb
+    \sa wolfSSL_get0_peer_CA_list
+    \sa wolfSSL_get_client_CA_list
 */
 void wolfSSL_CTX_set_cert_cb(WOLFSSL_CTX* ctx, CertSetupCallback cb, void *arg);
 
@@ -5596,9 +6010,12 @@ void wolfSSL_CTX_set_cert_cb(WOLFSSL_CTX* ctx, CertSetupCallback cb, void *arg);
     useful on the server side.
 
     \param ctx The WOLFSSL_CTX object.
-    \param cb  The callback function to handle OCSP status requests.
+    \param cb  The callback function to handle OCSP status requests. NULL
+    clears any callback already set.
 
     \return SSL_SUCCESS on success, SSL_FAILURE otherwise.
+    \return SSL_FAILURE will be returned when ctx or its certificate manager
+    is NULL, or stapling is not set up. A NULL cb is not a failure.
 
     _Example_
     \code
@@ -5617,27 +6034,15 @@ int wolfSSL_CTX_set_tlsext_status_cb(WOLFSSL_CTX* ctx, tlsextStatusCb cb);
     \brief Gets the currently set OCSP status callback for the context.
 
     \param ctx The WOLFSSL_CTX object.
-    \param cb  Pointer to receive the callback function.
+    \param cb  Pointer to receive the callback function. Required.
 
     \return SSL_SUCCESS on success, SSL_FAILURE otherwise.
+    \return SSL_FAILURE will be returned when ctx, its certificate manager or
+    cb is NULL, or stapling is not set up.
 
     \sa wolfSSL_CTX_set_tlsext_status_cb
 */
 int wolfSSL_CTX_get_tlsext_status_cb(WOLFSSL_CTX* ctx, tlsextStatusCb* cb);
-
-/*!
-    \ingroup OCSP
-
-    \brief Sets the argument to be passed to the OCSP status callback.
-
-    \param ctx The WOLFSSL_CTX object.
-    \param arg The user argument to pass to the callback.
-
-    \return SSL_SUCCESS on success, SSL_FAILURE otherwise.
-
-    \sa wolfSSL_CTX_set_tlsext_status_cb
-*/
-long wolfSSL_CTX_set_tlsext_status_arg(WOLFSSL_CTX* ctx, void* arg);
 
 /*!
     \ingroup OCSP
@@ -5667,6 +6072,8 @@ long wolfSSL_get_tlsext_status_ocsp_resp(WOLFSSL *ssl, unsigned char **resp);
     \param len  Length of the response buffer.
 
     \return SSL_SUCCESS on success, SSL_FAILURE otherwise.
+    \return SSL_FAILURE will be returned when ssl is NULL or the
+    response and length disagree.
 
     \sa wolfSSL_get_tlsext_status_ocsp_resp
 */
@@ -5681,12 +6088,19 @@ long wolfSSL_set_tlsext_status_ocsp_resp(WOLFSSL *ssl, unsigned char *resp, int 
     wolfSSL. The application must not free the buffer after calling this
     function.
 
+    Each stapled response (one per certificate) must carry exactly one
+    SingleResponse. A BasicOCSPResponse bundling more than one SingleResponse
+    is rejected by the peer, so responders must supply a separate response per
+    certificate rather than combining statuses into a single response.
+
     \param ssl The WOLFSSL session.
     \param resp Pointer to the response buffer.
     \param len  Length of the response buffer.
     \param idx  Index of the certificate chain.
 
     \return SSL_SUCCESS on success, SSL_FAILURE otherwise.
+    \return SSL_FAILURE will be returned when ssl is NULL, idx is out
+    of range, or the response and length disagree.
 */
 int wolfSSL_set_tlsext_status_ocsp_resp_multi(WOLFSSL* ssl, unsigned char *resp, int len, word32 idx);
 
@@ -5957,6 +6371,59 @@ long wolfSSL_get_options(const WOLFSSL *s);
 long wolfSSL_set_tlsext_debug_arg(WOLFSSL *s, void *arg);
 
 /*!
+    \ingroup Setup
+
+    \brief Callback type for the TLS extension debug callback.
+
+    Invoked once for every TLS extension received during the handshake,
+    in wire order, before the extension is processed.
+
+    \param ssl The WOLFSSL object receiving the extension.
+    \param client_server 1 if the WOLFSSL object is a client, 0 if a server.
+    \param type The extension type, e.g. TLSX_SERVER_NAME.
+    \param data The raw extension content (data after the 2-byte length).
+    \param len Length of the extension content in bytes.
+    \param arg The argument set with wolfSSL_set_tlsext_debug_arg().
+
+    Note that, unlike OpenSSL 3.x, the callback also reports unknown
+    (unregistered) extension types.
+*/
+typedef void (*WOLFSSL_TLSEXT_DEBUG_CB)(WOLFSSL* ssl, int client_server,
+        int type, const byte* data, int len, void* arg);
+
+/*!
+    \ingroup Setup
+
+    \brief This is used to set the TLS extension debug callback on the
+    object.
+
+    The callback (type WOLFSSL_TLSEXT_DEBUG_CB) is invoked once for every
+    TLS extension received during the handshake, in wire order, before the
+    extension is processed. It reports the side of the connection, the
+    extension type, the raw extension content and the argument set with
+    wolfSSL_set_tlsext_debug_arg(). Passing a NULL callback disables it.
+
+    \return WOLFSSL_SUCCESS On successful setting of the callback.
+    \return WOLFSSL_FAILURE If a NULL ssl is passed in.
+
+    \param s WOLFSSL structure to set the callback in.
+    \param cb Callback to invoke for each received TLS extension, or NULL
+    to disable it.
+
+    _Example_
+    \code
+    WOLFSSL* ssl;
+    long ret;
+    // create ssl object
+    ret = wolfSSL_set_tlsext_debug_callback(ssl, my_tlsext_debug_cb);
+    // check ret value
+    \endcode
+
+    \sa wolfSSL_set_tlsext_debug_arg
+*/
+long wolfSSL_set_tlsext_debug_callback(WOLFSSL *s, WOLFSSL_TLSEXT_DEBUG_CB cb);
+
+/*!
     \ingroup openSSL
 
     \brief This function is called when the client application request
@@ -5966,6 +6433,8 @@ long wolfSSL_set_tlsext_debug_arg(WOLFSSL *s, void *arg);
 
     \return 1 upon success.
     \return 0 upon error.
+    \return BAD_FUNC_ARG will be returned when s is NULL.
+    \return SSL_FAILURE will be returned when the type is not OCSP.
 
     \param s pointer to WOLFSSL struct which is created by SSL_new() function
     \param type ssl extension type which TLSEXT_STATUSTYPE_ocsp is
@@ -6603,6 +7072,40 @@ int wolfSSL_want_read(WOLFSSL* ssl);
 int wolfSSL_want_write(WOLFSSL* ssl);
 
 /*!
+    \ingroup Debug
+
+    \brief This function reports which I/O operation, if any, the SSL session
+    is waiting on. It reflects the same state that wolfSSL_want_read() and
+    wolfSSL_want_write() report individually. Unlike those two, which are
+    always available, this function is only built when OPENSSL_EXTRA is
+    defined.
+
+    \return WOLFSSL_READING when the underlying I/O needs data to be read
+    before progress can be made.
+    \return WOLFSSL_WRITING when the underlying I/O needs data to be written
+    before progress can be made.
+    \return WOLFSSL_NOTHING when the session is not waiting on the underlying
+    I/O, or ssl is NULL.
+
+    \param ssl pointer to the SSL session, created with wolfSSL_new().
+
+    _Example_
+    \code
+    WOLFSSL* ssl = 0;
+    ...
+
+    if (wolfSSL_want(ssl) == WOLFSSL_READING) {
+        // wait for the socket to become readable, then retry
+    }
+    \endcode
+
+    \sa wolfSSL_want_read
+    \sa wolfSSL_want_write
+    \sa wolfSSL_get_error
+*/
+int wolfSSL_want(WOLFSSL* ssl);
+
+/*!
     \ingroup Setup
 
     \brief wolfSSL by default checks the peer certificate for a valid date
@@ -6803,9 +7306,23 @@ int wolfSSL_negotiate(WOLFSSL* ssl);
     the amount of data saved by compression usually takes longer in time to
     analyze than it does to send it raw on all but the slowest of networks.
 
+    Record layer compression was removed in TLS 1.3 (RFC 8446 section 5.2).
+    A connection that negotiates TLS 1.3 or DTLS 1.3 therefore completes
+    uncompressed and this request is silently dropped; the call still returns
+    SSL_SUCCESS, so check the negotiated protocol version rather than this
+    return value to learn whether compression is actually in use. For the same
+    reason a ClientHello that offers TLS 1.3 never advertises zlib.
+
+    Compression is not available over DTLS at all. zlib keeps one deflate
+    stream running across records, so a datagram that is lost, duplicated or
+    reordered would desync the peer for the rest of the connection. Since the
+    transport is known when the WOLFSSL object is created, this is reported
+    rather than dropped.
+
     \return SSL_SUCCESS upon success.
     \return NOT_COMPILED_IN will be returned if compression support wasn’t
     built into the library.
+    \return BAD_FUNC_ARG will be returned if ssl is NULL or is a DTLS session.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
 
@@ -7025,13 +7542,24 @@ WOLFSSL_X509* wolfSSL_get_chain_X509(WOLFSSL_X509_CHAIN* chain, int idx);
 
     \brief Retrieves the peer’s PEM certificate at index (idx).
 
-    \return Success If successful the call will return the peer’s
-    certificate by index.
-    \return 0 will be returned if an invalid chain pointer is passed to
-    the function.
+    \return SSL_SUCCESS will be returned on success.
+    \return SSL_FAILURE will be returned when the certificate cannot be
+    converted.
+    \return BAD_FUNC_ARG will be returned when chain is NULL, idx is out of
+    range, outLen is NULL, or inLen is negative.
+    \return BUFFER_E will be returned when inLen is too small to hold the PEM
+    output, in a build that converts with wc_DerToPem(). A build that has
+    only WOLFSSL_PEM_TO_DER reports that case as BAD_FUNC_ARG, so a caller
+    growing its buffer on a short write should accept either.
+    \return LENGTH_ONLY_E will be returned when buf is NULL, with the
+    required length returned through outLen.
 
     \param chain pointer to a valid WOLFSSL_X509_CHAIN structure.
-    \param idx indexto start of chain.
+    \param idx index to start of chain.
+    \param buf buffer to hold the PEM certificate. May be NULL to ask for
+    the required length only.
+    \param inLen length of buf in bytes.
+    \param outLen length of the PEM data in bytes.
 
     _Example_
     \code
@@ -8158,11 +8686,15 @@ int wolfSSL_make_eap_keys(WOLFSSL* ssl, void* key, unsigned int len,
     \return 0 will be returned upon failure.  Call wolfSSL_get_error() for
     the specific error code.
     \return MEMORY_ERROR will be returned if a memory error was encountered.
+    \return BAD_FUNC_ARG will be returned when ssl is NULL, iovcnt is negative,
+    or iov is NULL with a non-zero iovcnt.
     \return SSL_FATAL_ERROR will be returned upon failure when either an error
     occurred or, when using non-blocking sockets, the SSL_ERROR_WANT_READ or
     SSL_ERROR_WANT_WRITE error was received and and the application needs to
     call wolfSSL_write() again.  Use wolfSSL_get_error() to get a specific
     error code.
+    \return BUFFER_E will be returned when the total length of the
+    segments overflows.
 
     \param ssl pointer to the SSL session, created with wolfSSL_new().
     \param iov array of I/O vectors to write
@@ -8266,6 +8798,7 @@ int wolfSSL_CTX_UnloadIntermediateCerts(WOLFSSL_CTX* ctx);
     \return SSL_BAD_FILE will be returned if the file doesn’t exist,
     can’t be read, or is corrupted.
     \return MEMORY_E will be returned if an out of memory condition occurs.
+    \return BAD_MUTEX_E will be returned when locking fails.
 
     \param ctx pointer to the SSL context, created with wolfSSL_CTX_new().
 
@@ -8839,6 +9372,8 @@ int wolfSSL_UnloadCertsKeys(WOLFSSL* ssl);
     \endcode
 
     \sa wolfSSL_set_group_messages
+    \sa wolfSSL_CTX_clear_group_messages
+    \sa wolfSSL_clear_group_messages
     \sa wolfSSL_CTX_new
 */
 int wolfSSL_CTX_set_group_messages(WOLFSSL_CTX* ctx);
@@ -8864,6 +9399,8 @@ int wolfSSL_CTX_set_group_messages(WOLFSSL_CTX* ctx);
     \endcode
 
     \sa wolfSSL_CTX_set_group_messages
+    \sa wolfSSL_clear_group_messages
+    \sa wolfSSL_CTX_clear_group_messages
     \sa wolfSSL_new
 */
 int wolfSSL_set_group_messages(WOLFSSL* ssl);
@@ -8930,6 +9467,46 @@ void wolfSSL_SetFuzzerCb(WOLFSSL* ssl, CallbackFuzzer cbf, void* fCtx);
     \sa wc_RNG_GenerateBlock
 */
 int   wolfSSL_DTLS_SetCookieSecret(WOLFSSL* ssl,
+                                               const byte* secret,
+                                               word32 secretSz);
+
+/*!
+    \brief This function sets a secondary DTLS 1.2 cookie secret used only when
+    verifying a received HelloVerifyRequest cookie, and only if the primary
+    secret (set with wolfSSL_DTLS_SetCookieSecret()) fails to verify it.  This
+    lets an application rotate the cookie secret on a stateless server without
+    rejecting clients whose cookie was issued under the previous secret: install
+    the new secret as the primary and the previous secret here for an overlap
+    window.  The secondary secret is never used to issue cookies.  It is the
+    DTLS 1.2 counterpart of wolfSSL_set_hrr_cookie_secret_secondary().
+
+    \return 0 returned if the function executed without an error.
+    \return BAD_FUNC_ARG returned if ssl is NULL.
+    \return MEMORY_ERROR returned if there was a problem allocating
+    memory for the secondary cookie secret.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+    \param secret a constant byte pointer representing the secret buffer.
+    Passing NULL (or a secretSz of 0) clears any previously set secondary
+    secret.
+    \param secretSz the size of the buffer.
+
+    _Example_
+    \code
+    WOLFSSL* ssl = wolfSSL_new(ctx);
+    const byte* oldSecret;
+    word32 oldSecretSz; // size of oldSecret
+    ...
+    if(wolfSSL_DTLS_SetCookieSecretSecondary(ssl, oldSecret, oldSecretSz) != 0){
+    	// Code block for failure to set secondary DTLS cookie secret
+    } else {
+    	// Success! Secondary cookie secret is set.
+    }
+    \endcode
+
+    \sa wolfSSL_DTLS_SetCookieSecret
+*/
+int   wolfSSL_DTLS_SetCookieSecretSecondary(WOLFSSL* ssl,
                                                const byte* secret,
                                                word32 secretSz);
 
@@ -9699,8 +10276,9 @@ void* wolfSSL_CTX_GetEccSignCtx(WOLFSSL_CTX* ctx);
     and hashSz denotes the length in bytes of the hash.  result is an output
     variable where the result of the verification should be stored, 1 for
     success and 0 for failure.  keyDer is the ECC Private key in ASN1
-    format and keySz is the length of the key in bytes.  An example
-    callback can be found wolfssl/test.h myEccVerify().
+    format and keySz is the length of the key in bytes.  keyDer is NULL with
+    keySz 0 when only the callback holds the key, so the callback must then
+    supply it.  An example callback can be found wolfssl/test.h myEccVerify().
 
     \return none No returns.
 
@@ -11208,6 +11786,7 @@ int wolfSSL_SetOCSP_Cb(WOLFSSL* ssl, CbOCSPIO ioCb, CbOCSPRespFree respFreeCb,
     memory during execution of the function.
     \return SSL_FAILURE returned if the crl member of the
     WOLFSSL_CERT_MANAGER fails to initialize correctly.
+    \return BAD_MUTEX_E returned if locking the certificate manager failed.
     \return NOT_COMPILED_IN wolfSSL was not compiled with the HAVE_CRL option.
 
     \param ctx a pointer to a WOLFSSL_CTX structure, created using
@@ -11337,8 +11916,10 @@ int wolfSSL_CTX_SetCRL_Cb(WOLFSSL_CTX* ctx, CbMissingCRL cb);
 
     \return SSL_SUCCESS is returned upon success.
     \return SSL_FAILURE is returned upon failure.
+    \return BAD_MUTEX_E returned if locking the certificate manager failed.
     \return NOT_COMPILED_IN is returned when this function has been called,
     but OCSP support was not enabled when wolfSSL was compiled.
+    \return BAD_FUNC_ARG will be returned when ctx is NULL.
 
     \param ctx pointer to the SSL context, created with wolfSSL_CTX_new().
     \param options value used to set the OCSP options.
@@ -11394,6 +11975,7 @@ int wolfSSL_CTX_DisableOCSP(WOLFSSL_CTX* ctx);
     \return SSL_FAILURE is returned upon failure.
     \return NOT_COMPILED_IN is returned when this function has been called,
     but OCSP support was not enabled when wolfSSL was compiled.
+    \return BAD_FUNC_ARG will be returned when ctx is NULL.
 
     \param ctx pointer to the SSL context, created with wolfSSL_CTX_new().
     \param url pointer to the OCSP URL for wolfSSL to use.
@@ -11459,6 +12041,7 @@ int wolfSSL_CTX_SetOCSP_Cb(WOLFSSL_CTX* ctx,
     \return MEMORY_E returned if there was an issue allocating memory.
     \return SSL_FAILURE returned if the initialization of the OCSP
     structure failed.
+    \return BAD_MUTEX_E returned if locking the certificate manager failed.
     \return NOT_COMPILED_IN returned if wolfSSL was not compiled with
     HAVE_CERTIFICATE_STATUS_REQUEST option.
 
@@ -12250,6 +12833,7 @@ int wolfSSL_CTX_UseOCSPStaplingV2(WOLFSSL_CTX* ctx,
     \return BAD_FUNC_ARG is the error that will be returned in one of these
     cases: ssl is NULL, name is a unknown value. (see below)
     \return MEMORY_E is the error returned when there is not enough memory.
+    \return SSL_FAILURE will be returned when TLS is not compiled in.
 
     \param ssl pointer to a SSL object, created with wolfSSL_new().
     \param name indicates which curve will be supported for the session. The
@@ -12293,6 +12877,7 @@ int wolfSSL_UseSupportedCurve(WOLFSSL* ssl, word16 name);
     \return BAD_FUNC_ARG is the error that will be returned in one of these
     cases: ctx is NULL, name is a unknown value. (see below)
     \return MEMORY_E is the error returned when there is not enough memory.
+    \return SSL_FAILURE will be returned when TLS is not compiled in.
 
     \param ctx pointer to a SSL context, created with wolfSSL_CTX_new().
     \param name indicates which curve will be supported for the session.
@@ -12361,13 +12946,14 @@ int wolfSSL_UseSecureRenegotiation(WOLFSSL* ssl);
     forced as wolfSSL discourages this functionality.
 
     \return SSL_SUCCESS returned if the function executed without error.
-    \return BAD_FUNC_ARG returned if the WOLFSSL structure was NULL or otherwise
-    if an unacceptable argument was passed in a subroutine.
+    \return BAD_FUNC_ARG returned if an unacceptable argument was passed in a
+    subroutine.
     \return SECURE_RENEGOTIATION_E returned if there was an error with
     renegotiating the handshake.
     \return SSL_FATAL_ERROR returned if there was an error with the
     server or client configuration and the renegotiation could
     not be completed. See wolfSSL_negotiate().
+    \return SSL_FAILURE will be returned when ssl is NULL.
 
     \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
 
@@ -12459,6 +13045,8 @@ int wolfSSL_CTX_UseSessionTicket(WOLFSSL_CTX* ctx);
     \return SSL_SUCCESS returned if the function executed without error.
     \return BAD_FUNC_ARG returned if ssl or bufSz is NULL, or if bufSz
     is non-NULL and buf is NULL
+    \return LENGTH_ONLY_E will be returned when buf is NULL, with the
+    required length returned through bufSz.
 
 
     \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
@@ -12496,6 +13084,8 @@ int wolfSSL_get_SessionTicket(WOLFSSL* ssl, unsigned char* buf, word32* bufSz);
     \return BAD_FUNC_ARG returned if the WOLFSSL structure is NULL. This will
     also be thrown if the buf argument is NULL but the bufSz argument
     is not zero.
+    \return MEMORY_ERROR will be returned when the ticket cannot be
+    allocated.
 
     \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
     \param buf a byte pointer that gets loaded into the ticket member
@@ -13859,6 +14449,14 @@ int wolfSSL_set_msg_callback_arg(WOLFSSL *ssl, void* arg);
 
     \param cert a pointer to the wolfSSL_X509 structure.
 
+    \warning The returned value is a bare C string with no length. A dNSName,
+    rfc822Name, or uniformResourceIdentifier SAN may legally contain an embedded
+    NUL byte (RFC 6125 Sec. 6.3 treats such a name as an invalid presented
+    identifier, not a malformed certificate, so the certificate still parses),
+    which silently truncates the returned string. Do not use strlen or strcmp on
+    the result for security comparisons; use wolfSSL_X509_get_ext_d2i and the
+    GENERAL_NAME ASN1_STRING length instead.
+
     _Example_
     \code
     WOLFSSL_X509 x509 = (WOLFSSL_X509*)XMALLOC(sizeof(WOLFSSL_X509), NULL,
@@ -13872,6 +14470,7 @@ int wolfSSL_set_msg_callback_arg(WOLFSSL *ssl, void* arg);
 
     \sa wolfSSL_X509_get_issuer_name
     \sa wolfSSL_X509_get_subject_name
+    \sa wolfSSL_X509_get_ext_d2i
 */
 char* wolfSSL_X509_get_next_altname(WOLFSSL_X509*);
 
@@ -13931,6 +14530,7 @@ WOLFSSL_ASN1_TIME* wolfSSL_X509_get_notBefore(WOLFSSL_X509*);
     \return SSL_SUCCESS If successful.
     \return SSL_FATAL_ERROR will be returned if an error occurred.  To get a
     more detailed error code, call wolfSSL_get_error().
+    \return BAD_FUNC_ARG will be returned when ssl is NULL.
 
     \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
 
@@ -13993,6 +14593,53 @@ int  wolfSSL_connect(WOLFSSL* ssl);
     \sa wolfSSL_disable_hrr_cookie
 */
 int  wolfSSL_send_hrr_cookie(WOLFSSL* ssl,
+    const unsigned char* secret, unsigned int secretSz);
+
+/*!
+    \ingroup Setup
+
+    \brief This function sets a secondary HelloRetryRequest cookie secret on a
+    DTLS 1.3 server.  It is used only when verifying a received cookie, and only
+    if the primary secret (set with wolfSSL_send_hrr_cookie()) fails to verify
+    it.  This lets an application rotate the cookie secret on a stateless DTLS
+    1.3 server without rejecting clients whose cookie was issued under the
+    previous secret: install the new secret as the primary and the previous
+    secret here for an overlap window.  The secondary secret is never used to
+    issue cookies.  This API is DTLS only; TLS 1.3 over a reliable transport
+    does not verify cookies statelessly across the HelloRetryRequest exchange.
+
+    \param [in,out] ssl a pointer to a WOLFSSL structure, created using
+    wolfSSL_new().
+    \param [in] secret a pointer to a buffer holding the secondary secret.
+    Passing NULL (or a secretSz of 0) clears any previously set secondary
+    secret.
+    \param [in] secretSz Size of the secret in bytes.
+
+    \return BAD_FUNC_ARG if ssl is NULL, not using TLS v1.3, or not using DTLS.
+    \return SIDE_ERROR if called with a client.
+    \return WOLFSSL_SUCCESS if successful.
+    \return MEMORY_ERROR if allocating dynamic memory for storing secret failed.
+
+    _Example_
+    \code
+    int ret;
+    WOLFSSL* ssl;
+    char newSecret[32];
+    char oldSecret[32];
+    ...
+    // rotate: new secret becomes primary, previous secret stays valid
+    wolfSSL_send_hrr_cookie(ssl, newSecret, sizeof(newSecret));
+    ret = wolfSSL_set_hrr_cookie_secret_secondary(ssl, oldSecret,
+        sizeof(oldSecret));
+    if (ret != WOLFSSL_SUCCESS) {
+        // failed to set the secondary cookie secret
+    }
+    \endcode
+
+    \sa wolfSSL_send_hrr_cookie
+    \sa wolfSSL_disable_hrr_cookie
+*/
+int  wolfSSL_set_hrr_cookie_secret_secondary(WOLFSSL* ssl,
     const unsigned char* secret, unsigned int secretSz);
 
 /*!
@@ -14126,6 +14773,80 @@ int  wolfSSL_CTX_no_dhe_psk(WOLFSSL_CTX* ctx);
 int  wolfSSL_no_dhe_psk(WOLFSSL* ssl);
 
 /*!
+    \ingroup Setup
+
+    \brief This function is called on a TLS v1.3 / DTLS v1.3 context to require
+    that an external Pre-Shared Key is negotiated for the handshake to succeed.
+    When set, a handshake that completes without negotiating an external PSK is
+    aborted with PSK_MISSING_ERROR instead of falling back to a certificate
+    handshake, so the PSK acts as an additional security factor. The requirement
+    keys off the external-PSK callback (it has no effect unless one is
+    registered) and session-ticket resumption is exempt. To preserve forward
+    secrecy a mandatory external PSK must also use an (EC)DHE key exchange; a
+    pure psk_ke handshake is rejected with PSK_KEY_ERROR. This applies to TLS 1.3
+    and DTLS 1.3 only; in (D)TLS 1.2 the use of a PSK is determined by the
+    negotiated cipher suite, so a mandatory PSK is instead configured by
+    restricting the cipher suite list to (preferably (EC)DHE-)PSK suites.
+
+    \warning Because the requirement can only be enforced for (D)TLS 1.3, this
+    function also disables version downgrade on the context so it cannot
+    silently fall back to (D)TLS 1.2 and complete a handshake without a PSK. A
+    peer that does not support (D)TLS 1.3 will therefore fail to connect.
+
+    \note In builds compiled without external-PSK and without session-ticket
+    support (NO_PSK defined and HAVE_SESSION_TICKET undefined) the requirement
+    cannot be enforced; the function still returns 0 but has no effect.
+
+    \param [in,out] ctx a pointer to a WOLFSSL_CTX structure, created using
+    wolfSSL_CTX_new().
+
+    \return BAD_FUNC_ARG if ctx is NULL or not at least TLS v1.3.
+    \return 0 if successful.
+
+    _Example_
+    \code
+    int ret;
+    WOLFSSL_CTX* ctx;
+    ...
+    ret = wolfSSL_CTX_require_psk(ctx);
+    if (ret != 0) {
+        // failed to make a PSK mandatory
+    }
+    \endcode
+
+    \sa wolfSSL_require_psk
+*/
+int  wolfSSL_CTX_require_psk(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+
+    \brief This function is called on a TLS v1.3 / DTLS v1.3 wolfSSL object to
+    require that an external Pre-Shared Key is negotiated for the handshake to
+    succeed. See wolfSSL_CTX_require_psk() for the full behaviour.
+
+    \param [in,out] ssl a pointer to a WOLFSSL structure, created using
+    wolfSSL_new().
+
+    \return BAD_FUNC_ARG if ssl is NULL or not at least TLS v1.3.
+    \return 0 if successful.
+
+    _Example_
+    \code
+    int ret;
+    WOLFSSL* ssl;
+    ...
+    ret = wolfSSL_require_psk(ssl);
+    if (ret != 0) {
+        // failed to make a PSK mandatory
+    }
+    \endcode
+
+    \sa wolfSSL_CTX_require_psk
+*/
+int  wolfSSL_require_psk(WOLFSSL* ssl);
+
+/*!
     \ingroup IO
 
     \brief This function is called on a TLS v1.3 client or server wolfSSL to
@@ -14138,6 +14859,13 @@ int  wolfSSL_no_dhe_psk(WOLFSSL* ssl);
 
     \return BAD_FUNC_ARG if ssl is NULL or not using TLS v1.3.
     \return WANT_WRITE if the writing is not ready.
+    \return BAD_STATE_E if the connection has already performed the maximum
+    number of key updates. RFC 9846, Section 4.7.3 caps a TLS 1.3 sender at
+    2^48-1 key updates; beyond that the connection must be closed rather than
+    rekeyed. Note that a KeyUpdate arriving from the peer with
+    request_update set is ignored once this cap is reached, rather than
+    failing the connection, so only an application-initiated update reports
+    this error.
     \return WOLFSSL_SUCCESS if successful.
 
     _Example_
@@ -14168,7 +14896,8 @@ int  wolfSSL_update_keys(WOLFSSL* ssl);
     is received.
 
     \param [in] ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
-    \param [out] required   0 when no key update response required. 1 when no key update response required.
+    \param [out] required   0 when no key update response is required. 1 when
+    a key update response from the peer is still outstanding.
 
     \return 0 on successful.
     \return BAD_FUNC_ARG if ssl is NULL or not using TLS v1.3.
@@ -14466,7 +15195,7 @@ int  wolfSSL_set1_sigalgs_list(WOLFSSL* ssl, const char* list);
     | ML_KEM_1024 |
 
     ML-KEM hybrid groups additionally require HAVE_ECC together with either
-    WOLFSSL_WC_MLKEM or HAVE_LIBOQS, and WOLFSSL_PQC_HYBRIDS (or
+    WOLFSSL_WC_MLKEM, and WOLFSSL_PQC_HYBRIDS (or
     WOLFSSL_EXTRA_PQC_HYBRIDS for the "extra" set):
 
     | Name                | Hybrid flag set            |
@@ -14481,7 +15210,7 @@ int  wolfSSL_set1_sigalgs_list(WOLFSSL* ssl, const char* list);
     | X448MLKEM768        | WOLFSSL_EXTRA_PQC_HYBRIDS  |
 
     Legacy Kyber groups (require WOLFSSL_MLKEM_KYBER; hybrids additionally
-    require HAVE_ECC together with WOLFSSL_WC_MLKEM or HAVE_LIBOQS):
+    require HAVE_ECC together with WOLFSSL_WC_MLKEM):
 
     | Name                  |
     | --------------------- |
@@ -14685,7 +15414,7 @@ int  wolfSSL_preferred_group(WOLFSSL* ssl);
     | WOLFSSL_ML_KEM_1024|
 
     ML-KEM hybrid groups additionally require HAVE_ECC together with either
-    WOLFSSL_WC_MLKEM or HAVE_LIBOQS, and WOLFSSL_PQC_HYBRIDS (or
+    WOLFSSL_WC_MLKEM, and WOLFSSL_PQC_HYBRIDS (or
     WOLFSSL_EXTRA_PQC_HYBRIDS for the "extra" set):
 
     | Identifier                       | Hybrid flag set            |
@@ -14700,8 +15429,7 @@ int  wolfSSL_preferred_group(WOLFSSL* ssl);
     | WOLFSSL_X448MLKEM768             | WOLFSSL_EXTRA_PQC_HYBRIDS  |
 
     Legacy Kyber groups (require HAVE_PQC and WOLFSSL_MLKEM_KYBER; hybrids
-    additionally require HAVE_ECC together with WOLFSSL_WC_MLKEM or
-    HAVE_LIBOQS):
+    additionally require HAVE_ECC together with WOLFSSL_WC_MLKEM):
 
     | Identifier                  |
     | --------------------------- |
@@ -14991,7 +15719,15 @@ int  wolfSSL_set_max_early_data(WOLFSSL* ssl, unsigned int sz);
     \return SIDE_ERROR if called with a server.
     \return BAD_STATE_E if invoked without a valid session or without a valid
     PSK cb
-    \return WOLFSSL_FATAL_ERROR if the connection is not made.
+    \return WOLFSSL_FATAL_ERROR if the connection is not made, or if the
+    AEAD key usage limit would be exceeded by this write, in which case
+    wolfSSL_get_error() reports TOO_MUCH_EARLY_DATA. A KeyUpdate cannot be
+    performed while sending early data (RFC 9846, Section 5.5), so no further
+    early data can be sent on this connection. The write is all-or-nothing as
+    usual: a value less than sz is never returned. Note that a failed call may
+    still have put records on the wire before the limit was reached, so treat
+    the connection as unusable for early data rather than resuming the send
+    from an offset.
     \return the amount of early data written in bytes if successful.
 
     _Example_
@@ -15079,6 +15815,48 @@ int  wolfSSL_read_early_data(WOLFSSL* ssl, void* data, int sz,
     int* outSz);
 
 /*!
+    \ingroup Setup
+
+    \brief This function is called on the server to disable the
+    RFC 8446 Section 8.2 fresh start protection. By default a freshly
+    created context rejects early data, but not resumption, for session
+    tickets minted before the context was created, since the anti-replay
+    state for those tickets may not have survived a server restart. Only
+    call this function when the anti-replay state (session cache or
+    external cache) reliably survives server restarts.
+
+    The check compares the ticket timestamp against the context creation
+    time, both taken from TimeNowInMilliseconds(). That clock is only
+    required to be millisecond accurate, not correlated to the epoch, so on
+    ports where it counts from boot (Windows QPC, Zephyr, FreeRTOS, Micrium,
+    Microchip) it restarts near zero and the check does not fire for tickets
+    minted before a reboot. Such deployments must rely on ticket key
+    rotation instead.
+
+    \param [in,out] ctx a pointer to a WOLFSSL_CTX structure, created
+    with wolfSSL_CTX_new().
+
+    \return BAD_FUNC_ARG if ctx is NULL or not using TLS v1.3.
+    \return SIDE_ERROR if called with a client.
+    \return 0 if successful.
+
+    _Example_
+    \code
+    int ret;
+    WOLFSSL_CTX* ctx;
+    ...
+    ret = wolfSSL_CTX_no_early_data_fresh_start_check(ctx);
+    if (ret != 0) {
+        // failed to disable the fresh start check
+    }
+    \endcode
+
+    \sa wolfSSL_CTX_set_max_early_data
+    \sa wolfSSL_read_early_data
+*/
+int  wolfSSL_CTX_no_early_data_fresh_start_check(WOLFSSL_CTX* ctx);
+
+/*!
     \ingroup IO
 
     \brief This function is called to inject data into the WOLFSSL object. This
@@ -15092,7 +15870,9 @@ int  wolfSSL_read_early_data(WOLFSSL* ssl, void* data, int sz,
     \param [in] sz number of bytes of data to inject.
 
     \return BAD_FUNC_ARG if any pointer parameter is NULL or sz <= 0
-    \return APP_DATA_READY if there is application data left to read
+    \return BUFFER_ERROR if the input buffer lengths are inconsistent
+    \return APP_DATA_READY if the input buffer must be grown while there is
+            application data left to read
     \return MEMORY_E if allocation fails
     \return WOLFSSL_SUCCESS on success
 
@@ -15225,7 +16005,7 @@ void wolfSSL_set_psk_server_tls13_callback(WOLFSSL* ssl,
     \ingroup Setup
 
     \brief Enable or disable TLS 1.3 certificate authentication with external
-    PSK (RFC8773bis) on a context.
+    PSK (RFC 9973) on a context.
 
     When enabled, wolfSSL advertises and accepts the
     `tls_cert_with_extern_psk` extension for TLS 1.3 handshakes using external
@@ -15260,7 +16040,7 @@ int wolfSSL_CTX_set_cert_with_extern_psk(WOLFSSL_CTX* ctx, int state);
     \ingroup Setup
 
     \brief Enable or disable TLS 1.3 certificate authentication with external
-    PSK (RFC8773bis) on a connection.
+    PSK (RFC 9973) on a connection.
 
     This call applies to a single WOLFSSL object. Any non-zero \p state value
     enables the feature and zero disables it.
@@ -15858,30 +16638,6 @@ int wolfSSL_set_server_cert_type(WOLFSSL* ssl, const char* buf, int len);
 /*!
     \ingroup Setup
 
-    \brief Enables handshake message grouping for the given WOLFSSL_CTX context.
-
-    This function turns on handshake message grouping for all SSL objects created from the specified context.
-
-    \return WOLFSSL_SUCCESS on success.
-    \return BAD_FUNC_ARG if ctx is NULL.
-
-    \param ctx Pointer to the WOLFSSL_CTX structure.
-
-    _Example_
-    \code
-    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
-    wolfSSL_CTX_set_group_messages(ctx);
-    \endcode
-
-    \sa wolfSSL_CTX_clear_group_messages
-    \sa wolfSSL_set_group_messages
-    \sa wolfSSL_clear_group_messages
-*/
-int wolfSSL_CTX_set_group_messages(WOLFSSL_CTX* ctx);
-
-/*!
-    \ingroup Setup
-
     \brief Disables handshake message grouping for the given WOLFSSL_CTX context.
 
     This function turns off handshake message grouping for all SSL objects created from the specified context.
@@ -15902,30 +16658,6 @@ int wolfSSL_CTX_set_group_messages(WOLFSSL_CTX* ctx);
     \sa wolfSSL_clear_group_messages
 */
 int wolfSSL_CTX_clear_group_messages(WOLFSSL_CTX* ctx);
-
-/*!
-    \ingroup Setup
-
-    \brief Enables handshake message grouping for the given WOLFSSL object.
-
-    This function turns on handshake message grouping for the specified SSL object.
-
-    \return WOLFSSL_SUCCESS on success.
-    \return BAD_FUNC_ARG if ssl is NULL.
-
-    \param ssl Pointer to the WOLFSSL structure.
-
-    _Example_
-    \code
-    WOLFSSL* ssl = wolfSSL_new(ctx);
-    wolfSSL_set_group_messages(ssl);
-    \endcode
-
-    \sa wolfSSL_clear_group_messages
-    \sa wolfSSL_CTX_set_group_messages
-    \sa wolfSSL_CTX_clear_group_messages
-*/
-int wolfSSL_set_group_messages(WOLFSSL* ssl);
 
 /*!
     \ingroup Setup
@@ -16011,6 +16743,129 @@ int wolfSSL_get_negotiated_client_cert_type(WOLFSSL* ssl, int* tp);
  \sa wolfSSL_get_negotiated_client_cert_type
  */
 int wolfSSL_get_negotiated_server_cert_type(WOLFSSL* ssl, int* tp);
+
+/*!
+ \ingroup Setup
+ \brief  Pin a DER-encoded SubjectPublicKeyInfo that the peer is expected to
+ present as a Raw Public Key (RFC 7250), establishing out-of-band trust on the
+ WOLFSSL_CTX object. An unauthenticated RPK peer is otherwise rejected: when the
+ peer is being authenticated (any verify mode other than WOLFSSL_VERIFY_NONE)
+ the handshake fails closed unless the presented key matches a pin (or a verify
+ callback accepts it). May be called more than once to pin several keys, up to
+ WOLFSSL_MAX_RPK_PINS. The key is stored as its SHA-256 digest, so this API
+ requires SHA-256. Pins are append-only - there is no per-entry remove, but
+ wolfSSL_CTX_clear_expected_rpk() empties the table so it can be repopulated.
+
+ \return WOLFSSL_SUCCESS on success
+ \return BAD_FUNC_ARG if ctx or spki is NULL, or spkiSz is 0
+ \return BUFFER_E if the pin table is already full (WOLFSSL_MAX_RPK_PINS)
+ \return other negative error code on a hashing failure
+
+ \param ctx     WOLFSSL_CTX object pointer
+ \param spki    DER-encoded SubjectPublicKeyInfo the peer is expected to present
+ \param spkiSz  length of spki in bytes
+    _Example_
+ \code
+  int ret;
+  WOLFSSL_CTX* ctx;
+  const unsigned char* spki;
+  unsigned int spkiSz;
+  ...
+
+  ret = wolfSSL_CTX_set_expected_rpk(ctx, spki, spkiSz);
+ \endcode
+ \sa wolfSSL_set_expected_rpk
+ \sa wolfSSL_CTX_clear_expected_rpk
+ \sa wolfSSL_set_client_cert_type
+ \sa wolfSSL_set_server_cert_type
+ */
+int wolfSSL_CTX_set_expected_rpk(WOLFSSL_CTX* ctx, const unsigned char* spki,
+    unsigned int spkiSz);
+
+/*!
+ \ingroup Setup
+ \brief  Pin a DER-encoded SubjectPublicKeyInfo that the peer is expected to
+ present as a Raw Public Key (RFC 7250), establishing out-of-band trust on the
+ WOLFSSL object. An unauthenticated RPK peer is otherwise rejected: when the
+ peer is being authenticated (any verify mode other than WOLFSSL_VERIFY_NONE)
+ the handshake fails closed unless the presented key matches a pin (or a verify
+ callback accepts it). May be called more than once to pin several keys, up to
+ WOLFSSL_MAX_RPK_PINS. The key is stored as its SHA-256 digest, so this API
+ requires SHA-256. Pins are append-only - there is no per-entry remove, but
+ wolfSSL_clear_expected_rpk() empties the table so it can be repopulated.
+
+ \return WOLFSSL_SUCCESS on success
+ \return BAD_FUNC_ARG if ssl or spki is NULL, or spkiSz is 0
+ \return BUFFER_E if the pin table is already full (WOLFSSL_MAX_RPK_PINS)
+ \return other negative error code on a hashing failure
+
+ \param ssl     WOLFSSL object pointer
+ \param spki    DER-encoded SubjectPublicKeyInfo the peer is expected to present
+ \param spkiSz  length of spki in bytes
+    _Example_
+ \code
+  int ret;
+  WOLFSSL* ssl;
+  const unsigned char* spki;
+  unsigned int spkiSz;
+  ...
+
+  ret = wolfSSL_set_expected_rpk(ssl, spki, spkiSz);
+ \endcode
+ \sa wolfSSL_CTX_set_expected_rpk
+ \sa wolfSSL_clear_expected_rpk
+ \sa wolfSSL_set_client_cert_type
+ \sa wolfSSL_set_server_cert_type
+ */
+int wolfSSL_set_expected_rpk(WOLFSSL* ssl, const unsigned char* spki,
+    unsigned int spkiSz);
+
+/*!
+ \ingroup Setup
+ \brief  Remove all pinned expected peer Raw Public Keys (RFC 7250) from the
+ WOLFSSL_CTX object, emptying the table so it can be repopulated - for example
+ across a peer key rotation, since the pinning APIs are otherwise append-only.
+ Like other WOLFSSL_CTX setters this is not locked, so reconfigure the pins on a
+ shared CTX while no handshakes are in flight (a WOLFSSL created with
+ wolfSSL_new() copies the pin table by value at creation time).
+
+ \return WOLFSSL_SUCCESS on success
+ \return BAD_FUNC_ARG if ctx is NULL
+
+ \param ctx  WOLFSSL_CTX object pointer
+    _Example_
+ \code
+  WOLFSSL_CTX* ctx;
+  ...
+
+  wolfSSL_CTX_clear_expected_rpk(ctx);
+ \endcode
+ \sa wolfSSL_CTX_set_expected_rpk
+ \sa wolfSSL_clear_expected_rpk
+ */
+int wolfSSL_CTX_clear_expected_rpk(WOLFSSL_CTX* ctx);
+
+/*!
+ \ingroup Setup
+ \brief  Remove all pinned expected peer Raw Public Keys (RFC 7250) from the
+ WOLFSSL object, emptying the table so it can be repopulated - for example
+ across a peer key rotation, since the pinning APIs are otherwise append-only.
+
+ \return WOLFSSL_SUCCESS on success
+ \return BAD_FUNC_ARG if ssl is NULL
+
+ \param ssl  WOLFSSL object pointer
+    _Example_
+ \code
+  WOLFSSL* ssl;
+  ...
+
+  wolfSSL_clear_expected_rpk(ssl);
+ \endcode
+ \sa wolfSSL_set_expected_rpk
+ \sa wolfSSL_CTX_clear_expected_rpk
+ */
+int wolfSSL_clear_expected_rpk(WOLFSSL* ssl);
 
 /*!
 
@@ -16141,6 +16996,9 @@ int wolfSSL_dtls_cid_get0_rx(WOLFSSL* ssl, unsigned char** cid);
 
 \brief Get the size of the ConnectionID used to send records in this
 connection. See RFC 9146 and RFC 9147. The size is stored in the parameter size.
+The send ConnectionID is chosen by the peer. On DTLS 1.3 it may be up to 255
+bytes and is not bounded by wolfSSL_dtls_cid_max_size(); on DTLS 1.2 it never
+exceeds wolfSSL_dtls_cid_max_size().
 
  \return WOLFSSL_SUCCESS if ConnectionID size was correctly stored, error
  code otherwise
@@ -16161,7 +17019,11 @@ int wolfSSL_dtls_cid_get_tx_size(WOLFSSL* ssl, unsigned int* size);
 
 \brief Copy the ConnectionID used when sending records in this connection into
 the buffer pointer by the parameter buffer. See RFC 9146 and RFC 9147. The
-available size need to be provided in bufferSz.
+available size need to be provided in bufferSz. The send ConnectionID is chosen
+by the peer. On DTLS 1.3 it may be up to 255 bytes and is not bounded by
+wolfSSL_dtls_cid_max_size(), so size the buffer from
+wolfSSL_dtls_cid_get_tx_size() (or use 255 bytes) rather than from
+wolfSSL_dtls_cid_max_size(), otherwise this returns LENGTH_ERROR.
 
  \return WOLFSSL_SUCCESS if ConnectionID was correctly copied, error code
  otherwise
@@ -16184,7 +17046,9 @@ int wolfSSL_dtls_cid_get_tx(WOLFSSL* ssl, unsigned char* buffer,
 /*!
 
 \brief Get the ConnectionID used when sending records in this connection. See
-RFC 9146 and RFC 9147.
+RFC 9146 and RFC 9147. The send ConnectionID is chosen by the peer. On DTLS 1.3
+it may be up to 255 bytes and is not bounded by wolfSSL_dtls_cid_max_size(); use
+wolfSSL_dtls_cid_get_tx_size() to learn its length.
 
  \return WOLFSSL_SUCCESS if ConnectionID was correctly retrieved, error code
  otherwise
@@ -16201,6 +17065,22 @@ RFC 9146 and RFC 9147.
  \sa wolfSSL_dtls_cid_get_tx_size
 */
 int wolfSSL_dtls_cid_get0_tx(WOLFSSL* ssl, unsigned char** cid);
+
+/*!
+
+\brief Get the maximum size of the ConnectionID that this build can receive,
+that is the largest size accepted by wolfSSL_dtls_cid_set(). This is the
+compile time define DTLS_CID_MAX_SIZE and it can never be bigger than 255
+bytes. It does not bound the ConnectionID used to send records, which is chosen
+by the peer and, on DTLS 1.3, may be up to 255 bytes.
+
+ \return the maximum receive ConnectionID size in bytes
+
+ \sa wolfSSL_dtls_cid_set
+ \sa wolfSSL_dtls_cid_get_rx_size
+ \sa wolfSSL_dtls_cid_get_tx_size
+*/
+int wolfSSL_dtls_cid_max_size(void);
 
 /*!
 
@@ -16443,23 +17323,6 @@ WOLFSSL_STACK *wolfSSL_get0_peer_CA_list(const WOLFSSL *ssl);
 
 /*!
     \ingroup TLS
-    \brief This function sets a callback that will be called whenever a
-    certificate is about to be used, to allow the application to inspect, set
-    or clear any certificates, for example to react to a CA list sent from the
-    peer.
-
-    \param [in] ctx Pointer to the wolfSSL context
-    \param [in] cb Function pointer to the callback
-    \param [in] arg Pointer that will be passed to the callback
-
-    \sa wolfSSL_get0_peer_CA_list
-    \sa wolfSSL_get_client_CA_list
-*/
-void wolfSSL_CTX_set_cert_cb(WOLFSSL_CTX* ctx,
-    int (*cb)(WOLFSSL *, void *), void *arg);
-
-/*!
-    \ingroup TLS
 
     \brief This function returns the raw list of ciphersuites and signature
     algorithms offered by the client. The lists are only stored and returned
@@ -16681,3 +17544,154 @@ int wolfSSL_get_scr_check_enabled(const WOLFSSL* ssl);
     \sa wolfSSL_get_scr_check_enabled
 */
 int wolfSSL_set_scr_check_enabled(WOLFSSL* ssl, byte enabled);
+
+/*!
+    \ingroup Setup
+    \brief Disables the TLS Extended Master Secret extension (RFC 7627) on
+    the context: a client stops advertising it and a server ignores the
+    peer's request, so a standard master secret is negotiated. A server also
+    declines resumption of sessions or tickets that used EMS and does a full
+    handshake instead. TLS 1.2 and earlier only. Requires
+    HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ctx is NULL.
+
+    \param ctx a pointer to a WOLFSSL_CTX structure, created using
+    wolfSSL_CTX_new().
+
+    _Example_
+    \code
+    wolfSSL_CTX_DisableExtendedMasterSecret(ctx);
+    \endcode
+
+    \sa wolfSSL_DisableExtendedMasterSecret
+    \sa wolfSSL_CTX_EnableExtendedMasterSecret
+    \sa wolfSSL_CTX_RequireExtendedMasterSecret
+*/
+int wolfSSL_CTX_DisableExtendedMasterSecret(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+    \brief Disables the TLS Extended Master Secret extension (RFC 7627) on
+    the SSL object: a client stops advertising it and a server ignores the
+    peer's request, so a standard master secret is negotiated. A server also
+    declines resumption of sessions or tickets that used EMS and does a full
+    handshake instead. Call before the handshake starts, or after
+    wolfSSL_clear. TLS 1.2 and earlier only. Requires HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ssl is NULL.
+    \return BAD_STATE_E if the handshake has started.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+
+    _Example_
+    \code
+    wolfSSL_DisableExtendedMasterSecret(ssl);
+    \endcode
+
+    \sa wolfSSL_CTX_DisableExtendedMasterSecret
+    \sa wolfSSL_EnableExtendedMasterSecret
+    \sa wolfSSL_RequireExtendedMasterSecret
+*/
+int wolfSSL_DisableExtendedMasterSecret(WOLFSSL* ssl);
+
+/*!
+    \ingroup Setup
+    \brief Re-enables the TLS Extended Master Secret extension (RFC 7627) on
+    the context (the default): EMS is used when the peer supports it but is
+    not mandatory. Undoes a previous disable or require. Requires
+    HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ctx is NULL.
+
+    \param ctx a pointer to a WOLFSSL_CTX structure, created using
+    wolfSSL_CTX_new().
+
+    _Example_
+    \code
+    wolfSSL_CTX_EnableExtendedMasterSecret(ctx);
+    \endcode
+
+    \sa wolfSSL_EnableExtendedMasterSecret
+    \sa wolfSSL_CTX_DisableExtendedMasterSecret
+    \sa wolfSSL_CTX_RequireExtendedMasterSecret
+*/
+int wolfSSL_CTX_EnableExtendedMasterSecret(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+    \brief Re-enables the TLS Extended Master Secret extension (RFC 7627) on
+    the SSL object (the default): EMS is used when the peer supports it but
+    is not mandatory. Undoes a previous disable or require. Call before the
+    handshake starts, or after wolfSSL_clear. Requires HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ssl is NULL.
+    \return BAD_STATE_E if the handshake has started.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+
+    _Example_
+    \code
+    wolfSSL_EnableExtendedMasterSecret(ssl);
+    \endcode
+
+    \sa wolfSSL_CTX_EnableExtendedMasterSecret
+    \sa wolfSSL_DisableExtendedMasterSecret
+    \sa wolfSSL_RequireExtendedMasterSecret
+*/
+int wolfSSL_EnableExtendedMasterSecret(WOLFSSL* ssl);
+
+/*!
+    \ingroup Setup
+    \brief Makes the TLS Extended Master Secret extension (RFC 7627)
+    mandatory on the context: if it is not negotiated, the connection
+    is aborted with EXT_MASTER_SECRET_NEEDED_E. A client advertises
+    the extension even after a previous disable. TLS 1.2 and earlier
+    only. Requires HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ctx is NULL.
+
+    \param ctx a pointer to a WOLFSSL_CTX structure, created using
+    wolfSSL_CTX_new().
+
+    _Example_
+    \code
+    wolfSSL_CTX_RequireExtendedMasterSecret(ctx);
+    \endcode
+
+    \sa wolfSSL_RequireExtendedMasterSecret
+    \sa wolfSSL_CTX_EnableExtendedMasterSecret
+    \sa wolfSSL_CTX_DisableExtendedMasterSecret
+*/
+int wolfSSL_CTX_RequireExtendedMasterSecret(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+    \brief Makes the TLS Extended Master Secret extension (RFC 7627)
+    mandatory on the SSL object: if it is not negotiated, including on
+    resumption, the connection is aborted with EXT_MASTER_SECRET_NEEDED_E. A
+    client advertises the extension even after a previous disable. Call
+    before the handshake starts, or after wolfSSL_clear. TLS 1.2 and earlier
+    only. Requires HAVE_EXTENDED_MASTER.
+
+    \return WOLFSSL_SUCCESS on success.
+    \return BAD_FUNC_ARG if ssl is NULL.
+    \return BAD_STATE_E if the handshake has started.
+
+    \param ssl a pointer to a WOLFSSL structure, created using wolfSSL_new().
+
+    _Example_
+    \code
+    wolfSSL_RequireExtendedMasterSecret(ssl);
+    \endcode
+
+    \sa wolfSSL_CTX_RequireExtendedMasterSecret
+    \sa wolfSSL_EnableExtendedMasterSecret
+    \sa wolfSSL_DisableExtendedMasterSecret
+*/
+int wolfSSL_RequireExtendedMasterSecret(WOLFSSL* ssl);

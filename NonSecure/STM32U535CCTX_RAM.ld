@@ -44,7 +44,7 @@ _Min_Stack_Size = 0x400;	/* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM	(xrw)	: ORIGIN = 0x20030000,	LENGTH = 64K     /* Memory is divided. Actual start is 0x20000000 and actual length is 256K */
+  RAM	(xrw)	: ORIGIN = 0x20038000,	LENGTH = 32K     /* high 32K of SRAM2; low 32K is Secure */
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
 }
 
@@ -143,7 +143,7 @@ SECTIONS
   } >RAM
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram type memory left */
-  ._user_heap_stack :
+  ._user_heap_stack (NOLOAD) :
   {
     . = ALIGN(8);
     PROVIDE ( end = . );

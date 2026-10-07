@@ -162,6 +162,19 @@ static int wc_MemFailCount_AllocMem(void)
 
     return ret;
 }
+/* An allocation was counted by wc_MemFailCount_AllocMem() above, but the
+ * underlying allocator then returned NULL (a caller-installed failing
+ * allocator via wolfSSL_SetAllocators(), or a genuine out-of-memory). No
+ * block exists to be freed, so undo the count to keep Total (allocs)
+ * balanced with Frees. */
+static void wc_MemFailCount_AllocFailed(void)
+{
+    wc_LockMutex(&memFailMutex);
+    if (mem_fail_allocs > 0) {
+        mem_fail_allocs--;
+    }
+    wc_UnLockMutex(&memFailMutex);
+}
 static void wc_MemFailCount_FreeMem(void)
 {
     wc_LockMutex(&memFailMutex);
@@ -239,8 +252,8 @@ void wc_MemZero_Free(void)
         int i;
         fprintf(stderr, "[MEM_ZERO] Unseen: %d\n", nextIdx);
         for (i = 0; i < nextIdx; i++) {
-            fprintf(stderr, "  %s - %p:%ld\n", memZero[i].name, memZero[i].addr,
-                memZero[i].len);
+            fprintf(stderr, "  %s - %p:%lu\n", memZero[i].name, memZero[i].addr,
+                (unsigned long)memZero[i].len);
         }
     }
     /* Uninitialized value in next index. */
@@ -301,9 +314,10 @@ void wc_MemZero_Check(void* addr, size_t len)
         for (j = 0; j < memZero[i].len; j++) {
             if (((unsigned char*)memZero[i].addr)[j] != 0) {
                 /* Byte not zero - abort! */
-                fprintf(stderr, "\n[MEM_ZERO] %s:%p + %ld is not zero\n",
-                    memZero[i].name, memZero[i].addr, j);
-                fprintf(stderr, "[MEM_ZERO] Checking %p:%ld\n", addr, len);
+                fprintf(stderr, "\n[MEM_ZERO] %s:%p + %lu is not zero\n",
+                    memZero[i].name, memZero[i].addr, (unsigned long)j);
+                fprintf(stderr, "[MEM_ZERO] Checking %p:%lu\n", addr,
+                    (unsigned long)len);
             #ifndef TEST_ALWAYS_RUN_TO_END
                 abort();
             #endif
@@ -357,6 +371,10 @@ void* wolfSSL_Malloc(size_t size)
         #ifdef WOLFSSL_TRAP_MALLOC_SZ
         if (size > WOLFSSL_TRAP_MALLOC_SZ) {
             WOLFSSL_MSG("Malloc too big!");
+        #ifdef WOLFSSL_MEM_FAIL_COUNT
+            /* Allocation was counted above but no block exists to free. */
+            wc_MemFailCount_AllocFailed();
+        #endif
             return NULL;
         }
         #endif
@@ -405,7 +423,16 @@ void* wolfSSL_Malloc(size_t size)
             free(res); /* native heap */
         }
         gMemFailCount = gMemFailCountSeed; /* reset */
+    #ifdef WOLFSSL_MEM_FAIL_COUNT
+        wc_MemFailCount_AllocFailed();
+    #endif
         return NULL;
+    }
+#endif
+
+#ifdef WOLFSSL_MEM_FAIL_COUNT
+    if (res == NULL) {
+        wc_MemFailCount_AllocFailed();
     }
 #endif
 
@@ -434,7 +461,13 @@ void wolfSSL_Free(void *ptr)
     wc_MemZero_Check(((unsigned char*)ptr) + MEM_ALIGN, *(size_t*)ptr);
 #endif
 #ifdef WOLFSSL_MEM_FAIL_COUNT
-    wc_MemFailCount_FreeMem();
+    /* Only count a free when there is a block to release. A null pointer
+     * releases nothing (ISO/IEC 9899:2018 7.22.3.3), and a failed
+     * wolfSSL_Malloc() no longer counts an allocation, so a NULL free must
+     * not be counted either or Frees would exceed Total. */
+    if (ptr != NULL) {
+        wc_MemFailCount_FreeMem();
+    }
 #endif
 
     if (free_function) {
@@ -511,7 +544,14 @@ void* wolfSSL_Realloc(void *ptr, size_t size)
     }
 
 #ifdef WOLFSSL_MEM_FAIL_COUNT
-    if (ptr != NULL) {
+    /* realloc(NULL, n) is malloc. AllocMem() already counted it; if the
+     * allocator returns NULL for a positive size, no block exists to free.
+     * Do not undo a failed realloc of a live pointer: that path still
+     * counts a free below and the original block remains. */
+    if (res == NULL && ptr == NULL && size > 0) {
+        wc_MemFailCount_AllocFailed();
+    }
+    else if (ptr != NULL) {
         wc_MemFailCount_FreeMem();
     }
 #endif
@@ -1410,7 +1450,7 @@ void* wolfSSL_Realloc(void *ptr, size_t size, void* heap, int type)
                 }
             }
 
-            if (pt != NULL && res == NULL) {
+            if (pt != NULL) {
                 word32 prvSz;
 
                 res = pt->buffer;
@@ -1570,6 +1610,12 @@ void *xmalloc(size_t n, void* heap, int type, const char* func,
         fprintf(stderr, "Alloc: %p -> %u (%d) at %s:%s:%u\n", p, (word32)n,
                                                         type, func, file, line);
     }
+#ifdef WOLFSSL_MEM_FAIL_COUNT
+    else {
+        /* Counted above, but the allocator returned NULL. No block to free. */
+        wc_MemFailCount_AllocFailed();
+    }
+#endif
 
     (void)heap;
 
@@ -1619,7 +1665,14 @@ void *xrealloc(void *p, size_t n, void* heap, int type, const char* func,
     }
 
 #ifdef WOLFSSL_MEM_FAIL_COUNT
-    if (p != NULL) {
+    /* realloc(NULL, n) is malloc. AllocMem() already counted it; if the
+     * allocator returns NULL for a positive size, no block exists to free.
+     * Do not undo a failed realloc of a live pointer: that path still
+     * counts a free below and the original block remains. */
+    if (p32 == NULL && p == NULL && n > 0) {
+        wc_MemFailCount_AllocFailed();
+    }
+    else if (p != NULL) {
         wc_MemFailCount_FreeMem();
     }
 #endif
@@ -1684,6 +1737,15 @@ void wc_ForceZero(void *mem, size_t len)
 }
 #endif
 
+#ifndef WOLFSSL_NO_CONST_CMP
+/* Exported version of ConstantCompare(). */
+int wc_ConstantCompare(const byte* a, const byte* b, int length)
+
+{
+    return ConstantCompare(a, b, length);
+}
+#endif
+
 #ifdef WC_DEBUG_CIPHER_LIFECYCLE
 static const byte wc_debug_cipher_lifecycle_tag_value[] =
     { 'W', 'o', 'l', 'f' };
@@ -1725,8 +1787,12 @@ WOLFSSL_LOCAL int wc_debug_CipherLifecycleCheck(
     ret = 0;
 
 out:
+#ifdef WOLFSSL_KERNEL_MODE
+    (void)abort_p;
+#else
     if ((ret < 0) && abort_p)
         abort();
+#endif
 
     return ret;
 }
@@ -1789,38 +1855,36 @@ WOLFSSL_LOCAL int SAVE_VECTOR_REGISTERS2_fuzzer(void) {
 
 /* alternate implementation useful for testing in the kernel module build, where
  * glibc and thread-local storage are unavailable.
- *
- * note this is not a well-behaved PRNG, but is adequate for fuzzing purposes.
- * the prn sequence is incompressible according to ent and xz, and does not
- * cycle within 10M iterations with various seeds including zero, but the Chi
- * square distribution is poor, and the unconditioned lsb bit balance is ~54%
- * regardless of seed.
- *
- * deterministic only if access is single-threaded, but never degenerate.
  */
 
 WOLFSSL_LOCAL int SAVE_VECTOR_REGISTERS2_fuzzer(void) {
-    static unsigned long prn = WC_DEBUG_VECTOR_REGISTERS_FUZZING_SEED;
-    static int balance_bit = 0;
-    unsigned long new_prn = prn ^ 0xba86943da66ee701ul; /* note this magic
-                                                         * random number is
-                                                         * bit-balanced.
-                                                         */
+    /* xorshift64 (Marsaglia 2003): a bijection on the nonzero 64-bit states
+     * with a single cycle of period 2^64 - 1 -- no state-space contraction,
+     * no short cycles, and the seed selects only the phase.  Aligned 64-bit
+     * stores are atomic on supported targets and every stored value is
+     * nonzero, so unsynchronized concurrent access loses updates but can
+     * never degenerate the state.
+     */
+    static word64 prn =
+        (word64)WC_DEBUG_VECTOR_REGISTERS_FUZZING_SEED != W64LIT(0) ?
+        (word64)WC_DEBUG_VECTOR_REGISTERS_FUZZING_SEED :
+        W64LIT(0x9e3779b97f4a7c15); /* zero is the map's one fixed point --
+                                     * substitute an arbitrary nonzero seed.
+                                     */
+    word64 x;
 
 #ifdef DEBUG_VECTOR_REGISTER_ACCESS
     if (wc_debug_vector_registers_retval)
         return wc_debug_vector_registers_retval;
 #endif
 
-    /* barrel-roll using the bottom 6 bits. */
-    if (new_prn & 0x3f)
-        new_prn = (new_prn << (new_prn & 0x3f)) |
-            (new_prn >> (0x40 - (new_prn & 0x3f)));
-    prn = new_prn;
+    x = prn;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    prn = x;
 
-    balance_bit = !balance_bit;
-
-    return ((prn & 1) ^ balance_bit) ? WC_NO_ERR_TRACE(IO_FAILED_E) : 0;
+    return ((x >> 32) & 1) ? WC_NO_ERR_TRACE(IO_FAILED_E) : 0;
 }
 
 #endif /* !HAVE_THREAD_LS */

@@ -139,7 +139,7 @@
 /*
 //     <o>End Address <0x1F-0xFFFFFFFF>
 */
-#define SAU_INIT_END2       0x2003FFFF      /* end address of SAU region 2 */
+#define SAU_INIT_END2       0x2002FFFF      /* end of SRAM1 NS alias; SRAM2 low 32K is Secure */
 /*
 //     <o>Region is
 //         <0=>Non-Secure
@@ -230,17 +230,17 @@
 //   <e>Initialize SAU Region 6
 //   <i> Setup SAU Region 6 memory attributes
 */
-#define SAU_INIT_REGION6    0
+#define SAU_INIT_REGION6    1
 
 /*
 //     <o>Start Address <0-0xFFFFFFE0>
 */
-#define SAU_INIT_START6     0x00000000      /* start address of SAU region 6 */
+#define SAU_INIT_START6     0x20038000      /* high 32K of SRAM2, NonSecure */
 
 /*
 //     <o>End Address <0x1F-0xFFFFFFFF>
 */
-#define SAU_INIT_END6       0x00000000      /* end address of SAU region 6 */
+#define SAU_INIT_END6       0x2003FFFF      /* end address of SAU region 6 */
 /*
 //     <o>Region is
 //         <0=>Non-Secure

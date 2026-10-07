@@ -115,7 +115,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 - `OWNER SET` is first USB wins (unsigned blob). `OWNER REPLACE` is reset-password only over MANAGE (not M&D); pairing survives; owner/creds/pads/ML-KEM pk do not.
 - `KEM INIT` requires a Tropic PIN on unsigned MANAGE TLS. R-MEM 510 refuses a second `KEM INIT`.
 - USB line cap 160 chars; unsigned OWNER SET and MANAGE bodies use the 16 KiB RX ring. RX overflow aborts.
-- USB errors on the console are coarse (`failed` / `empty` / `refused` / `ok`). Leftover for UserApp TLS arm waits for ClientHello `0x16` or ASCII `failed`.
+- USB errors on the console are coarse (`failed` / `empty` / `refused` / `ok`). Type `0x00` is a command; type `0x01` is the Secure pipe. A command that arrives during TLS is queued, so it is not parsed as a TLS record.
 - MANAGE TLS replies keep typed status (`PIN_FAIL`, `SLOT_OCC`, …) and msg strings (`PIN fail`, `KEM INIT failed`, `KEYGEN ok`).
 
 **Residual:**

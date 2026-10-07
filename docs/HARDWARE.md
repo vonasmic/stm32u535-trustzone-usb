@@ -30,7 +30,7 @@ Non-secure view base `0x08000000`. Secure linker uses alias `0x0C000000` for the
 | NSC veneers | `0x0802E000` | `0x0C02E000` | 8 KB | **23** | `FLASH_NSC`, `.gnu.sgstubs` |
 | NonSecure app | `0x08030000` | — | 64 KB | **24–31** | NS `FLASH` |
 
-Page 21 is Secure data (not part of the Secure ELF load). Page 22 is **not** part of the Secure ELF load. After a linker-map change, rebuild Secure so code still fits pages 0–20.
+Pages 21 and 22 are not in either ELF. A download erases the whole flash first (CubeIDE: `monitor flash mass_erase`; command line: `-e all`), then programs both images, so those pages come back blank. A reset without programming leaves them as they are. After a linker-map change, rebuild Secure so code still fits pages 0–20.
 
 `SECWM1_PEND` stays `0x17` (page 23): page 21 is Secure-only data, not code.
 

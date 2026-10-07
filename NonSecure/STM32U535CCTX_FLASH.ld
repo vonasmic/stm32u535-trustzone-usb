@@ -45,9 +45,13 @@ _Min_Stack_Size = 0x400;
 /* Memories definition */
 MEMORY
 {
-  RAM	(xrw)	: ORIGIN = 0x20030000,	LENGTH = 64K     /* Memory is divided. Actual start is 0x20000000 and actual length is 256K */
+  RAM	(xrw)	: ORIGIN = 0x20038000,	LENGTH = 32K     /* high 32K of SRAM2; low 32K is Secure */
   SRAM4	(xrw)	: ORIGIN = 0x28000000,	LENGTH = 16K
-  FLASH	(rx)	: ORIGIN = 0x08030000,	LENGTH = 64K     /* pages 24-31, after Secure+NSC */
+  /* CPU fetches the NS alias. CubeProgrammer's 0x08000000 map for this
+   * device uses 16 KB sectors and erases the wrong pages, so the load
+   * address is the secure alias of the same pages (8 KB sectors). */
+  FLASH	(rx)	: ORIGIN = 0x08030000,	LENGTH = 64K
+  FLASH_PROG (rx) : ORIGIN = 0x0C030000,	LENGTH = 64K
 }
 
 /* Sections */
@@ -57,7 +61,7 @@ SECTIONS
   .isr_vector :
   {
     KEEP(*(.isr_vector)) /* Startup code */
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
   /* The program code and other data into "FLASH" Rom type memory */
   .text :
@@ -71,33 +75,35 @@ SECTIONS
     KEEP (*(.init))
     KEEP (*(.fini))
 
+    . = ALIGN(4);
     _etext = .;        /* define a global symbols at end of code */
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
   /* Constant data into "FLASH" Rom type memory */
   .rodata :
   {
     *(.rodata)         /* .rodata sections (constants, strings, etc.) */
     *(.rodata*)        /* .rodata* sections (constants, strings, etc.) */
-  } >FLASH
+    . = ALIGN(4);
+  } >FLASH AT> FLASH_PROG
 
   .ARM.extab (READONLY) : /* The READONLY keyword is only supported in GCC11 and later, remove it if using GCC10 or earlier. */
   {
     *(.ARM.extab* .gnu.linkonce.armextab.*)
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
   .ARM (READONLY) : /* The READONLY keyword is only supported in GCC11 and later, remove it if using GCC10 or earlier. */
   {
     __exidx_start = .;
     *(.ARM.exidx*)
     __exidx_end = .;
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
   .preinit_array (READONLY) : /* The READONLY keyword is only supported in GCC11 and later, remove it if using GCC10 or earlier. */
   {
     PROVIDE_HIDDEN (__preinit_array_start = .);
     KEEP (*(.preinit_array*))
     PROVIDE_HIDDEN (__preinit_array_end = .);
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
   .init_array (READONLY) : /* The READONLY keyword is only supported in GCC11 and later, remove it if using GCC10 or earlier. */
   {
@@ -105,7 +111,7 @@ SECTIONS
     KEEP (*(SORT(.init_array.*)))
     KEEP (*(.init_array*))
     PROVIDE_HIDDEN (__init_array_end = .);
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
   .fini_array (READONLY) : /* The READONLY keyword is only supported in GCC11 and later, remove it if using GCC10 or earlier. */
   {
@@ -113,10 +119,11 @@ SECTIONS
     KEEP (*(SORT(.fini_array.*)))
     KEEP (*(.fini_array*))
     PROVIDE_HIDDEN (__fini_array_end = .);
-  } >FLASH
+  } >FLASH AT> FLASH_PROG
 
-  /* Used by the startup to initialize data */
-  _sidata = LOADADDR(.data);
+  /* Startup runs NonSecure, so it must copy from the NS alias.
+   * LOADADDR is the secure alias programmed by ST-Link. */
+  _sidata = LOADADDR(.data) - 0x04000000;
 
   /* Initialized data sections into "RAM" Ram type memory */
   .data :
@@ -128,7 +135,7 @@ SECTIONS
     *(.RamFunc*)       /* .RamFunc* sections */
 
     _edata = .;        /* define a global symbol at data end */
-  } >RAM AT> FLASH
+  } >RAM AT> FLASH_PROG
 
   /* Uninitialized data section into "RAM" Ram type memory */
   .bss :
@@ -142,11 +149,6 @@ SECTIONS
 
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
-  } >RAM
-
-  /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
-  ._user_heap_stack :
-  {
     . = ALIGN(8);
     PROVIDE ( end = . );
     PROVIDE ( _end = . );

@@ -19,20 +19,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./chacha/chacha.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-chacha-asm.c
  */
+
+#define _WC_BUILDING_ARMV8_CHACHA_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifdef WOLFSSL_ARMASM_INLINE
 #ifdef HAVE_CHACHA
 #include <wolfssl/wolfcrypt/chacha.h>
 
+#ifndef WOLFSSL_ARMASM_NO_NEON
 XALIGNED(8) static const word32 L_chacha20_arm64_ctr[] = {
     0x00000000, 0x00000001, 0x00000002, 0x00000003,
 };
@@ -41,7 +45,6 @@ XALIGNED(8) static const word32 L_chacha20_arm64_rol8[] = {
     0x02010003, 0x06050407, 0x0a09080b, 0x0e0d0c0f,
 };
 
-#ifndef WOLFSSL_ARMASM_NO_NEON
 void wc_chacha_crypt_bytes(ChaCha* ctx, byte* c, const byte* m, word32 len)
 {
     const word32* rol8 = L_chacha20_arm64_rol8;
@@ -1024,8 +1027,7 @@ void wc_chacha_use_over(byte* over, byte* output, const byte* input, word32 len)
         "eor	w5, w5, w4\n\t"
         "subs	%w[len], %w[len], #1\n\t"
         "strb	w5, [%x[output]], #1\n\t"
-        "b.eq	L_chacha_use_over_arm64_done_%=\n\t"
-        "b	L_chacha_use_over_arm64_byte_loop_%=\n\t"
+        "b.ne	L_chacha_use_over_arm64_byte_loop_%=\n\t"
         "\n"
     "L_chacha_use_over_arm64_done_%=:\n\t"
         : [over] "+r" (over), [output] "+r" (output), [len] "+r" (len)

@@ -7,15 +7,20 @@
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_owner.h"
+#include "se_ram.h"
 #include "se_tropic.h"
 #include "se_tropic_mlkem.h"
 #include "wolfssl/wolfcrypt/memory.h"
+#include <stdlib.h>
 #include <string.h>
 
-static uint8_t s_buf[SE_MANAGE_BUF_MAX];
+static uint8_t *s_buf;
 
 uint8_t *se_manage_buf(void)
 {
+    if (s_buf == NULL) {
+        s_buf = (uint8_t *)se_mem_alloc(SE_MANAGE_BUF_MAX, 0);
+    }
     return s_buf;
 }
 
@@ -26,14 +31,19 @@ uint32_t se_manage_buf_cap(void)
 
 void se_manage_buf_wipe(void)
 {
-    wc_ForceZero(s_buf, sizeof(s_buf));
+    if (s_buf == NULL) {
+        return;
+    }
+    wc_ForceZero(s_buf, SE_MANAGE_BUF_MAX);
+    se_mem_free(s_buf);
+    s_buf = NULL;
 }
 
 int se_manage_frame_ready(uint32_t got, uint32_t (*need)(const uint8_t *buf, uint32_t got))
 {
     uint32_t needn;
 
-    if (need == NULL) {
+    if ((need == NULL) || (s_buf == NULL)) {
         return -1;
     }
     needn = need(s_buf, got);
@@ -55,7 +65,10 @@ int se_manage_accum(uint32_t *got, const uint8_t *chunk, uint32_t n,
     if ((got == NULL) || ((n > 0U) && (chunk == NULL))) {
         return -1;
     }
-    if ((*got + n) > sizeof(s_buf)) {
+    if (se_manage_buf() == NULL) {
+        return -1;
+    }
+    if ((*got + n) > SE_MANAGE_BUF_MAX) {
         return -1;
     }
     if (n > 0U) {

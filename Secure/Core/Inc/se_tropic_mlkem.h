@@ -40,6 +40,12 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
  */
 uint32_t se_tropic_mlkem_pub_read(uint8_t *pk, uint16_t pk_max, uint16_t *pk_len);
 
+/** Existing NV or cache bytes. @p pk stays valid until the next ML-KEM write or forget. */
+uint32_t se_tropic_mlkem_pub_view(const uint8_t **pk, uint16_t *pk_len);
+
+/** Drop the RAM public key. After this, TROPIC KEM PUB follows NV only. */
+void se_tropic_mlkem_forget(void);
+
 /**
  * Unwrap the Tropic seed with PIN and cache the public key. Use when NV has
  * no ML-KEM pk yet.

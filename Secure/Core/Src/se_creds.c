@@ -6,13 +6,38 @@
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_tropic_port.h"
+#include "se_ram.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
 #define SE_CREDS_MAGIC 0x53454344u /* SECD */
 
-static uint8_t s_page[SE_CREDS_PAGE_SIZE];
-static uint8_t s_keep[SE_CREDS_DER_MAX];
+static uint8_t *s_page;
+static uint8_t *s_keep;
+
+static lt_ret_t creds_hold(int with_keep)
+{
+    size_t n = SE_CREDS_PAGE_SIZE;
+    uint8_t *p;
+
+    if (with_keep != 0) {
+        n += SE_CREDS_DER_MAX;
+    }
+    p = se_workspace_acquire(n);
+    if (p == NULL) {
+        return LT_FAIL;
+    }
+    s_page = p;
+    s_keep = (with_keep != 0) ? (p + SE_CREDS_PAGE_SIZE) : NULL;
+    return LT_OK;
+}
+
+static void creds_drop(void)
+{
+    s_page = NULL;
+    s_keep = NULL;
+    se_workspace_release();
+}
 
 static int page_erased(void)
 {
@@ -45,14 +70,12 @@ static lt_ret_t creds_load(uint16_t *sae_len, uint16_t *cert_len, uint32_t *sae_
         return LT_OK;
     }
     if (se_u32le(s_page) != SE_CREDS_MAGIC) {
-        wc_ForceZero(s_page, sizeof(s_page));
         return SE_TROPIC_LT_TAMPERED;
     }
     sl = se_u16le(s_page + 4);
     cl = se_u16le(s_page + 6);
     if ((sl > SE_CREDS_DER_MAX) || (cl > SE_CREDS_DER_MAX) ||
         ((uint32_t)8U + sl + cl > SE_CREDS_PAGE_SIZE)) {
-        wc_ForceZero(s_page, sizeof(s_page));
         return SE_TROPIC_LT_TAMPERED;
     }
     *sae_len = sl;
@@ -64,12 +87,10 @@ static lt_ret_t creds_load(uint16_t *sae_len, uint16_t *cert_len, uint32_t *sae_
 
 static lt_ret_t creds_save(const uint8_t *sae, uint16_t sl, const uint8_t *cert, uint16_t cl)
 {
-    lt_ret_t ret;
-
     if (((uint32_t)8U + sl + cl) > SE_CREDS_PAGE_SIZE) {
         return LT_PARAM_ERR;
     }
-    (void)memset(s_page, 0xff, sizeof(s_page));
+    (void)memset(s_page, 0xff, SE_CREDS_PAGE_SIZE);
     se_put_u32le(s_page, SE_CREDS_MAGIC);
     se_put_u16le(s_page + 4, sl);
     se_put_u16le(s_page + 6, cl);
@@ -79,9 +100,7 @@ static lt_ret_t creds_save(const uint8_t *sae, uint16_t sl, const uint8_t *cert,
     if ((cert != NULL) && (cl > 0U)) {
         (void)memcpy(s_page + 8U + sl, cert, cl);
     }
-    ret = se_tropic_port_creds_page_write(s_page);
-    wc_ForceZero(s_page, sizeof(s_page));
-    return ret;
+    return se_tropic_port_creds_page_write(s_page);
 }
 
 int se_creds_has_sae_ca(void)
@@ -90,12 +109,16 @@ int se_creds_has_sae_ca(void)
     uint16_t cl = 0U;
     uint32_t so = 0U;
     uint32_t co = 0U;
+    int ok = 0;
 
-    if (creds_load(&sl, &cl, &so, &co) != LT_OK) {
+    if (creds_hold(0) != LT_OK) {
         return 0;
     }
-    wc_ForceZero(s_page, sizeof(s_page));
-    return (sl > 0U) ? 1 : 0;
+    if (creds_load(&sl, &cl, &so, &co) == LT_OK) {
+        ok = (sl > 0U) ? 1 : 0;
+    }
+    creds_drop();
+    return ok;
 }
 
 int se_creds_has_device_cert(void)
@@ -104,12 +127,16 @@ int se_creds_has_device_cert(void)
     uint16_t cl = 0U;
     uint32_t so = 0U;
     uint32_t co = 0U;
+    int ok = 0;
 
-    if (creds_load(&sl, &cl, &so, &co) != LT_OK) {
+    if (creds_hold(0) != LT_OK) {
         return 0;
     }
-    wc_ForceZero(s_page, sizeof(s_page));
-    return (cl > 0U) ? 1 : 0;
+    if (creds_load(&sl, &cl, &so, &co) == LT_OK) {
+        ok = (cl > 0U) ? 1 : 0;
+    }
+    creds_drop();
+    return ok;
 }
 
 lt_ret_t se_creds_get_sae_ca(uint8_t *out, uint16_t *len, uint16_t cap)
@@ -123,22 +150,27 @@ lt_ret_t se_creds_get_sae_ca(uint8_t *out, uint16_t *len, uint16_t cap)
     if ((out == NULL) || (len == NULL)) {
         return LT_PARAM_ERR;
     }
-    ret = creds_load(&sl, &cl, &so, &co);
+    ret = creds_hold(0);
     if (ret != LT_OK) {
         return ret;
     }
+    ret = creds_load(&sl, &cl, &so, &co);
+    if (ret != LT_OK) {
+        creds_drop();
+        return ret;
+    }
     if (sl == 0U) {
-        wc_ForceZero(s_page, sizeof(s_page));
         *len = 0U;
+        creds_drop();
         return LT_FAIL;
     }
     if (cap < sl) {
-        wc_ForceZero(s_page, sizeof(s_page));
+        creds_drop();
         return LT_PARAM_ERR;
     }
     (void)memcpy(out, s_page + so, sl);
     *len = sl;
-    wc_ForceZero(s_page, sizeof(s_page));
+    creds_drop();
     return LT_OK;
 }
 
@@ -153,22 +185,27 @@ lt_ret_t se_creds_get_device_cert(uint8_t *out, uint16_t *len, uint16_t cap)
     if ((out == NULL) || (len == NULL)) {
         return LT_PARAM_ERR;
     }
-    ret = creds_load(&sl, &cl, &so, &co);
+    ret = creds_hold(0);
     if (ret != LT_OK) {
         return ret;
     }
+    ret = creds_load(&sl, &cl, &so, &co);
+    if (ret != LT_OK) {
+        creds_drop();
+        return ret;
+    }
     if (cl == 0U) {
-        wc_ForceZero(s_page, sizeof(s_page));
         *len = 0U;
+        creds_drop();
         return LT_FAIL;
     }
     if (cap < cl) {
-        wc_ForceZero(s_page, sizeof(s_page));
+        creds_drop();
         return LT_PARAM_ERR;
     }
     (void)memcpy(out, s_page + co, cl);
     *len = cl;
-    wc_ForceZero(s_page, sizeof(s_page));
+    creds_drop();
     return LT_OK;
 }
 
@@ -183,15 +220,20 @@ lt_ret_t se_creds_set_sae_ca(const uint8_t *der, uint16_t len)
     if ((der == NULL) || (len == 0U) || (len > SE_CREDS_DER_MAX)) {
         return LT_PARAM_ERR;
     }
+    ret = creds_hold(1);
+    if (ret != LT_OK) {
+        return ret;
+    }
     ret = creds_load(&sl, &cl, &so, &co);
     if (ret != LT_OK) {
+        creds_drop();
         return ret;
     }
     if (cl > 0U) {
         (void)memcpy(s_keep, s_page + co, cl);
     }
     ret = creds_save(der, len, (cl > 0U) ? s_keep : NULL, cl);
-    wc_ForceZero(s_keep, sizeof(s_keep));
+    creds_drop();
     return ret;
 }
 
@@ -206,15 +248,20 @@ lt_ret_t se_creds_set_device_cert(const uint8_t *der, uint16_t len)
     if ((der == NULL) || (len == 0U) || (len > SE_CREDS_DER_MAX)) {
         return LT_PARAM_ERR;
     }
+    ret = creds_hold(1);
+    if (ret != LT_OK) {
+        return ret;
+    }
     ret = creds_load(&sl, &cl, &so, &co);
     if (ret != LT_OK) {
+        creds_drop();
         return ret;
     }
     if (sl > 0U) {
         (void)memcpy(s_keep, s_page + so, sl);
     }
     ret = creds_save((sl > 0U) ? s_keep : NULL, sl, der, len);
-    wc_ForceZero(s_keep, sizeof(s_keep));
+    creds_drop();
     return ret;
 }
 
@@ -222,9 +269,13 @@ lt_ret_t se_creds_clear(void)
 {
     lt_ret_t ret;
 
-    (void)memset(s_page, 0xff, sizeof(s_page));
+    ret = creds_hold(0);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    (void)memset(s_page, 0xff, SE_CREDS_PAGE_SIZE);
     ret = se_tropic_port_creds_page_write(s_page);
-    wc_ForceZero(s_page, sizeof(s_page));
+    creds_drop();
     return ret;
 }
 

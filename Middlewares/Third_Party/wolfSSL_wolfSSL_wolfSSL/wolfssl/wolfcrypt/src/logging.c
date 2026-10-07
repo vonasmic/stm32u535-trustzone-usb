@@ -1680,6 +1680,8 @@ int wc_ERR_remove_state(void)
     return 0;
 }
 
+/* Returns 0 both when the error queue is empty and when
+ * WOLFSSL_HAVE_ERROR_QUEUE is not compiled in. */
 unsigned long wc_PeekErrorNodeLineData(const char **file, int *line,
                                        const char **data, int *flags,
                                        int (*ignore_err)(int err))
@@ -1695,13 +1697,15 @@ unsigned long wc_PeekErrorNodeLineData(const char **file, int *line,
     if (flags != NULL) {
         *flags = 0;
     }
-    return (unsigned long)(0 - NOT_COMPILED_IN);
+    return 0;
 }
 
+/* Returns 0 both when the error queue is empty and when
+ * WOLFSSL_HAVE_ERROR_QUEUE is not compiled in. */
 int wc_GetErrorNodeErr(void)
 {
     WOLFSSL_ENTER("wc_GetErrorNodeErr");
-    return (0 - NOT_COMPILED_IN);
+    return 0;
 }
 
 #if !defined(NO_FILESYSTEM) && !defined(NO_STDIO_FILESYSTEM)
@@ -1822,7 +1826,8 @@ void WOLFSSL_ERROR_MSG(const char* msg)
 
 #endif  /* DEBUG_WOLFSSL || WOLFSSL_NGINX || WOLFSSL_HAPROXY */
 
-#ifdef WOLFSSL_DEBUG_TRACE_ERROR_CODES
+#if defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES) || \
+    defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES_SUPPORT)
 
 #ifndef WOLFSSL_DEBUG_TRACE_ERROR_CODES_INIT_STATE
     #define WOLFSSL_DEBUG_TRACE_ERROR_CODES_INIT_STATE 1
@@ -1845,7 +1850,8 @@ int wc_debug_trace_error_codes_set(int state) {
                                        state);
 }
 
-#endif /* WOLFSSL_DEBUG_TRACE_ERROR_CODES */
+#endif /* WOLFSSL_DEBUG_TRACE_ERROR_CODES ||      */
+       /* WOLFSSL_DEBUG_TRACE_ERROR_CODES_SUPPORT */
 
 #ifdef WOLFSSL_DEBUG_BACKTRACE_ERROR_CODES
 

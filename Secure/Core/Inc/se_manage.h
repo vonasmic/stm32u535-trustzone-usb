@@ -53,10 +53,10 @@ extern "C" {
 #define SE_MANAGE_RSP_MAX (1u + 2u + SE_MANAGE_MSG_MAX)
 
 /**
- * Shared ingest BSS for USB OWNER SET and TLS MANAGE (never concurrent).
- * Sized for OWNER SET (pw + SPKI + SAE CA) and MANAGE bodies.
+ * Shared ingest buffer for USB OWNER SET and TLS MANAGE (never concurrent).
+ * malloc on first use; wiped/freed on se_manage_buf_wipe().
  */
-#define SE_MANAGE_BUF_MAX 12288u
+#define SE_MANAGE_BUF_MAX 6400u
 
 uint8_t *se_manage_buf(void);
 uint32_t se_manage_buf_cap(void);

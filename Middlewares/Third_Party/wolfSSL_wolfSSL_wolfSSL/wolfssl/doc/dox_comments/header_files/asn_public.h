@@ -115,12 +115,25 @@ void  wc_CertFree(Cert* cert);
     either an rsaKey or an eccKey to generate the certificate.  The certificate
     must be initialized with wc_InitCert before this method is called.
 
+    A serial number left at the wc_InitCert default (cert->serialSz of 0) is
+    randomly generated. A caller-supplied serial is taken as a big-endian
+    value of at most CTC_SERIAL_SIZE bytes and is normalized to a minimal DER
+    INTEGER: redundant leading zero bytes are stripped and the sign pad is
+    added back when the high bit is set. Supplying the magnitude alone is
+    enough; a sign pad the caller adds is accepted and is not duplicated.
+    The encoded value, including any sign pad, must not exceed
+    CTC_SERIAL_SIZE octets.
+
     \return Success On successfully making an x509 certificate from the
     specified input cert, returns the size of the cert generated.
     \return MEMORY_E Returned if there is an error allocating memory
     with XMALLOC
     \return BUFFER_E Returned if the provided derBuffer is too small to
     store the generated certificate
+    \return BAD_FUNC_ARG Returned if cert->serialSz is negative, if the
+    encoded serial would exceed CTC_SERIAL_SIZE octets, or if the serial
+    number is zero. RFC 5280 4.1.2.2 requires a positive serial of at most
+    20 octets; define WOLFSSL_ASN_ALLOW_0_SERIAL to permit a zero serial.
     \return Others Additional error messages may be returned if the cert
     generation is not successful.
 
@@ -156,9 +169,13 @@ int  wc_MakeCert(Cert* cert, byte* derBuffer, word32 derSz, RsaKey* rsaKey,
     \ingroup ASN
     \brief Makes certificate with generic key type support.
 
+    The serial number contract is the same as wc_MakeCert().
+
     \return Size of certificate on success
     \return MEMORY_E if memory allocation fails
     \return BUFFER_E if buffer too small
+    \return BAD_FUNC_ARG if the serial number is zero, negative in size, or
+    longer than CTC_SERIAL_SIZE
     \return Other error codes on failure
 
     \param cert Initialized cert structure
@@ -1066,6 +1083,161 @@ int  wc_SetSubjectBuffer(Cert* cert, const byte* der, int derSz);
     \sa wc_SetAltNames
 */
 int  wc_SetAltNamesBuffer(Cert* cert, const byte* der, int derSz);
+
+/*!
+    \ingroup ASN
+
+    \brief This function allocates a single subject alternative name (SAN)
+    entry, copies the supplied name into it, sets its GeneralName type and
+    length, and appends it to the linked list pointed to by entries. The name
+    is duplicated internally, so the caller's buffer need not outlive the call.
+    The resulting list can be encoded with wc_FlattenAltNames and must be freed
+    with FreeAltNames.
+
+    \return 0 Returned on success.
+    \return MEMORY_E Returned if dynamic memory allocation fails.
+    \return BAD_FUNC_ARG Returned if str or entries is NULL, strLen is
+    negative, or type is not a supported GeneralName type; also returned for an
+    ASN_IP_TYPE entry whose length is not a valid IPv4/IPv6 address, or an
+    ASN_RID_TYPE entry with malformed contents.
+    \return BUFFER_E Returned if the string representation of an ASN_IP_TYPE or
+    ASN_RID_TYPE entry does not fit its internal buffer.
+    \return Other negative error codes may propagate from generating the string
+    form of ASN_IP_TYPE and ASN_RID_TYPE entries.
+
+    \param heap pointer to the heap hint used for allocations (may be NULL)
+    \param str pointer to the name bytes (e.g. a DNS string, or raw IP octets
+    for ASN_IP_TYPE)
+    \param strLen length of str in bytes
+    \param type GeneralName type (e.g. ASN_DNS_TYPE, ASN_IP_TYPE,
+    ASN_RFC822_TYPE, ASN_URI_TYPE)
+    \param entries in/out pointer to the head of the alt-name linked list; a new
+    entry is appended
+
+    _Example_
+    \code
+    DNS_entry* list = NULL;
+    if (wc_SetDNSEntry(NULL, "example.com", 11, ASN_DNS_TYPE, &list) != 0) {
+        // error adding alt name
+    }
+    // ... encode with wc_FlattenAltNames, then:
+    FreeAltNames(list, NULL);
+    \endcode
+
+    \note This helper (along with wc_FlattenAltNames and FreeAltNames) is
+    exported from the library only when WOLFSSL_PUBLIC_ASN, OPENSSL_EXTRA,
+    OPENSSL_EXTRA_X509_SMALL, or WOLFSSL_TEST_CERT is defined; its prototype
+    lives in wolfssl/wolfcrypt/asn.h (not asn_public.h) because it uses the
+    DNS_entry type.
+
+    \note This function additionally requires WOLFSSL_ASN_TEMPLATE (its
+    internal SetDNSEntry/AddDNSEntryToList helpers are template-only), on top of
+    the WOLFSSL_CERT_GEN && WOLFSSL_ALT_NAMES gating shared with its companions
+    wc_FlattenAltNames and wc_SetAltNamesFromList, which do not require
+    WOLFSSL_ASN_TEMPLATE. Because this builder is the more restrictive of the
+    set, a DNS_entry list built here can always be encoded by a public API in
+    the same build; in non-template builds the public list can only be sourced
+    from a parsed DecodedCert.altNames.
+
+    \sa wc_FlattenAltNames
+    \sa FreeAltNames
+*/
+int wc_SetDNSEntry(void* heap, const char* str, int strLen, int type,
+                   DNS_entry** entries);
+
+/*!
+    \ingroup ASN
+
+    \brief This function encodes a linked list of subject alternative name
+    entries into the DER GeneralNames SEQUENCE used as the value of the
+    subjectAltName certificate extension. The output is suitable for assigning
+    to Cert.altNames (with the return value stored in Cert.altNamesSz) prior to
+    signing.
+
+    \return >0 the number of bytes written to output (the full SEQUENCE,
+    including its tag and length).
+    \return 0 Returned when names is NULL (nothing to encode).
+    \return BAD_FUNC_ARG Returned if output is NULL.
+    \return BUFFER_E Returned if output is too small to hold the encoding.
+
+    \param output buffer that receives the DER GeneralNames SEQUENCE; size it to
+    hold the full extension value (e.g. CTC_MAX_ALT_SIZE)
+    \param outputSz capacity of output in bytes
+    \param names head of the alt-name linked list to encode (e.g. built with
+    wc_SetDNSEntry, or taken from a parsed DecodedCert.altNames)
+
+    _Example_
+    \code
+    Cert cert;
+    DNS_entry* list = NULL;
+    // ... populate list with wc_SetDNSEntry ...
+    int n = wc_FlattenAltNames(cert.altNames, sizeof(cert.altNames), list);
+    if (n < 0) {
+        // error encoding alt names
+    }
+    cert.altNamesSz = n;
+    FreeAltNames(list, NULL);
+    \endcode
+
+    \note This helper (along with wc_SetDNSEntry and FreeAltNames) is exported
+    from the library only when WOLFSSL_PUBLIC_ASN, OPENSSL_EXTRA,
+    OPENSSL_EXTRA_X509_SMALL, or WOLFSSL_TEST_CERT is defined; its prototype
+    lives in wolfssl/wolfcrypt/asn.h (not asn_public.h) because it uses the
+    DNS_entry type.
+
+    \sa wc_SetDNSEntry
+    \sa wc_SetAltNamesFromList
+    \sa FreeAltNames
+    \sa wc_SetAltNamesBuffer
+*/
+int wc_FlattenAltNames(byte* output, word32 outputSz, const DNS_entry* names);
+
+/*!
+    \ingroup ASN
+
+    \brief This function encodes a linked list of subject alternative name
+    entries directly into a Cert structure, ready for signing. It is a
+    convenience wrapper around wc_FlattenAltNames: the list is encoded into
+    cert->altNames and the encoded length is stored in cert->altNamesSz, so the
+    caller does not have to manage the buffer or size bookkeeping. The supplied
+    list is not consumed and must still be freed by the caller with
+    FreeAltNames.
+
+    \return 0 Returned on success.
+    \return BAD_FUNC_ARG Returned if cert is NULL.
+    \return BUFFER_E Returned if the encoded names do not fit in cert->altNames.
+
+    \param cert pointer to the Cert whose altNames/altNamesSz fields are set
+    \param names head of the alt-name linked list to encode (e.g. built with
+    wc_SetDNSEntry, or taken from a parsed DecodedCert.altNames); may be NULL,
+    in which case cert->altNamesSz is set to 0
+
+    _Example_
+    \code
+    Cert cert;
+    DNS_entry* list = NULL;
+    wc_InitCert(&cert);
+    // ... populate list with wc_SetDNSEntry ...
+    if (wc_SetAltNamesFromList(&cert, list) != 0) {
+        // error encoding alt names
+    }
+    FreeAltNames(list, NULL);
+    // ... wc_MakeCert / wc_SignCert ...
+    \endcode
+
+    \note This helper (along with wc_SetDNSEntry, wc_FlattenAltNames, and
+    FreeAltNames) is exported from the library only when WOLFSSL_PUBLIC_ASN,
+    OPENSSL_EXTRA, OPENSSL_EXTRA_X509_SMALL, or WOLFSSL_TEST_CERT is defined;
+    its prototype lives in wolfssl/wolfcrypt/asn.h (not asn_public.h) because it
+    uses the DNS_entry type. Its DER-input sibling wc_SetAltNamesBuffer is
+    always exported.
+
+    \sa wc_SetDNSEntry
+    \sa wc_FlattenAltNames
+    \sa wc_SetAltNamesBuffer
+    \sa FreeAltNames
+*/
+int wc_SetAltNamesFromList(Cert* cert, const DNS_entry* names);
 
 /*!
     \ingroup ASN
@@ -2675,9 +2847,47 @@ int wc_Curve25519KeyToDer(curve25519_key* key, byte* output, word32 outLen,
     \endcode
 
     \sa wc_Ed25519PrivateKeyToDer
+    \sa wc_Ed25519PrivateKeyDecode_ex
 */
 int wc_Ed25519PrivateKeyDecode(const byte* input, word32* inOutIdx,
                                 ed25519_key* key, word32 inSz);
+
+/*!
+    \ingroup Ed25519
+    \brief Decodes Ed25519 private key from DER format with control over
+    validation of a bundled public key. When the DER contains a public key
+    and trusted is 0, the public key is validated with
+    wc_ed25519_check_key(), including a check that it matches the private
+    key. When trusted is 1 all validation of the bundled public key is
+    skipped, so trusted should only be set with known-good key material.
+    wc_Ed25519PrivateKeyDecode() behaves as trusted set to 0.
+
+    \return 0 on success
+    \return negative on error
+
+    \param input DER encoded Ed25519 private key buffer
+    \param inOutIdx Pointer to index in buffer
+    \param key Ed25519 key structure to store key
+    \param inSz Size of input buffer
+    \param trusted Indicates whether the bundled public key data is trusted.
+    When 0, the public key is validated with wc_ed25519_check_key().
+    When 1, the public key is imported without any validation.
+
+    _Example_
+    \code
+    ed25519_key key;
+    word32 idx = 0;
+    // key material comes from this application's own storage
+    int ret = wc_Ed25519PrivateKeyDecode_ex(derBuf, &idx, &key,
+                                            derSz, 1);
+    \endcode
+
+    \sa wc_Ed25519PrivateKeyDecode
+    \sa wc_Ed25519PrivateKeyToDer
+    \sa wc_ed25519_import_private_key_ex
+*/
+int wc_Ed25519PrivateKeyDecode_ex(const byte* input, word32* inOutIdx,
+                                  ed25519_key* key, word32 inSz, int trusted);
 
 /*!
     \ingroup Ed25519
@@ -2797,9 +3007,47 @@ int wc_Ed25519PublicKeyToDer(const ed25519_key* key, byte* output,
     \endcode
 
     \sa wc_Ed448PrivateKeyToDer
+    \sa wc_Ed448PrivateKeyDecode_ex
 */
 int wc_Ed448PrivateKeyDecode(const byte* input, word32* inOutIdx,
                               ed448_key* key, word32 inSz);
+
+/*!
+    \ingroup Ed448
+    \brief Decodes Ed448 private key from DER format with control over
+    validation of a bundled public key. When the DER contains a public key
+    and trusted is 0, the public key is validated with wc_ed448_check_key(),
+    including a check that it matches the private key. When trusted is 1
+    all validation of the bundled public key is skipped, so trusted should
+    only be set with known-good key material. wc_Ed448PrivateKeyDecode()
+    behaves as trusted set to 0.
+
+    \return 0 on success
+    \return negative on error
+
+    \param input DER encoded Ed448 private key buffer
+    \param inOutIdx Pointer to index in buffer
+    \param key Ed448 key structure to store key
+    \param inSz Size of input buffer
+    \param trusted Indicates whether the bundled public key data is trusted.
+    When 0, the public key is validated with wc_ed448_check_key().
+    When 1, the public key is imported without any validation.
+
+    _Example_
+    \code
+    ed448_key key;
+    word32 idx = 0;
+    // key material comes from this application's own storage
+    int ret = wc_Ed448PrivateKeyDecode_ex(derBuf, &idx, &key,
+                                          derSz, 1);
+    \endcode
+
+    \sa wc_Ed448PrivateKeyDecode
+    \sa wc_Ed448PrivateKeyToDer
+    \sa wc_ed448_import_private_key_ex
+*/
+int wc_Ed448PrivateKeyDecode_ex(const byte* input, word32* inOutIdx,
+                                ed448_key* key, word32 inSz, int trusted);
 
 /*!
     \ingroup Ed448

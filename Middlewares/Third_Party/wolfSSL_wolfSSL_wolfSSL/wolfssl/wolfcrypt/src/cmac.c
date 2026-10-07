@@ -19,6 +19,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_CMAC_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
 #ifdef WOLFSSL_QNX_CAAM
@@ -31,9 +34,6 @@
 #if defined(WOLFSSL_CMAC)
 
 #if defined(HAVE_FIPS) && defined(HAVE_FIPS_VERSION) && (HAVE_FIPS_VERSION >= 2)
-    /* set NO_WRAPPERS before headers, use direct internal f()s not wrappers */
-    #define FIPS_NO_WRAPPERS
-
     #ifdef USE_WINDOWS_API
         #pragma code_seg(".fipsA$c")
         #pragma const_seg(".fipsB$c")
@@ -160,6 +160,8 @@ static int _InitCmac_common(Cmac* cmac, const byte* key, word32 keySz,
 #ifdef WOLF_CRYPTO_CB
     /* Set devId regardless of value (invalid or not) */
     cmac->devId = devId;
+    /* Set before the cryptocb early return so wc_CmacFree can clean up. */
+    cmac->type = (CmacType)type;
     #ifndef WOLF_CRYPTO_CB_FIND
     if (devId != INVALID_DEVID)
     #endif
@@ -236,20 +238,31 @@ static int _InitCmac_common(Cmac* cmac, const byte* key, word32 keySz,
             byte l[WC_AES_BLOCK_SIZE];
 
             XMEMSET(l, 0, WC_AES_BLOCK_SIZE);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+            wc_MemZero_Add("InitInternal l", l, WC_AES_BLOCK_SIZE);
+#endif
 #ifndef HAVE_SELFTEST
             ret = wc_AesEncryptDirect(&cmac->aes, l, l);
             if (ret == 0) {
                 ShiftAndXorRb(cmac->k1, l);
                 ShiftAndXorRb(cmac->k2, cmac->k1);
-                ForceZero(l, WC_AES_BLOCK_SIZE);
             }
 #else
             wc_AesEncryptDirect(&cmac->aes, l, l);
             ShiftAndXorRb(cmac->k1, l);
             ShiftAndXorRb(cmac->k2, cmac->k1);
+#endif
             ForceZero(l, WC_AES_BLOCK_SIZE);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+            wc_MemZero_Check(l, WC_AES_BLOCK_SIZE);
 #endif
         }
+
+        if (ret != 0) {
+            wc_AesFree(&cmac->aes);
+            cmac->type = WC_CMAC_NONE;
+        }
+
         break;
 #endif /* !NO_AES && WOLFSSL_AES_DIRECT */
     default:
@@ -354,6 +367,7 @@ int wc_CmacUpdate(Cmac* cmac, const byte* in, word32 inSz)
 #endif
     }; break;
 #endif /* !NO_AES && WOLFSSL_AES_DIRECT */
+    case WC_CMAC_NONE:
     default:
         ret = BAD_FUNC_ARG;
     }
@@ -364,6 +378,17 @@ int wc_CmacFree(Cmac* cmac)
 {
     if (cmac == NULL)
         return BAD_FUNC_ARG;
+#if defined(WOLF_CRYPTO_CB) && defined(WOLF_CRYPTO_CB_FREE)
+    /* Let the device release any per-context state it hung off cmac->devCtx
+     * before the struct is zeroed (e.g. an offload context never finalized). */
+    #ifndef WOLF_CRYPTO_CB_FIND
+    if (cmac->devId != INVALID_DEVID)
+    #endif
+    {
+        (void)wc_CryptoCb_Free(cmac->devId, WC_ALGO_TYPE_CMAC, (int)cmac->type,
+            0, cmac);
+    }
+#endif
 #if defined(WOLFSSL_HASH_KEEP)
     /* TODO: msg is leaked if wc_CmacFinal() is not called
      * e.g. when multiple calls to wc_CmacUpdate() and one fails but
@@ -376,6 +401,7 @@ int wc_CmacFree(Cmac* cmac)
         wc_AesFree(&cmac->aes);
         break;
 #endif /* !NO_AES && WOLFSSL_AES_DIRECT */
+    case WC_CMAC_NONE:
     default:
         /* Nothing to do */
         (void)cmac;
@@ -454,6 +480,7 @@ int wc_CmacFinalNoFree(Cmac* cmac, byte* out, word32* outSz)
 #endif
         }; break;
     #endif /* !NO_AES && WOLFSSL_AES_DIRECT */
+        case WC_CMAC_NONE:
         default:
             ret = BAD_FUNC_ARG;
         }

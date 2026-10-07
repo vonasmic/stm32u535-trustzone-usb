@@ -25,8 +25,17 @@
  *       thumb2 ../wolfssl/wolfcrypt/src/port/arm/thumb2-sha3-asm.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_THUMB2_SHA3_ASM_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+
+/* Honor WC_SHA3_NO_ASM as sha3.c does: suppress this BlockSha3 so it
+ * doesn't multiply-define against sha3.c's C BlockSha3 on thumb2. */
+#ifdef WC_SHA3_NO_ASM
+    #undef WOLFSSL_ARMASM
+#endif
 
 #ifdef WOLFSSL_ARMASM
 #ifdef WOLFSSL_ARMASM_THUMB2
@@ -82,7 +91,7 @@ WC_OMIT_FRAME_POINTER void BlockSha3(word64* state)
     __asm__ __volatile__ (
         "SUB	sp, sp, #0xcc\n\t"
         "MOV	r1, %[L_sha3_thumb2_rt]\n\t"
-        "MOV	r2, #0xc\n\t"
+        "MOV	r2, #12\n\t"
         "\n"
 #if defined(__IAR_SYSTEMS_ICC__) && (__VER__ < 9000000)
     "L_sha3_thumb2_begin:\n\t"
@@ -356,7 +365,7 @@ WC_OMIT_FRAME_POINTER void BlockSha3(word64* state)
         "STR	lr, [sp, #36]\n\t"
         /* Get constant */
         "LDRD	r10, r11, [r1]\n\t"
-        "ADD	r1, r1, #0x8\n\t"
+        "ADD	r1, r1, #8\n\t"
         "BIC	r12, r6, r4\n\t"
         "BIC	lr, r7, r5\n\t"
         "EOR	r12, r12, r2\n\t"
@@ -884,7 +893,7 @@ WC_OMIT_FRAME_POINTER void BlockSha3(word64* state)
         "STR	lr, [%[state], #36]\n\t"
         /* Get constant */
         "LDRD	r10, r11, [r1]\n\t"
-        "ADD	r1, r1, #0x8\n\t"
+        "ADD	r1, r1, #8\n\t"
         "BIC	r12, r6, r4\n\t"
         "BIC	lr, r7, r5\n\t"
         "EOR	r12, r12, r2\n\t"
@@ -1147,7 +1156,7 @@ WC_OMIT_FRAME_POINTER void BlockSha3(word64* state)
         "STR	r12, [%[state], #160]\n\t"
         "STR	lr, [%[state], #164]\n\t"
         "LDR	r2, [sp, #200]\n\t"
-        "SUBS	r2, r2, #0x1\n\t"
+        "SUBS	r2, r2, #1\n\t"
 #if defined(__GNUC__)
         "BNE	L_sha3_thumb2_begin_%=\n\t"
 #elif defined(__IAR_SYSTEMS_ICC__) && (__VER__ < 9000000)
@@ -1169,7 +1178,7 @@ WC_OMIT_FRAME_POINTER void BlockSha3(word64* state)
 }
 
 #endif /* WOLFSSL_SHA3 */
-#endif /* WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

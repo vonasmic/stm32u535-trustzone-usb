@@ -98,12 +98,10 @@ word32 CheckRunTimeSettings(void)
 }
 
 
-/* handle up to 6 inits */
+/* handle up to 6 inits; returns MP_OKAY */
 int mp_init_multi(mp_int* a, mp_int* b, mp_int* c, mp_int* d, mp_int* e,
                   mp_int* f)
 {
-    int res = MP_OKAY;
-
     if (a) XMEMSET(a, 0, sizeof(mp_int));
     if (b) XMEMSET(b, 0, sizeof(mp_int));
     if (c) XMEMSET(c, 0, sizeof(mp_int));
@@ -111,35 +109,18 @@ int mp_init_multi(mp_int* a, mp_int* b, mp_int* c, mp_int* d, mp_int* e,
     if (e) XMEMSET(e, 0, sizeof(mp_int));
     if (f) XMEMSET(f, 0, sizeof(mp_int));
 
-    if (a && ((res = mp_init(a)) != MP_OKAY))
-        return res;
+    /* mp_init() has exactly one failure mode, a NULL argument, and the guard
+     * on each call excludes it, so every one of these returns MP_OKAY and the
+     * result is discarded. Same shape as sp_init_multi() and tfm.c's
+     * mp_init_multi(), which also return MP_OKAY unconditionally. */
+    if (a) (void)mp_init(a);
+    if (b) (void)mp_init(b);
+    if (c) (void)mp_init(c);
+    if (d) (void)mp_init(d);
+    if (e) (void)mp_init(e);
+    if (f) (void)mp_init(f);
 
-    if (b && ((res = mp_init(b)) != MP_OKAY)) {
-        mp_clear(a);
-        return res;
-    }
-
-    if (c && ((res = mp_init(c)) != MP_OKAY)) {
-        mp_clear(a); mp_clear(b);
-        return res;
-    }
-
-    if (d && ((res = mp_init(d)) != MP_OKAY)) {
-        mp_clear(a); mp_clear(b); mp_clear(c);
-        return res;
-    }
-
-    if (e && ((res = mp_init(e)) != MP_OKAY)) {
-        mp_clear(a); mp_clear(b); mp_clear(c); mp_clear(d);
-        return res;
-    }
-
-    if (f && ((res = mp_init(f)) != MP_OKAY)) {
-        mp_clear(a); mp_clear(b); mp_clear(c); mp_clear(d); mp_clear(e);
-        return res;
-    }
-
-    return res;
+    return MP_OKAY;
 }
 
 
@@ -762,12 +743,22 @@ int mp_read_unsigned_bin (mp_int * a, const unsigned char *b, int c)
   int     res;
   int     digits_needed;
 
+  if (c < 0) {
+      return MP_VAL;
+  }
+
   while (c > 0 && b[0] == 0) {
       c--;
       b++;
   }
 
-  digits_needed = ((c * CHAR_BIT) + DIGIT_BIT - 1) / DIGIT_BIT;
+  /* reject sizes where the bit count would overflow, doing the math in
+   * word32 so c * CHAR_BIT can't overflow */
+  if ((word32)c > (WOLFSSL_MAX_32BIT - (DIGIT_BIT - 1)) / CHAR_BIT) {
+      return MP_VAL;
+  }
+
+  digits_needed = (int)(((word32)c * CHAR_BIT + DIGIT_BIT - 1) / DIGIT_BIT);
 
   /* make sure there are enough digits available */
   if (a->alloc < digits_needed) {
@@ -1782,8 +1773,7 @@ int s_mp_add (mp_int * a, mp_int * b, mp_int * c)
     tmpc = c->dp;
 
     /* sanity-check dp pointers. */
-    if ((min_ab > 0) &&
-        ((tmpa == NULL) || (tmpb == NULL) || (tmpc == NULL)))
+    if ((min_ab > 0) && ((tmpa == NULL) || (tmpb == NULL)))
     {
         return MP_VAL;
     }
@@ -4580,6 +4570,13 @@ int mp_cnt_lsb(mp_int *a)
 
     /* scan lower digits until non-zero */
     for (x = 0; x < a->used && a->dp[x] == 0; x++) {}
+    /* All used digits are zero -- a non-normalized zero that mp_iszero() above
+     * did not catch. There is no set bit; return before reading dp[x] past the
+     * used digits (which, if also zero, would spin the scan-for-1 loop below
+     * forever). */
+    if (x == a->used) {
+        return 0;
+    }
     if (a->dp)
         q = a->dp[x];
     x *= DIGIT_BIT;

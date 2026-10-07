@@ -5,9 +5,12 @@
 #include "se_tropic.h"
 #include "se_tropic_port.h"
 #include "se_tropic_rmem.h"
+#include "se_tropic_pin.h"
+#include "se_tropic_mlkem.h"
 #include "libtropic_user_config.h"
 #include "libtropic.h"
 #include "se_nv.h"
+#include "se_ram.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
@@ -17,14 +20,16 @@
 /* libtropic CAL; linked via se_libtropic_sources.inc / host tropic lib. */
 lt_ret_t lt_X25519_scalarmult(const uint8_t *sk, uint8_t *pk);
 
+volatile int se_tropic_die;
+
 static lt_handle_t s_lt;
 static uint8_t s_session_active;
 static uint8_t s_pkey_valid;
 static uint8_t s_pkey_slot;
 static uint8_t s_pkey_priv[TR01_SHIPRIV_LEN];
 static uint8_t s_pkey_pub[TR01_SHIPUB_LEN];
-/* Static: 4 x 700 B certs on the Secure stack overflow it (heap may grow to _estack - _Min_Stack_Size). */
-static uint8_t s_cert_bufs[LT_NUM_CERTIFICATES][TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE];
+/* 4 x 700 B certs overflow the Secure stack. */
+static uint8_t s_cert_bufs[LT_NUM_CERTIFICATES][TR01_L2_GET_INFO_REQ_CERT_SIZE_SINGLE] SE_SRAM4_BSS;
 
 static lt_ret_t cert_store_read(struct lt_cert_store_t *store)
 {
@@ -131,16 +136,19 @@ uint32_t se_tropic_init_session(void)
     se_tropic_port_hw_init();
     (void)memset(&s_lt, 0, sizeof(s_lt));
     if (se_tropic_port_attach(&s_lt) != SE_TROPIC_OK) {
+        se_tropic_die = (int)LT_FAIL;
         return SE_TROPIC_ERR;
     }
 
     ret = lt_init(&s_lt);
     if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
         return SE_TROPIC_ERR;
     }
 
     ret = lt_reboot(&s_lt, TR01_REBOOT);
     if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
         (void)lt_deinit(&s_lt);
         return SE_TROPIC_ERR;
     }
@@ -153,6 +161,7 @@ uint32_t se_tropic_init_session(void)
         ret = lt_session_start(&s_lt, stpub, session_slot(), session_priv(), session_pub());
     }
     if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
         (void)lt_deinit(&s_lt);
         return SE_TROPIC_ERR;
     }
@@ -520,14 +529,39 @@ uint32_t se_tropic_user_wipe(void)
     if (se_tropic_init_session() != SE_TROPIC_OK) {
         return SE_TROPIC_ERR;
     }
+    /* No bulk erase: one L3 SPI round-trip per slot (same cost as PROVISION
+     * wiping 0–509). MANAGE holds the TLS reply until this returns. */
     for (slot = 0U; slot <= (uint16_t)TR01_R_MEM_DATA_SLOT_MAX; slot++) {
         (void)lt_r_mem_data_erase(&s_lt, slot);
     }
     if (se_tropic_slot_occupied() != 0U) {
         ret = lt_ecc_key_erase(&s_lt, SE_TROPIC_ECC_SLOT);
         if (ret != LT_OK) {
+            se_tropic_die = (int)ret;
             return SE_TROPIC_ERR;
         }
     }
+    /* Same boot: NV clear alone still left TROPIC KEM PUB serving this cache. */
+    se_tropic_mlkem_forget();
+    return SE_TROPIC_OK;
+}
+
+uint32_t se_tropic_enroll_wipe(void)
+{
+    lt_ret_t ret;
+
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
+        return SE_TROPIC_ERR;
+    }
+    (void)lt_r_mem_data_erase(&s_lt, SE_TROPIC_MLKEM_SEED_SLOT);
+    (void)lt_r_mem_data_erase(&s_lt, SE_TROPIC_PIN_NVM_SLOT);
+    if (se_tropic_slot_occupied() != 0U) {
+        ret = lt_ecc_key_erase(&s_lt, SE_TROPIC_ECC_SLOT);
+        if (ret != LT_OK) {
+            se_tropic_die = (int)ret;
+            return SE_TROPIC_ERR;
+        }
+    }
+    se_tropic_mlkem_forget();
     return SE_TROPIC_OK;
 }

@@ -10,6 +10,7 @@
 #include <wolfssl/wolfcrypt/memory.h>
 
 static uint8_t s_kem_ct[SE_TROPIC_KEM_CT_LEN];
+static uint8_t s_qkd_wiped;
 
 static void write_kem_ct_storage_binding(uint16_t slot, const uint8_t fill_id[SE_NV_FILL_ID_LEN],
                                       uint8_t binding[34])
@@ -71,6 +72,12 @@ lt_ret_t se_tropic_qkd_cursor_advance_from_slot(lt_handle_t *h, se_nv_otp_dir_t 
     }
     return se_nv_set_cursor(dir, next);
 }
+
+void se_tropic_qkd_set_wiped(uint8_t wiped)
+{
+    s_qkd_wiped = (wiped != 0U) ? 1U : 0U;
+}
+
 lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
 {
     uint16_t slot;
@@ -78,6 +85,10 @@ lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
 
     if (h == NULL) {
         return LT_PARAM_ERR;
+    }
+    if (s_qkd_wiped != 0U) {
+        s_qkd_wiped = 0U;
+        return LT_OK;
     }
 
     /* Chip has no bulk erase; one erase per slot, once per new fill. */

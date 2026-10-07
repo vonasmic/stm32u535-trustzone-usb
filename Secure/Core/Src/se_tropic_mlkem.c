@@ -61,7 +61,7 @@ static lt_ret_t mlkem_unwrap_seed(lt_handle_t *h, const uint8_t kek[32], uint8_t
 
 lt_ret_t se_tropic_mlkem_seed_occupied(lt_handle_t *h, uint32_t *occupied)
 {
-    uint8_t probe[SE_TROPIC_RMEM_BLOB_MAX];
+    uint8_t probe[1];
     uint16_t got = 0U;
     lt_ret_t ret;
 
@@ -139,7 +139,6 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
     uint8_t seed[SE_TROPIC_MLKEM_SEED_LEN];
     uint8_t final_key[SE_TROPIC_PIN_HMAC_LEN];
     uint8_t kek[32];
-    uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint16_t got = 0U;
     uint32_t occ = 0U;
     lt_ret_t ret;
@@ -150,7 +149,8 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
 
     ret = se_tropic_mlkem_seed_occupied(h, &occ);
     if ((ret == LT_OK) && (occ != 0U)) {
-        return LT_FAIL;
+        ret = LT_FAIL;
+        goto exit;
     }
 
     ret = lt_random_value_get(h, master, sizeof(master));
@@ -168,18 +168,20 @@ lt_ret_t se_tropic_mlkem_provision(lt_handle_t *h, const uint8_t *pin, uint8_t p
 
     ret = mlkem_derive_kek(final_key, kek);
     if (ret == LT_OK) {
-        ret = mlkem_make_key_from_seed(seed, pk, sizeof(pk), &got);
+        ret = mlkem_make_key_from_seed(seed, pk_out, pk_max, &got);
     }
     if (ret == LT_OK) {
         ret = mlkem_wrap_seed(h, kek, seed);
     }
     if (ret == LT_OK) {
-        (void)memcpy(pk_out, pk, SE_TROPIC_MLKEM_PK_LEN);
         *pk_len = SE_TROPIC_MLKEM_PK_LEN;
-        (void)memcpy(s_pk_cache, pk, SE_TROPIC_MLKEM_PK_LEN);
+        if (pk_out != s_pk_cache) {
+            (void)memcpy(s_pk_cache, pk_out, SE_TROPIC_MLKEM_PK_LEN);
+        }
         s_pk_cache_valid = 1U;
-        (void)se_nv_set_mlkem_pk(pk, SE_TROPIC_MLKEM_PK_LEN);
+        /* Polynomials are not needed for the store. The NV page is in SRAM4. */
         se_tropic_mlkem_key_close();
+        ret = se_nv_set_mlkem_pk(pk_out, SE_TROPIC_MLKEM_PK_LEN);
     }
 
 exit:
@@ -187,31 +189,51 @@ exit:
     wc_ForceZero(seed, sizeof(seed));
     wc_ForceZero(final_key, sizeof(final_key));
     wc_ForceZero(kek, sizeof(kek));
-    wc_ForceZero(pk, sizeof(pk));
+    if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
+    }
     return ret;
 }
 
-uint32_t se_tropic_mlkem_pub_read(uint8_t *pk, uint16_t pk_max, uint16_t *pk_len)
+uint32_t se_tropic_mlkem_pub_view(const uint8_t **pk, uint16_t *pk_len)
 {
     const uint8_t *emb = se_tropic_port_mlkem_pk();
     unsigned int emb_len = se_tropic_port_mlkem_pk_len();
 
-    if ((pk == NULL) || (pk_len == NULL) || (pk_max < SE_TROPIC_MLKEM_PK_LEN)) {
+    if ((pk == NULL) || (pk_len == NULL)) {
         return SE_TROPIC_ERR;
     }
-
+    *pk = NULL;
+    *pk_len = 0U;
     if ((emb != NULL) && (emb_len == SE_TROPIC_MLKEM_PK_LEN)) {
-        (void)memcpy(pk, emb, SE_TROPIC_MLKEM_PK_LEN);
+        *pk = emb;
         *pk_len = SE_TROPIC_MLKEM_PK_LEN;
         return SE_TROPIC_OK;
     }
     if (s_pk_cache_valid != 0U) {
-        (void)memcpy(pk, s_pk_cache, SE_TROPIC_MLKEM_PK_LEN);
+        *pk = s_pk_cache;
         *pk_len = SE_TROPIC_MLKEM_PK_LEN;
         return SE_TROPIC_OK;
     }
-
     return SE_TROPIC_NOT_READY;
+}
+
+uint32_t se_tropic_mlkem_pub_read(uint8_t *pk, uint16_t pk_max, uint16_t *pk_len)
+{
+    const uint8_t *src = NULL;
+    uint16_t n = 0U;
+    uint32_t st;
+
+    if ((pk == NULL) || (pk_len == NULL) || (pk_max < SE_TROPIC_MLKEM_PK_LEN)) {
+        return SE_TROPIC_ERR;
+    }
+    st = se_tropic_mlkem_pub_view(&src, &n);
+    if (st != SE_TROPIC_OK) {
+        return st;
+    }
+    (void)memcpy(pk, src, n);
+    *pk_len = n;
+    return SE_TROPIC_OK;
 }
 
 uint32_t se_tropic_mlkem_pub_recover(const uint8_t *pin, uint8_t pin_len, const uint8_t *add,
@@ -248,6 +270,7 @@ uint32_t se_tropic_kem_init_probe(void)
     uint32_t occ = 0U;
     lt_ret_t ret;
 
+    se_tropic_die = 0;
     if (se_tropic_init_session() != SE_TROPIC_OK) {
         return SE_TROPIC_ERR;
     }
@@ -258,6 +281,7 @@ uint32_t se_tropic_kem_init_probe(void)
 
     ret = se_tropic_mlkem_seed_occupied(h, &occ);
     if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
         return SE_TROPIC_ERR;
     }
     if (occ != 0U) {
@@ -270,7 +294,6 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
                                     uint8_t add_len)
 {
     lt_handle_t *h;
-    uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint16_t pk_len = 0U;
     lt_ret_t ret;
 
@@ -285,7 +308,8 @@ uint32_t se_tropic_kem_init_confirm(const uint8_t *pin, uint8_t pin_len, const u
         return SE_TROPIC_ERR;
     }
 
-    ret = se_tropic_mlkem_provision(h, pin, pin_len, add, add_len, pk, sizeof(pk), &pk_len);
+    ret = se_tropic_mlkem_provision(h, pin, pin_len, add, add_len, s_pk_cache,
+                                   (uint16_t)sizeof(s_pk_cache), &pk_len);
     if (ret != LT_OK) {
         return SE_TROPIC_ERR;
     }
@@ -372,4 +396,11 @@ void se_tropic_mlkem_key_close(void)
         wc_MlKemKey_Free(&s_mlkem);
         s_mlkem_open = 0U;
     }
+}
+
+void se_tropic_mlkem_forget(void)
+{
+    se_tropic_mlkem_key_close();
+    wc_ForceZero(s_pk_cache, sizeof(s_pk_cache));
+    s_pk_cache_valid = 0U;
 }

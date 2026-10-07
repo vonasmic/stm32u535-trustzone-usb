@@ -37,9 +37,8 @@ extern "C" {
 #define WOLF_CONF_RTOS            1
 #define WOLF_CONF_RNG             1
 #define WOLF_CONF_RSA             0
-/* Keep ECC enabled: wolfSSL TLS requires HAVE_ECC for pkCurveOID (ML-DSA)
- * and the "No cipher suites available" guard, even though KE is ML-KEM. */
-#define WOLF_CONF_ECC             1
+/* wolfSSL 5.9.4 TLS no longer needs HAVE_ECC for ML-DSA pkCurveOID. */
+#define WOLF_CONF_ECC             0
 #define WOLF_CONF_DH              0
 #define WOLF_CONF_AESGCM          2   /* GCM_TABLE_4BIT: no GMULT bit-branch on H */
 #define WOLF_CONF_AESCBC          0
@@ -269,6 +268,10 @@ extern "C" {
 #define WOLFSSL_GENERAL_ALIGNMENT 4
 #define WOLFSSL_STM32_CUBEMX
 #define WOLFSSL_SMALL_STACK
+/* SHA-256/512 schedule is 128 bytes. Keep it on the stack. The arena's last
+ * hole is often only large enough for the Hmac object, and the next 128-byte
+ * XMALLOC then fails inside KEM INIT (se_xmallo_fail_n = 128). */
+#define WC_SHA2_NO_SMALL_STACK
 #define WOLFSSL_IGNORE_FILE_WARN
 
 /* =========================================================================
@@ -443,10 +446,13 @@ extern "C" {
     #define HAVE_AES_DECRYPT
     /* Bitsliced AES: S-box is a boolean circuit, no Te/Td/Tsbox in FLASH.
      * HAVE_AES_ECB is required by wolfSSL for that implementation.
-     * 32-bit slices match Cortex-M; 64-bit would bloat Aes.bs_key. */
+     * bs_key is 15 * 16 * WC_AES_BS_WORD_SIZE slices. 32-bit slices are
+     * 30 KB per Aes; TLS keeps encrypt and decrypt, about 60 KB, and the
+     * ML-DSA-44 CertificateVerify scratch (16200 bytes) then fails with
+     * MEMORY_E. 16-bit slices are 7680 bytes per Aes. */
     #define WC_AES_BITSLICED
     #define HAVE_AES_ECB
-    #define WC_AES_BS_WORD_SIZE 32
+    #define WC_AES_BS_WORD_SIZE 16
     #if WOLF_CONF_AESGCM == 2
         #define GCM_TABLE_4BIT
     #else
@@ -549,6 +555,16 @@ extern "C" {
 #define HAVE_DILITHIUM
 #define WOLFSSL_NO_ML_DSA_65
 #define WOLFSSL_NO_ML_DSA_87
+/* There is no WOLFSSL_MLDSA_SIGN_SMALLEST_MEM. Sign small-mem is ~16 KB
+ * instead of the default 50176. Verify smallest-mem streams z (5.9.4, PR
+ * 10724) and does not malloc the 29696-byte verify scratch. Keygen small-mem
+ * so OWNER SET does not need the 28 KB matrix beside a Tropic session. */
+#define WOLFSSL_MLDSA_VERIFY_SMALL_MEM
+#define WOLFSSL_MLDSA_VERIFY_SMALLEST_MEM
+#define WOLFSSL_MLDSA_SIGN_SMALL_MEM
+#define WOLFSSL_MLDSA_MAKE_KEY_SMALL_MEM
+/* All wolfSSL allocations come from the fixed Secure arena in se_xmallo.c. */
+#define XMALLOC_USER
 #define WOLFSSL_NO_ML_KEM_512
 #define WOLFSSL_NO_ML_KEM_1024
 
@@ -575,7 +591,12 @@ extern "C" {
 
 #define WOLFSSL_SHA3_SMALL
 #define WOLFSSL_MLKEM_SMALL
+#define WOLFSSL_MLKEM_MAKEKEY_SMALL_MEM
+#define WOLFSSL_MLKEM_ENCAPSULATE_SMALL_MEM
 #define WOLFSSL_MLKEM_NO_ENCAPSULATE
+/* Keep the ClientHello MlKemKey. Decaps otherwise mallocs a second ~4 KB
+ * object. */
+#define WOLFSSL_TLSX_PQC_MLKEM_STORE_OBJ
 #define USE_SLOW_SHA256           /* smaller SHA-256 (libtropic HMAC + TLS) */
 #define USE_SLOW_SHA512           /* SHA-384 via sha512.c — smaller, slower */
 #define WOLFSSL_NOSHA3_224
@@ -596,6 +617,9 @@ extern "C" {
 #define HAVE_TIME_T_TYPE
 #define HAVE_TM_TYPE
 #define WOLFSSL_USER_CURRTIME
+/* 5.9.4 requires these macros. Implemented in wc_port_time.c. */
+#define XTIME(timer) se_time_xtime(timer)
+#define XGMTIME(timer, tmp) se_time_xgmtime(timer, tmp)
 
 /* =========================================================================
  * RNG

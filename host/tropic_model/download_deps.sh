@@ -25,12 +25,12 @@ mv "$DEPS/ed25519-b1f19fab4aebe607805620d25a5e42566ce46a0e" "$DEPS/ed25519"
 rm "$DEPS/ed25519.zip"
 
 echo "Downloading WolfSSL..."
-curl -L -o "$DEPS/wolfssl.zip" "https://github.com/wolfSSL/wolfssl/archive/refs/tags/v5.8.4-stable.zip"
-EXPECTED="9f52b92b2937acdbb03f2a731160d70f23f74a375f651de057214783c266fbeb"
+curl -L -o "$DEPS/wolfssl.zip" "https://github.com/wolfSSL/wolfssl/archive/refs/tags/v5.9.4-stable.zip"
+EXPECTED="82dbbbb89862c1e29cfe25259d9a1c781e9ecc5db72aeb50a535bc2b819ccbc7"
 ACTUAL=$(sha256sum "$DEPS/wolfssl.zip" | awk '{print $1}')
 [ "$EXPECTED" = "$ACTUAL" ] || { echo "wolfssl checksum mismatch"; exit 1; }
 py_unzip "$DEPS/wolfssl.zip" "$DEPS"
-mv "$DEPS/wolfssl-5.8.4-stable" "$DEPS/wolfssl"
+mv "$DEPS/wolfssl-5.9.4-stable" "$DEPS/wolfssl"
 rm "$DEPS/wolfssl.zip"
 
 echo "Deps ready in $DEPS"

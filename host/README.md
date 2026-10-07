@@ -22,7 +22,7 @@ From this firmware tree (`stm32u535-trustzone-usb/`; CubeIDE project name `SE_fi
 bash libtropic/scripts/tropic01_model/install_linux.sh
 source libtropic/scripts/tropic01_model/.venv/bin/activate
 
-# wolfSSL 5.8.4 + ed25519 into host/tropic_model/_deps/
+# wolfSSL 5.9.4 + ed25519 into host/tropic_model/_deps/
 bash host/tropic_model/download_deps.sh
 ```
 
@@ -104,18 +104,18 @@ bash ../run_with_model.sh ./test_a_session \
 - Host apps over a PTY, same console + TLS pipe as USB CDC on silicon
 
 It does **not** open TCP to SAE or USER. Lab USB ownership is a JSON file plus
-`scripts/lab-run.py` in the tmux `terminal-1` / `terminal-2` / `userapp-1` /
-`userapp-2` panes. Each pane is pinned to one keychain; LabSwitch is **USER** /
+`scripts/lab-run.py` in the tmux userapp and SaeNode panes. The wrapper restarts
+the JVM with `USB_SERIAL_PORT` set from that file. Each pane is pinned to one keychain; LabSwitch is **USER** /
 **SAE** only (both clients in parallel). Silicon uses one `/dev/ttyACM0`. The lab
 stack runs **two** `se_host` processes:
 
 | Path | Tropic model | Lab pane |
 | --- | --- | --- |
-| `--tty /tmp/ttyACM-se1 --tropic-port 28992` | `model_server -p 28992` | userapp-1 / terminal-1 |
-| `--tty /tmp/ttyACM-se2 --tropic-port 28993` | `model_server -p 28993` | userapp-2 / terminal-2 |
+| `--tty /tmp/ttyACM-se1 --tropic-port 28992` | `model_server -p 28992` | userapp-1 / node-1 |
+| `--tty /tmp/ttyACM-se2 --tropic-port 28993` | `model_server -p 28993` | userapp-2 / node-2 |
 
 `--tty-sae none` disables the optional second symlink (default in `scripts/host.sh`).
-UserApp and Terminal open whichever PTY their process env `USB_SERIAL_PORT` names.
+UserApp and SaeNode open whichever PTY their process env `USB_SERIAL_PORT` names. In the lab, `lab-run.py` sets that variable and restarts the process when the owner changes.
 
 ### 4.1 Start the chip model
 
@@ -132,7 +132,7 @@ Leave it running. Restart it to wipe Tropic + host RAM NV.
 
 ### 4.2 Start the Java Node
 
-Start `JAVA_APPS` listening on `NODE_NATIVE_PORT` (default **11111**) when you are ready to provision.
+Start SaeNode (`scripts/java.sh node env/node-1.env`) when you are ready to provision. It opens USB CDC itself.
 
 ### 4.3 Start the host device
 
@@ -143,9 +143,10 @@ cd host/tropic_model/build
 ```
 
 Creates a PTY and the symlink. Stdin is mirrored onto the same RX path when no
-slave is attached (bring-up). Ctrl-C unlinks the path.
+slave is attached (bring-up). That path is framed CDC, same as silicon, so a
+raw keyboard is not a host. Use UserApp / SaeNode. Ctrl-C unlinks the path.
 
-Console commands match USB CDC on silicon (`HELP` lists names):
+Console command names match USB CDC on silicon (`HELP` lists names):
 
 ```text
 HELP
@@ -173,10 +174,10 @@ MANAGE <unix>    # KEM INIT
 MANAGE <unix>    # PEER ADD
 ```
 
-Leave TerminalBridge running with `USB_SERIAL_PORT` pointing at the device PTY.
-In `./run-all.sh` both terminal panes enable USB while lab owner is SAE.
+Leave SaeNode running with `USB_SERIAL_PORT` pointing at the device PTY.
+In `./run-all.sh` both node panes enable USB while lab owner is SAE.
 
-Do not use plain `socat` unless you also send `PROVISION <unix>` yourself first.
+The PTY carries the same framed CDC as silicon (type `0x00` command, type `0x01` Secure). UserApp and SaeNode speak that header. Plain `socat` is not a peer: it neither frames nor sends `PROVISION <unix>`.
 **Encrypt/decrypt**
 is UserApp on each keychain PTY (`USER` in LabSwitchApp). PIN is
 never a console argument for PROVISION/ENCRYPT/DECRYPT — it arrives on TLS.

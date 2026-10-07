@@ -788,6 +788,7 @@ struct LmsKey {
     char label[LMS_MAX_LABEL_LEN];
     int  labelLen;
 #endif
+    WC_BITFIELD pubSet:1;  /* pub holds a public key */
 };
 
 #ifndef WC_LMSKEY_TYPE_DEFINED
@@ -797,6 +798,11 @@ struct LmsKey {
 
 #ifdef __cplusplus
     extern "C" {
+#endif
+
+#if FIPS_VERSION3_GE(7,0,0)
+    extern const unsigned int wolfCrypt_FIPS_lms_ro_sanity[2];
+    WOLFSSL_LOCAL int wolfCrypt_FIPS_LMS_sanity(void);
 #endif
 
 WOLFSSL_API int  wc_LmsKey_Init(LmsKey* key, void* heap, int devId);

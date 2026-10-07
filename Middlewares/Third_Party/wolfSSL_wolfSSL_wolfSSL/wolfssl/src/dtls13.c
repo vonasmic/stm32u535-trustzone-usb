@@ -230,6 +230,8 @@ static byte Dtls13TypeIsEncrypted(enum HandShakeType hs_type)
     case finished:
     case certificate_status:
     case key_update:
+    case request_connection_id:
+    case new_connection_id:
     case change_cipher_hs:
     case message_hash:
     case no_shake:
@@ -329,6 +331,11 @@ static byte Dtls13RtxMsgNeedsAck(WOLFSSL* ssl, enum HandShakeType hs)
 
     if (hs == session_ticket || hs == key_update)
         return 1;
+
+#ifdef WOLFSSL_DTLS_CID
+    if (hs == request_connection_id || hs == new_connection_id)
+        return 1;
+#endif
 
     return 0;
 }
@@ -796,6 +803,18 @@ int Dtls13RtxAddAck(WOLFSSL* ssl, w64wrapper epoch, w64wrapper seq)
     return 0;
 }
 
+/* RFC 9147 Sec 7: only ack a record whose message we processed or buffered.
+ * Acking a dropped message stops the peer retransmitting it and deadlocks. */
+static void Dtls13RtxAddAckForCurRecord(WOLFSSL* ssl)
+{
+    /* Stateless processing must not touch the ssl object. */
+    if (!ssl->options.dtlsStateful)
+        return;
+
+    if (Dtls13RtxAddAck(ssl, ssl->keys.curEpoch64, ssl->keys.curSeq) != 0)
+        WOLFSSL_MSG("can't save ack fragment");
+}
+
 static void Dtls13RtxFlushAcks(WOLFSSL* ssl)
 {
     Dtls13RecordNumber *list, *rn;
@@ -927,8 +946,9 @@ static void Dtls13SaveOrFlushClientHello(WOLFSSL* ssl)
     }
 }
 
+/* implicitAck is set when the flight we send already acks this record. */
 static int Dtls13RtxMsgRecvd(WOLFSSL* ssl, enum HandShakeType hs,
-    word32 fragOffset)
+    word32 fragOffset, byte* implicitAck)
 {
     WOLFSSL_ENTER("Dtls13RtxMsgRecvd");
 
@@ -958,6 +978,10 @@ static int Dtls13RtxMsgRecvd(WOLFSSL* ssl, enum HandShakeType hs,
         /* retransmission detected. */
         ssl->dtls13Rtx.retransmit = 1;
 
+        /* Already processed, so acking is allowed. It stops a peer that
+         * retransmitted because our earlier ack was lost. */
+        Dtls13RtxAddAckForCurRecord(ssl);
+
         /* the other peer may have retransmitted because an ACK for a flight
            that needs explicit ACK was lost.*/
         if (ssl->dtls13Rtx.seenRecords != NULL)
@@ -978,6 +1002,7 @@ static int Dtls13RtxMsgRecvd(WOLFSSL* ssl, enum HandShakeType hs,
            should be rare and simplifies the code. Otherwise, it would be
            necessary to track which record number contained a CertificateRequest
            with a particular context id */
+        *implicitAck = 1;
         Dtls13RtxRemoveCurAck(ssl);
     }
 
@@ -1145,6 +1170,16 @@ static int Dtls13SendFragmented(WOLFSSL* ssl, byte* message, word16 length,
 
     messageSize = length - rlHeaderLength - DTLS_HANDSHAKE_HEADER_SZ;
 
+    /* This copies the whole message body into a second full-size buffer,
+     * alongside the caller's output buffer that still holds the assembled
+     * message - a transient ~2x peak. For a large post-quantum
+     * CertificateVerify signature (SLH-DSA, ML-DSA) that body dominates RAM.
+     * A future optimization could have the caller assemble the body directly
+     * into this buffer (or sign into it) so the copy is avoided, cutting the
+     * peak toward ~1x. See the TLS 1.3 streamed CertificateVerify path
+     * (WOLFSSL_TLS13_STREAM_CERT_VERIFY) for the equivalent idea over TCP;
+     * note the retransmission copy (Dtls13RtxNewRecord) must remain regardless,
+     * so ~1x retained until ACK is the DTLS floor. */
     ssl->dtls13FragmentsBuffer.buffer =
         (byte*)XMALLOC(messageSize, ssl->heap, DYNAMIC_TYPE_TMP_BUFFER);
 
@@ -1475,6 +1510,10 @@ int Dtls13ReconstructEpochNumber(WOLFSSL* ssl, byte epochBits,
         if (!e->isValid)
             continue;
 
+        /* consider only epoch that can decrypt */
+        if (e->side == ENCRYPT_SIDE_ONLY)
+            continue;
+
         if (Dtls13GetEpochBits(e->epochNumber) != epochBits)
             continue;
 
@@ -1595,19 +1634,14 @@ int Dtls13ParseUnifiedRecordLayer(WOLFSSL* ssl, const byte* input,
 
 int Dtls13RecordRecvd(WOLFSSL* ssl)
 {
-    int ret;
-
     if (ssl->curRL.type != handshake)
         return 0;
 
     if (!ssl->options.dtls13SendMoreAcks)
         ssl->dtls13FastTimeout = 1;
 
-    ret = Dtls13RtxAddAck(ssl, ssl->keys.curEpoch64, ssl->keys.curSeq);
-    if (ret != 0)
-        WOLFSSL_MSG("can't save ack fragment");
-
-    return ret;
+    /* Acking happens in Dtls13RtxAddAckForCurRecord(). */
+    return 0;
 }
 
 static void Dtls13RtxMoveToEndOfList(WOLFSSL* ssl, Dtls13RtxRecord** prevNext,
@@ -1807,6 +1841,8 @@ int Dtls13CheckEpoch(WOLFSSL* ssl, enum HandShakeType type)
             case change_cipher_hs:
             case key_update:
             case session_ticket:
+            case request_connection_id:
+            case new_connection_id:
                 if (!w64GTE(ssl->keys.curEpoch64, t0Epoch)) {
                     WOLFSSL_MSG("Msg should be epoch 3+");
                     WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
@@ -1814,6 +1850,13 @@ int Dtls13CheckEpoch(WOLFSSL* ssl, enum HandShakeType type)
                 }
                 break;
             case end_of_early_data:
+                /* RFC 9147 5.6.1: EndOfEarlyData is not used in DTLS 1.3. Its
+                 * receipt must terminate the connection with an
+                 * unexpected_message alert. */
+                WOLFSSL_MSG("EndOfEarlyData not valid in DTLS 1.3");
+                SendAlert(ssl, alert_fatal, unexpected_message);
+                WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
+                return SANITY_MSG_E;
             case message_hash:
             case no_shake:
             default:
@@ -1844,10 +1887,12 @@ static int _Dtls13HandshakeRecv(WOLFSSL* ssl, byte* input, word32 size,
     byte usingAsyncCrypto;
     word32 messageLength;
     byte handshakeType;
+    byte implicitAck;
     word32 idx;
     int ret;
 
     idx = 0;
+    implicitAck = 0;
     ret = GetDtlsHandShakeHeader(ssl, input, &idx, &handshakeType,
         &messageLength, &fragOff, &fragLength, size);
     if (ret != 0)
@@ -1889,10 +1934,26 @@ static int _Dtls13HandshakeRecv(WOLFSSL* ssl, byte* input, word32 size,
         return INCOMPLETE_DATA;
     }
 
+    /* Cap the handshake message size before it can be buffered for reassembly,
+     * matching the DTLSv1.2 path (DoDtlsHandShakeMsg()). RFC 9147 Sec 4.5.2
+     * says invalid records SHOULD be silently discarded, so only error out once
+     * the record is authenticated (received in an encrypted epoch); a plaintext
+     * message is just dropped. */
+    if (messageLength > MAX_HANDSHAKE_SZ) {
+        WOLFSSL_MSG("Handshake message too large");
+        if (IsEncryptionOn(ssl, 0)) {
+            WOLFSSL_ERROR_VERBOSE(HANDSHAKE_SIZE_ERROR);
+            return HANDSHAKE_SIZE_ERROR;
+        }
+        *processedSize = idx + fragLength;
+        return 0;
+    }
+
     if (fragOff + fragLength > messageLength)
         return BUFFER_ERROR;
 
-    ret = Dtls13RtxMsgRecvd(ssl, (enum HandShakeType)handshakeType, fragOff);
+    ret = Dtls13RtxMsgRecvd(ssl, (enum HandShakeType)handshakeType, fragOff,
+        &implicitAck);
     if (ret != 0)
         return ret;
 
@@ -1956,10 +2017,13 @@ static int _Dtls13HandshakeRecv(WOLFSSL* ssl, byte* input, word32 size,
             ssl->keys.dtls_expected_peer_handshake_number ||
         usingAsyncCrypto) {
         if (ssl->dtls_rx_msg_list_sz < DTLS_POOL_SZ) {
-            DtlsMsgStore(ssl, (word16)w64GetLow32(ssl->keys.curEpoch64),
-                ssl->keys.dtls_peer_handshake_number,
-                input + DTLS_HANDSHAKE_HEADER_SZ, messageLength, handshakeType,
-                fragOff, fragLength, ssl->heap);
+            /* Only ack a fragment we really buffered. */
+            if (DtlsMsgStore(ssl, (word16)w64GetLow32(ssl->keys.curEpoch64),
+                    ssl->keys.dtls_peer_handshake_number,
+                    input + DTLS_HANDSHAKE_HEADER_SZ, messageLength,
+                    handshakeType, fragOff, fragLength, ssl->heap) == 0) {
+                Dtls13RtxAddAckForCurRecord(ssl);
+            }
         }
         else {
             /* DTLS_POOL_SZ outstanding messages is way more than enough for any
@@ -1979,6 +2043,9 @@ static int _Dtls13HandshakeRecv(WOLFSSL* ssl, byte* input, word32 size,
     *processedSize = idx;
     if (ret != 0)
         return ret;
+
+    if (!implicitAck)
+        Dtls13RtxAddAckForCurRecord(ssl);
 
     Dtls13MsgWasProcessed(ssl, (enum HandShakeType)handshakeType);
 
@@ -2368,11 +2435,18 @@ int Dtls13GetSeq(WOLFSSL* ssl, int order, word32* seq, byte increment)
 static Dtls13Epoch* Dtls13NewEpochSlot(WOLFSSL* ssl)
 {
     Dtls13Epoch *e, *oldest = NULL;
-    w64wrapper oldestNumber;
+    w64wrapper oldestNumber, prevPeerEpoch;
     int i;
 
     oldestNumber = w64From32((word32)-1, (word32)-1);
     oldest = NULL;
+
+    /* local peer advances the remote peer epoch when receiving KeyUpdate but
+     * the remote peer advances its own sending epoch only after receiving our
+     * ACK. Preserve peer epoch - 1 in case the ACK gets lost */
+    prevPeerEpoch = ssl->dtls13PeerEpoch;
+    if (!w64IsZero(prevPeerEpoch))
+        w64Decrement(&prevPeerEpoch);
 
     for (i = 0; i < DTLS13_EPOCH_SIZE; ++i) {
         e = &ssl->dtls13Epochs[i];
@@ -2381,6 +2455,7 @@ static Dtls13Epoch* Dtls13NewEpochSlot(WOLFSSL* ssl)
 
         if (!w64Equal(e->epochNumber, ssl->dtls13Epoch) &&
             !w64Equal(e->epochNumber, ssl->dtls13PeerEpoch) &&
+            !w64Equal(e->epochNumber, prevPeerEpoch) &&
             w64LT(e->epochNumber, oldestNumber)) {
             oldest = e;
             oldestNumber = e->epochNumber;
@@ -2395,6 +2470,10 @@ static Dtls13Epoch* Dtls13NewEpochSlot(WOLFSSL* ssl)
 #ifdef WOLFSSL_DEBUG_TLS
     WOLFSSL_MSG_EX("Delete epoch: %d", e->epochNumber);
 #endif /* WOLFSSL_DEBUG_TLS */
+
+    /* invalidate dtls13DecryptEpoch if pointing to the evicted slot */
+    if (ssl->dtls13DecryptEpoch == e)
+        ssl->dtls13DecryptEpoch = NULL;
 
     /* The slot we are reusing holds the previous epoch's symmetric keys, IVs,
      * and sn-keys; use ForceZero so the wipe cannot be elided by the
@@ -2813,14 +2892,30 @@ int Dtls13DoScheduledWork(WOLFSSL* ssl)
          * shared WriteDup struct so the write side sends the ACK instead. */
         if (ssl->dupWrite != NULL && ssl->dupSide == READ_DUP_SIDE) {
             struct Dtls13RecordNumber** tail = NULL;
+            int count = 0;
             if (wc_LockMutex(&ssl->dupWrite->dupMutex) != 0)
                 return BAD_MUTEX_E;
+            /* Walk to the tail, counting what is already queued. */
             tail = (struct Dtls13RecordNumber**)&ssl->dupWrite->sendAckList;
-            while (*tail != NULL)
+            while (*tail != NULL) {
                 tail = &(*tail)->next;
-            *tail = ssl->dtls13Rtx.seenRecords;
-            ssl->dtls13Rtx.seenRecords = NULL;
-            ssl->dtls13Rtx.seenRecordsCount = 0;
+                count++;
+            }
+            /* Each transferred batch is already capped at
+             * DTLS13_ACK_MAX_RECORDS. Only splice a new batch while the queue
+             * is below the cap so repeated scheduled-work cycles cannot grow
+             * it without bound (aggregate stays under 2 *
+             * DTLS13_ACK_MAX_RECORDS). Otherwise drop the batch: ACKs are
+             * best-effort and the peer retransmits if one is lost. */
+            if (count < DTLS13_ACK_MAX_RECORDS) {
+                *tail = ssl->dtls13Rtx.seenRecords;
+                ssl->dtls13Rtx.seenRecords = NULL;
+                ssl->dtls13Rtx.seenRecordsCount = 0;
+            }
+            else {
+                /* Queue already at the cap: drop this batch. */
+                Dtls13RtxFlushAcks(ssl);
+            }
             ssl->dupWrite->sendAcks = 1;
             wc_UnLockMutex(&ssl->dupWrite->dupMutex);
         }
@@ -2915,6 +3010,100 @@ int DoDtls13KeyUpdateAck(WOLFSSL* ssl)
 
     return ret;
 }
+
+#ifdef WOLFSSL_DTLS_CID
+/* RequestConnectionId: struct { uint8 num_cids; } (RFC 9147 Section 9).
+ * Responding with NewConnectionId is a SHOULD; we never send records with a
+ * CID of our choosing, so we ignore the request. */
+int DoDtls13RequestConnectionId(WOLFSSL* ssl, const byte* input,
+    word32* inOutIdx, word32 size)
+{
+    (void)ssl;
+    (void)input;
+
+    if (size != OPAQUE8_LEN) {
+        WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
+        return BUFFER_ERROR;
+    }
+
+    *inOutIdx += size;
+    return 0;
+}
+
+/* NewConnectionId:
+ * struct {
+ *     ConnectionId cids<0..2^16-1>;
+ *     ConnectionIdUsage usage;
+ * } (RFC 9147 Section 9), where ConnectionId is opaque<0..2^8-1>. */
+int DoDtls13NewConnectionId(WOLFSSL* ssl, const byte* input,
+    word32* inOutIdx, word32 size)
+{
+    word32 idx = *inOutIdx;
+    const byte* newCid = NULL;
+    byte newCidLen = 0;
+    word16 cidsLen;
+    word32 i;
+    byte usage;
+    int ret;
+
+    if (size < OPAQUE16_LEN + OPAQUE8_LEN) {
+        WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
+        return BUFFER_ERROR;
+    }
+
+    ato16(input + idx, &cidsLen);
+    idx += OPAQUE16_LEN;
+
+    if ((word32)cidsLen + OPAQUE16_LEN + OPAQUE8_LEN != size) {
+        WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
+        return BUFFER_ERROR;
+    }
+
+    /* walk the cids list, remembering the first CID we can use. */
+    for (i = 0; i < cidsLen;) {
+        byte cidLen = input[idx + i];
+
+        i += OPAQUE8_LEN;
+        if (i + cidLen > cidsLen) {
+            WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
+            return BUFFER_ERROR;
+        }
+        if (newCid == NULL && cidLen > 0) {
+            newCid = input + idx + i;
+            newCidLen = cidLen;
+        }
+        i += cidLen;
+    }
+    idx += cidsLen;
+
+    usage = input[idx];
+    idx += OPAQUE8_LEN;
+
+    if (usage != cid_immediate && usage != cid_spare) {
+        WOLFSSL_ERROR_VERBOSE(INVALID_PARAMETER);
+        return INVALID_PARAMETER;
+    }
+
+    if (usage == cid_immediate) {
+        /* one of the new CIDs MUST be used immediately for all future
+         * records */
+        if (newCid == NULL) {
+            WOLFSSL_ERROR_VERBOSE(INVALID_PARAMETER);
+            return INVALID_PARAMETER;
+        }
+        /* replace before the ACK for this record is sent so that the ACK
+         * already uses the new CID */
+        ret = DtlsCidReplaceTx(ssl, newCid, newCidLen);
+        if (ret != 0)
+            return ret;
+    }
+    /* cid_spare: we MAY simply discard the CIDs and keep using the
+     * current one */
+
+    *inOutIdx = idx;
+    return 0;
+}
+#endif /* WOLFSSL_DTLS_CID */
 
 int DoDtls13Ack(WOLFSSL* ssl, const byte* input, word32 inputSize,
     word32* processedSize)

@@ -183,7 +183,8 @@ enum CertType {
     TRUSTED_CERT_TYPE,
     LMS_TYPE,
     XMSS_TYPE,
-    XMSSMT_TYPE
+    XMSSMT_TYPE,
+    FRODOKEM_TYPE
 };
 
 #ifndef WOLFSSL_NO_DILITHIUM_LEGACY_NAMES
@@ -717,6 +718,9 @@ WOLFSSL_API int wc_MakeCRL_ex(const byte* issuerDer, word32 issuerSz,
 WOLFSSL_API int wc_SignCRL_ex(const byte* tbsBuf, int tbsSz, int sType,
                   byte* buf, word32 bufSz,
                   RsaKey* rsaKey, ecc_key* eccKey, WC_RNG* rng);
+WOLFSSL_API int wc_SignCRL_ex2(const byte* tbsBuf, int tbsSz, int sType,
+                  byte* buf, word32 bufSz, int keyType, void* key,
+                  WC_RNG* rng);
 #endif /* WOLFSSL_CERT_GEN && HAVE_CRL */
 
 WOLFSSL_API int wc_GetDateInfo(const byte* certDate, int certDateSz,
@@ -850,6 +854,9 @@ WOLFSSL_API int wc_DhPrivKeyToDer(DhKey* key, byte* out, word32* outSz);
 #ifdef HAVE_ED25519_KEY_IMPORT
 WOLFSSL_API int wc_Ed25519PrivateKeyDecode(const byte* input, word32* inOutIdx,
                                ed25519_key* key, word32 inSz);
+WOLFSSL_API int wc_Ed25519PrivateKeyDecode_ex(const byte* input,
+                               word32* inOutIdx, ed25519_key* key, word32 inSz,
+                               int trusted);
 WOLFSSL_API int wc_Ed25519PublicKeyDecode(const byte* input, word32* inOutIdx,
                               ed25519_key* key, word32 inSz);
 #endif
@@ -886,6 +893,9 @@ WOLFSSL_API int wc_Curve25519KeyToDer(curve25519_key* key, byte* output,
 #ifdef HAVE_ED448_KEY_IMPORT
 WOLFSSL_API int wc_Ed448PrivateKeyDecode(
     const byte* input, word32* inOutIdx, ed448_key* key, word32 inSz);
+WOLFSSL_API int wc_Ed448PrivateKeyDecode_ex(
+    const byte* input, word32* inOutIdx, ed448_key* key, word32 inSz,
+    int trusted);
 WOLFSSL_API int wc_Ed448PublicKeyDecode(
     const byte* input, word32* inOutIdx, ed448_key* key, word32 inSz);
 #endif

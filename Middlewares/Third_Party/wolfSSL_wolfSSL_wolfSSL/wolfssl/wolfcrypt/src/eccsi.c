@@ -38,7 +38,10 @@
 
 #ifndef WOLFSSL_HAVE_ECC_KEY_GET_PRIV
     /* FIPS build has replaced ecc.h. */
-    #define wc_ecc_key_get_priv(key) (&((key)->k))
+    #define wc_ecc_key_get_priv(key)  (&((key)->k))
+    #define ecc_get_k_raw(key)        (&((key)->k))
+    #define ecc_blind_k_rng(key, rng) 0
+    #define ecc_forcezero_k(key)      mp_forcezero(&((key)->k))
     #define WOLFSSL_HAVE_ECC_KEY_GET_PRIV
 #endif
 
@@ -464,6 +467,14 @@ int wc_MakeEccsiKey(EccsiKey* key, WC_RNG* rng)
     if (err == 0) {
         err = wc_ecc_make_key_ex(rng, key->ecc.dp->size, &key->ecc,
                 key->ecc.dp->id);
+#ifdef WOLFSSL_ASYNC_CRYPT
+        /* ECCSI has no asynchronous API, so the caller cannot resume a pending
+         * key generation - complete it here. The key->pubkey sites in
+         * eccsi_make_pair() and eccsi_gen_sig() need no wait: each is preceded
+         * by wc_ecc_free(&key->pubkey), which clears the marker that
+         * _ecc_make_key_ex() gates its pending path on. */
+        err = wc_AsyncWait(err, &key->ecc.asyncDev, WC_ASYNC_FLAG_NONE);
+#endif
     }
 
     return err;
@@ -671,8 +682,11 @@ static int eccsi_decode_key(EccsiKey* key, const byte* data)
     int err;
 
     /* Read the secret value from key size bytes. */
-    err = mp_read_unsigned_bin(wc_ecc_key_get_priv(&key->ecc), data,
+    err = mp_read_unsigned_bin(ecc_get_k_raw(&key->ecc), data,
         (word32)key->ecc.dp->size);
+    if (err == 0) {
+        err = ecc_blind_k_rng(&key->ecc, NULL);
+    }
     if (err == 0) {
         data += key->ecc.dp->size;
         /* Read public key. */
@@ -801,8 +815,11 @@ int wc_ImportEccsiPrivateKey(EccsiKey* key, const byte* data, word32 sz)
     }
 
     if (err == 0) {
-        err = mp_read_unsigned_bin(wc_ecc_key_get_priv(&key->ecc), data,
+        err = mp_read_unsigned_bin(ecc_get_k_raw(&key->ecc), data,
             (word32)key->ecc.dp->size);
+    }
+    if (err == 0) {
+        err = ecc_blind_k_rng(&key->ecc, NULL);
     }
 
     return err;
@@ -918,7 +935,7 @@ static int eccsi_make_pair(EccsiKey* key, WC_RNG* rng,
     /* Step 5: ensure SSK and HS are non-zero (code lines above) */
 
     /* Step 6: Copy out SSK (done during calc) and PVT. Erase v */
-    mp_forcezero(wc_ecc_key_get_priv(&key->pubkey));
+    ecc_forcezero_k(&key->pubkey);
 
     return err;
 }
@@ -2002,10 +2019,10 @@ int wc_SignEccsiHash(EccsiKey* key, WC_RNG* rng, enum wc_HashType hashType,
     if (err == 0) {
         j = wc_ecc_key_get_priv(&key->pubkey);
         err = mp_mulmod(s, j, &key->params.order, s);
+        /* Erase j on the failure path too. */
+        ecc_forcezero_k(&key->pubkey);
     }
     if (err == 0) {
-        mp_forcezero(j);
-
         /* Step 6: s = s' fitted */
         err = eccsi_fit_to_octets(s, &key->params.order, (int)sz, s);
     }
@@ -2102,17 +2119,20 @@ static int eccsi_calc_y(EccsiKey* key, ecc_point* pvt, mp_digit mp,
         ecc_point* y)
 {
     int err;
-    mp_int* hs = &key->ssk;
+    mp_int* hs = &key->tmp;
 
-    err = mp_read_unsigned_bin(hs, key->idHash, key->idHashSz);
 #ifndef WOLFSSL_HAVE_SP_ECC
+    err = eccsi_kpak_to_mont(key);
     /* Need KPAK in montgomery form. */
     if (err == 0) {
-        err = eccsi_kpak_to_mont(key);
+        err = mp_read_unsigned_bin(hs, key->idHash, key->idHashSz);
     }
+#else
+    err = mp_read_unsigned_bin(hs, key->idHash, key->idHashSz);
 #endif
-    /* [HS]PVT + KPAK */
-    if (err == 0) {
+    if (err == 0)
+    {
+        /* [HS]PVT + KPAK */
         ecc_point* kpak = &key->ecc.pubkey;
         err = eccsi_mulmod_point_add(key, hs, pvt, kpak, y, mp, 1);
     }

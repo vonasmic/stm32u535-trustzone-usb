@@ -12,6 +12,7 @@
 #include "main.h"
 #include <string.h>
 #include "se_tropic_mlkem.h"
+#include "se_ram.h"
 #include "wolfssl/wolfcrypt/hmac.h"
 #include "wolfssl/wolfcrypt/wc_port.h"
 
@@ -122,13 +123,11 @@ void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id)
                       (uint32_t)sizeof(*chip_id));
 }
 
-/* Page 22: 0x0C02C000 — see STM32U535CCTX_FLASH.ld FLASH_NV */
+/* Page 22: 0x0C02C000 — FLASH_NV. Not in the ELF; a download erases it. */
 #define SE_NV_FLASH_ADDR    0x0C02C000u
 #define SE_NV_FLASH_PAGE    22u
 #define SE_CREDS_FLASH_ADDR 0x0C02A000u
 #define SE_CREDS_FLASH_PAGE 21u
-
-static uint8_t s_flash_work[SE_NV_PAGE_SIZE];
 
 static int page_dwk_blank(const uint8_t *p)
 {
@@ -254,60 +253,66 @@ lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE])
 
 lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len)
 {
-    lt_ret_t ret;
-
     if ((dst == NULL) || (len == 0U) || (len > SE_NV_PAGE_SIZE)) {
         return LT_PARAM_ERR;
     }
-    ret = se_tropic_port_nv_page_read(s_flash_work);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    (void)memcpy(dst, s_flash_work, len);
-    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
-    return LT_OK;
+    return se_tropic_port_nv_slice_read(0U, dst, len);
 }
 
 lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len)
 {
+    uint8_t *page;
     lt_ret_t ret;
 
     if ((src == NULL) || (len == 0U) || (len > SE_NV_PAGE_SIZE)) {
         return LT_PARAM_ERR;
     }
-    (void)memset(s_flash_work, 0xff, sizeof(s_flash_work));
-    (void)memcpy(s_flash_work, src, len);
-    ret = se_tropic_port_nv_page_write(s_flash_work);
-    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
+    page = se_nv_page_acquire();
+    if (page == NULL) {
+        return LT_FAIL;
+    }
+    (void)memset(page, 0xff, SE_NV_PAGE_SIZE);
+    (void)memcpy(page, src, len);
+    ret = se_tropic_port_nv_page_write(page);
+    se_nv_page_release();
     return ret;
 }
 
 lt_ret_t se_tropic_port_dwk(uint8_t out[SE_NV_DWK_LEN])
 {
+    uint8_t *page;
     lt_ret_t ret;
 
     if (out == NULL) {
         return LT_PARAM_ERR;
     }
-    ret = se_tropic_port_nv_page_read(s_flash_work);
+    /* Flash is mapped. The seal is the first 32 bytes; the rest of the page
+     * stays in flash unless this is the erased-header generate-once path. */
+    ret = se_tropic_port_nv_slice_read(0U, out, SE_NV_DWK_LEN);
     if (ret != LT_OK) {
         return ret;
     }
-    if (page_dwk_blank(s_flash_work) != 0) {
-        ret = se_tropic_port_nv_random(s_flash_work, SE_NV_DWK_LEN);
-        if (ret != LT_OK) {
-            wc_ForceZero(s_flash_work, sizeof(s_flash_work));
-            return ret;
-        }
-        ret = se_tropic_port_nv_page_write(s_flash_work);
-        if (ret != LT_OK) {
-            wc_ForceZero(s_flash_work, sizeof(s_flash_work));
-            return ret;
-        }
+    if (page_dwk_blank(out) == 0) {
+        return LT_OK;
     }
-    (void)memcpy(out, s_flash_work, SE_NV_DWK_LEN);
-    wc_ForceZero(s_flash_work, sizeof(s_flash_work));
-    return LT_OK;
+    page = se_nv_page_acquire();
+    if (page == NULL) {
+        return LT_FAIL;
+    }
+    ret = se_tropic_port_nv_page_read(page);
+    if (ret != LT_OK) {
+        se_nv_page_release();
+        return ret;
+    }
+    ret = se_tropic_port_nv_random(page, SE_NV_DWK_LEN);
+    if (ret == LT_OK) {
+        ret = se_tropic_port_nv_page_write(page);
+    }
+    if (ret == LT_OK) {
+        (void)memcpy(out, page, SE_NV_DWK_LEN);
+    }
+    se_nv_page_release();
+    return ret;
 }
 
 void se_tropic_port_device_id(uint8_t out[SE_DEVICE_ID_LEN])

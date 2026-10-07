@@ -3,15 +3,15 @@
 TrustZone firmware for **STM32U535** (TS13 DevKit) with a **TROPIC01** secure element.
 
 - **Secure** — wolfSSL TLS 1.3 client, libtropic / SPI to TROPIC01, NSC API, MCU NV
-- **NonSecure** — USB CDC ACM console; parses commands and forwards them via NSC. After arming, the same CDC pipe carries TLS bytes to Secure.
+- **NonSecure** — USB CDC ACM frames (`0x00` command / `0x01` Secure); parses commands and forwards Secure payloads via NSC. After arming, type `0x01` is the TLS byte stream.
 
 Boot path: Secure init → jump to NonSecure at `0x08030000` → USB enumerates as CDC ACM.
 
 ```mermaid
 flowchart LR
     User["USER / UserApp"]
-    Sae["SAE / TerminalBridge"]
-    USB["USB terminal"]
+    Sae["SAE / SaeNode"]
+    USB["USB CDC host"]
     CDC["shared USB (CDC ACM)"]
     NS["NonSecure (command parse)"]
     Secure["Secure (wolfSSL, Tropic SPI)"]
@@ -29,7 +29,7 @@ flowchart LR
 ```
 
 Only one host process owns CDC at a time. **USER** (UserApp) is encrypt / decrypt / manage.
-**SAE** (SaeNode via TerminalBridge) is provision. UserApp is not an SAE.
+**SAE** (SaeNode) is provision. UserApp is not an SAE.
 
 PIN for provisioned OTP never appears on USB. The console only arms a mode and a Unix time; PIN and payloads ride inside TLS after the handshake.
 

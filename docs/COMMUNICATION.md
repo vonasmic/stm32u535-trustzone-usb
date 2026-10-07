@@ -7,9 +7,10 @@ contents: **[TROPIC.md](TROPIC.md)**. Console commands that *arm* these paths:
 **[COMMANDS.md](COMMANDS.md)**.
 
 ```text
-USB ASCII commands  →  NonSecure parser  →  NSC  →  Secure
-USB TLS bytes       →  16 KiB RX / 8 KiB TX rings →  wolfSSL 1.3 client  →  SAE (provision) or USER (encrypt / decrypt / manage)
-SPI                 →  TROPIC01 L2/L3
+USB frames (0x00 command / 0x01 Secure)  →  NonSecure parser
+  0x00  →  command table (queued if the Secure pipe is armed)
+  0x01  →  16 KiB RX / 8 KiB TX rings →  wolfSSL 1.3 or OWNER SET ingest
+SPI     →  TROPIC01 L2/L3
 ```
 
 Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`. After handshake the peer infers the role from what the device sends (uplink vs silence) and from its own request.
@@ -18,20 +19,35 @@ Mode is chosen **off the TLS wire** by `PROVISION` / `ENCRYPT` / `DECRYPT` / `MA
 
 ## USB / NSC pipe
 
+Every CDC packet is a frame (constants in [se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.h); Java `fel.cvut.usb.UsbFrame`):
+
+```text
+u16le magic = 0x6767 | u8 type | u16le length | payload[length]
+```
+
+| Type | Direction | Payload |
+| ---- | --------- | ------- |
+| `0x00` | both | Console command or ASCII reply (max **160** bytes on RX). |
+| `0x01` | both | Secure ring: TLS records, or the unsigned OWNER SET blob. Host splits at **1024** bytes. |
+
+Bad magic scans forward to the next `0x6767`. Payload longer than 1024, or an unknown type, is the same resync.
+
 NonSecure ([tls_usb_io.c](../NonSecure/Core/Src/tls_usb_io.c)):
 
-- **Command mode** — `\n`-terminated ASCII, max 160 chars.
-- After a successful `SECURE_TlsStart_nsc_call` or `SECURE_OwnerBegin_nsc_call`, **binary/TLS mode** — every RX byte goes to `SECURE_UsbRx_nsc_call`. Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`.
-- TX drains Secure in **64-byte** NSC packets (`SECURE_USB_PKT_MAX`). After each TLS RX packet, NonSecure runs `SECURE_UsbService_nsc_call` so wolfSSL drains the ring before the next push (a PQC ServerHello is ~12 KiB).
-- DTR off, CDC deactivate, overflow, or TLS end → command mode again.
+- Type `0x00` while the pipe is idle: existing command table (`HELP`, `CLIENT CSR`, `MANAGE <unix>`, …).
+- Type `0x00` while TLS or OWNER SET is armed: queued (4 commands). After `SECURE_UsbService_nsc_call` returns `SECURE_USB_IDLE`, the queue runs. A command that arms the pipe leaves the rest queued until the next idle.
+- Type `0x01` while armed: `SECURE_UsbRx_nsc_call` in 64-byte NSC packets. Type `0x01` while idle is dropped.
+- TX: each pop from the Secure ring is one frame. The span type is preserved: TLS records are type `0x01`; console ASCII (including OWNER SET begin and apply `ok`/`failed`) is type `0x00`.
+- Poll `SECURE_UsbService_nsc_call` until `SECURE_USB_IDLE` or `SECURE_USB_ERR`. After each Secure RX packet, NonSecure services wolfSSL so a PQC ServerHello (~12 KiB) can drain.
+- DTR off, CDC deactivate, overflow, or TLS end → command parser again. The next `0x00` is not TLS data.
 
-Secure rings ([se_usb_tls.h](../Secure/Core/Inc/se_usb_tls.h)): RX **16384** bytes, TX **8192** bytes.
+Secure rings ([se_usb_tls.h](../Secure/Core/Inc/se_usb_tls.h)): RX **16384** bytes, TX **8192** bytes. Secure never sees the frame header.
 
-Typed **console** replies are ASCII lines (hex for binary payloads). ASCII errors are the single line `failed` — Tropic/TLS/auth failure types are not on USB. After a successful arm (`PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`), TX is TLS only: MANAGE application replies stay `u8 status | u16le msg_len | msg` (and ENCRYPT/DECRYPT keep their binary frames). The host chooses the session shape from the command it sent — ASCII drain for console lines, TLS for arm commands — no mid-connection demux.
+Typed **console** replies are ASCII in type `0x00` frames (hex for binary payloads). Errors are the single line `failed`. After a successful arm, type `0x01` is the TLS stream: MANAGE application replies stay `u8 status | u16le msg_len | msg` (ENCRYPT/DECRYPT keep their binary frames). The OWNER SET blob is type `0x01`. Begin and apply `ok`/`refused`/`failed` are type `0x00` (plain ASCII spans).
 
-ASCII `HELP` / `PING` / `INFO` and other console text share the TX ring **only before** the first TLS record byte. After that, TX is TLS only. ClientHello waits until already-queued ASCII has left the Secure TX ring.
+A host that does not frame (plain `socat`, a serial terminal) cannot talk to the chip. UserApp and SaeNode parse frames in `usb-cdc` (`fel.cvut.usb`). After `PROVISION`, type `0x01` is the TLS byte stream between the device and SaeNode.
 
-PIN is never on the ASCII pipe for the TLS modes. Occupied KEYGEN / KEM INIT / PEER ADD/REMOVE / CREDS / OWNER REPLACE stream unsigned bodies over MANAGE TLS (no ML-DSA). ENCRYPT/DECRYPT stay mTLS.
+PIN is never on a command frame for the TLS modes. Occupied KEYGEN / KEM INIT / PEER ADD/REMOVE / CREDS / OWNER REPLACE stream unsigned bodies over MANAGE TLS (no ML-DSA). ENCRYPT/DECRYPT stay mTLS.
 
 ---
 
@@ -81,13 +97,15 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 
 | Mode      | Peer | Device sends              | Device reads                            |
 | --------- | ---- | ------------------------- | --------------------------------------- |
-| Provision | SAE  | LV **uplink v4**, then `SE_OK\n` | LV **downlink v2** (QKD ingest)         |
+| Provision | SAE  | LV **uplink v4**, then `TROPIC_WIPE_FINISHED\n`, integer KB lines (~every 10 KiB), then `SE_OK\n` | LV **downlink v2** (after wipe finished) |
 | Encrypt   | USER | nothing until USER request | PIN + plaintext; replies OTP ciphertext |
 | Decrypt   | USER | nothing until USER request | PIN + encrypt reply; replies plaintext  |
 | Manage    | USER | nothing until request     | unsigned cmd + optional PIN + body; replies status |
 
 
-Then bidirectional TLS shutdown: the device sends {@code close_notify} and stays in TLS until the peer (SAE on provision, USER otherwise) close_notify arrives, then returns to ASCII. A 3 s timeout still disarms if the peer never closes.
+After the uplink, the device erases R-MEM slots **0–509** one slot per USB service tick (overlapping SAE QKD fetch) and then writes `TROPIC_WIPE_FINISHED`. SAE waits for that line before streaming downlink v2. While ingesting, the device counts TLS application bytes and writes the integer KiB consumed each time another 10 KiB boundary is crossed (`10\n`, `20\n`, …). A short tail has no extra line. `SE_OK\n` still means the fill is stored.
+
+Then bidirectional TLS shutdown: the device sends `close_notify` and stays in TLS (type `0x01`) until the peer (SAE on provision, USER otherwise) close_notify arrives. A 3 s timeout still disarms if the peer never closes. NonSecure then parses type `0x00` again; a command queued during the session runs next.
 
 ---
 
@@ -166,7 +184,7 @@ Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.
 
 | Index | Item           | Size                | Action                                                                                |
 | ----- | -------------- | ------------------- | ------------------------------------------------------------------------------------- |
-| 0     | `kem_ct`       | **1088 B**          | `se_tropic_kem_ct_write` — new `fill_id`, wipe slots **0–509**, store ct in slots 0–2 |
+| 0     | `kem_ct`       | **1088 B**          | `se_tropic_kem_ct_write` — new `fill_id`, store ct in slots 0–2 (slots **0–509** already erased after the uplink) |
 | 1     | `decrypt_half` | **1 B**, `0` or `1` | `se_tropic_qkd_arm_halves` — which pad half is decrypt vs encrypt                     |
 | 2…    | Pad images     | 29–475 B            | Logical pad index = item index − 2; `se_tropic_qkd_store`                             |
 

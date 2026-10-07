@@ -45,7 +45,7 @@ _Min_Stack_Size = 0x2000;	/* TLS + NSC + libtropic session (~3 KB); _sbrk stops 
 /* Memories definition */
 MEMORY
 {
-  RAM	(xrw)	 : ORIGIN = 0x30000000,	LENGTH = 192K     /* Memory is divided. Actual start is 0x30000000 and actual length is 256K */
+  RAM	(xrw)	 : ORIGIN = 0x30000000,	LENGTH = 224K     /* SRAM1 192K + low 32K of SRAM2. High 32K of SRAM2 is NonSecure. */
   SRAM4	(xrw)    : ORIGIN = 0x38000000,	LENGTH = 16K
   FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 168K    /* pages 0-20, 8KB pages */
   FLASH_CREDS	(r)	 : ORIGIN = 0x0C02A000,	LENGTH = 8K      /* page 21, SAE CA + device cert */
@@ -77,9 +77,11 @@ SECTIONS
     _etext = .;        /* define a global symbols at end of code */
   } >FLASH
 
-  /* SG veneers first on page 23, then string literals. Must appear before
-   * FLASH .rodata so *(.rodata*) does not claim them. -fdata-sections names
-   * literals .rodata.<fn>.str1.1, not .rodata.str1.1. */
+  /* SG veneers first on page 23, then string literals and the newlib ctype
+   * table. Must appear before FLASH .rodata so *(.rodata*) does not claim
+   * them. -fdata-sections names literals .rodata.<fn>.str1.1, not
+   * .rodata.str1.1. _ctype_ is 257 bytes and is what made .data overflow
+   * the 168K FLASH region. */
   .gnu.sgstubs :
   {
     . = ALIGN(4);
@@ -91,6 +93,7 @@ SECTIONS
   {
     *(.rodata.str1.*)
     *(.rodata.*str1.*)
+    *(.rodata._ctype_)
   } >FLASH_NSC
 
   /* Constant data into "FLASH" Rom type memory */
@@ -149,20 +152,8 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM AT> FLASH
 
-  /* MCU NV page — not loaded; programmed at runtime by se_nv */
-  .se_nv (NOLOAD) :
-  {
-    . = ALIGN(8);
-    KEEP(*(.se_nv*))
-    . = ALIGN(8);
-  } >FLASH_NV
-
-  .se_creds (NOLOAD) :
-  {
-    . = ALIGN(8);
-    KEEP(*(.se_creds*))
-    . = ALIGN(8);
-  } >FLASH_CREDS
+  /* Pages 21 and 22 (FLASH_CREDS, FLASH_NV) are not in the image.
+   * The debug launch mass-erases before load, so a download leaves them blank. */
 
   /* Uninitialized data section into "RAM" Ram type memory */
   .bss :
@@ -177,6 +168,18 @@ SECTIONS
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
   } >RAM
+
+  /* Static buffers that do not fit on the TLS stack (SE_SRAM4_BSS).
+   * NOLOAD: se_sram4_bss_init() zeros _ssram4.._esram4 before use. */
+  .sram4_bss (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _ssram4 = .;
+    *(.sram4_bss)
+    *(.sram4_bss*)
+    . = ALIGN(16);
+    _esram4 = .;
+  } >SRAM4
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram  type memory left */
   ._user_heap_stack :

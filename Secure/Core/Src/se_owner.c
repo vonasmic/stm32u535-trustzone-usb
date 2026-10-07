@@ -10,6 +10,9 @@
 #include <wolfssl/wolfcrypt/sha512.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
+volatile uint32_t se_owner_die;
+volatile int se_owner_die_err;
+
 int se_owner_pw_ok(const uint8_t *pw, uint16_t len)
 {
     uint16_t i;
@@ -86,18 +89,29 @@ lt_ret_t se_owner_set(const uint8_t *pw, uint16_t pw_len, const uint8_t *spki, u
 
     if ((spki == NULL) || (spki_len == 0U) || (spki_len > SE_NV_OWNER_SPKI_MAX) ||
         (se_owner_pw_ok(pw, pw_len) == 0)) {
+        se_owner_die = 3U;
+        se_owner_die_err = (int)LT_PARAM_ERR;
         return LT_PARAM_ERR;
     }
     if (se_nv_has_owner() != 0) {
+        se_owner_die = 3U;
+        se_owner_die_err = (int)LT_FAIL;
         return LT_FAIL;
     }
     ret = se_owner_hash_pw(pw, pw_len, hash);
     if (ret != LT_OK) {
+        se_owner_die = 5U;
+        se_owner_die_err = (int)ret;
         return ret;
     }
     ret = se_nv_set_owner(spki, spki_len, hash);
     wc_ForceZero(hash, sizeof(hash));
-    return ret;
+    if (ret != LT_OK) {
+        se_owner_die = 5U;
+        se_owner_die_err = (int)ret;
+        return ret;
+    }
+    return LT_OK;
 }
 
 lt_ret_t se_owner_replace(const uint8_t *old_pw, uint16_t old_len, const uint8_t *new_pw,

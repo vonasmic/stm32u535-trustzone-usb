@@ -25,7 +25,10 @@
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-32-curve25519.c
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_32_CURVE25519_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
 #ifdef WOLFSSL_ARMASM
@@ -59,9 +62,9 @@
 #if !defined(CURVE25519_SMALL) || !defined(ED25519_SMALL)
 
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_init()
+WC_OMIT_FRAME_POINTER void fe_init(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_init()
+WC_OMIT_FRAME_POINTER void fe_init(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -81,9 +84,9 @@ WC_OMIT_FRAME_POINTER void fe_init()
 
 void fe_add_sub_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_add_sub_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_add_sub_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_add_sub_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_add_sub_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -198,8 +201,7 @@ WC_OMIT_FRAME_POINTER void fe_add_sub_op()
 #endif
         /*  Sub */
         "sbcs	r10, r4, r6\n\t"
-        "sbcs	r11, r5, r7\n\t"
-        "sbc	lr, lr, lr\n\t"
+        "sbc	r11, r5, r7\n\t"
         /*  Add */
         "subs	r12, r12, #1\n\t"
         "adcs	r8, r4, r6\n\t"
@@ -265,12 +267,9 @@ WC_OMIT_FRAME_POINTER void fe_add_sub_op()
 #else
         "strd	r8, r9, [r0, #24]\n\t"
 #endif
-        /*   Multiply -modulus by underflow */
-        "lsl	r3, lr, #1\n\t"
-        "mvn	lr, #18\n\t"
-        "orr	r3, r3, r11, lsr #31\n\t"
-        "mul	lr, r3, lr\n\t"
-        /*   Sub -x*modulus (if overflow) */
+        /*   Add -modulus on underflow */
+        "mov	lr, #19\n\t"
+        "and	lr, lr, r11, asr #31\n\t"
         "ldm	r1, {r4, r5, r6, r7, r8, r9}\n\t"
         "subs	r4, r4, lr\n\t"
         "sbcs	r5, r5, #0\n\t"
@@ -300,9 +299,9 @@ WC_OMIT_FRAME_POINTER void fe_add_sub_op()
 
 void fe_sub_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_sub_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sub_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_sub_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sub_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -319,12 +318,9 @@ WC_OMIT_FRAME_POINTER void fe_sub_op()
         "sbcs	r10, r2, r10\n\t"
         "sbcs	r11, r3, r11\n\t"
         "sbcs	r12, r4, r12\n\t"
-        "sbcs	lr, r5, lr\n\t"
-        "sbc	r3, r3, r3\n\t"
-        "mvn	r2, #18\n\t"
-        "lsl	r3, r3, #1\n\t"
-        "orr	r3, r3, lr, lsr #31\n\t"
-        "mul	r2, r3, r2\n\t"
+        "sbc	lr, r5, lr\n\t"
+        "mov	r2, #19\n\t"
+        "and	r2, r2, lr, asr #31\n\t"
         "subs	r6, r6, r2\n\t"
         "sbcs	r7, r7, #0\n\t"
         "sbcs	r8, r8, #0\n\t"
@@ -379,9 +375,9 @@ WC_OMIT_FRAME_POINTER void fe_sub(fe r, const fe a, const fe b)
 
 void fe_add_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_add_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_add_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_add_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_add_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -398,13 +394,9 @@ WC_OMIT_FRAME_POINTER void fe_add_op()
         "adcs	r10, r2, r10\n\t"
         "adcs	r11, r3, r11\n\t"
         "adcs	r12, r4, r12\n\t"
-        "mov	r3, #0\n\t"
-        "adcs	lr, r5, lr\n\t"
-        "adc	r3, r3, #0\n\t"
+        "adc	lr, r5, lr\n\t"
         "mov	r2, #19\n\t"
-        "lsl	r3, r3, #1\n\t"
-        "orr	r3, r3, lr, lsr #31\n\t"
-        "mul	r2, r3, r2\n\t"
+        "and	r2, r2, lr, asr #31\n\t"
         "adds	r6, r6, r2\n\t"
         "adcs	r7, r7, #0\n\t"
         "adcs	r8, r8, #0\n\t"
@@ -797,6 +789,7 @@ WC_OMIT_FRAME_POINTER int fe_isnegative(const fe a)
 
     __asm__ __volatile__ (
         "ldm	%[a]!, {r2, r3, r4, r5}\n\t"
+        "and	r12, r2, #1\n\t"
         "adds	r1, r2, #19\n\t"
         "adcs	r1, r3, #0\n\t"
         "adcs	r1, r4, #0\n\t"
@@ -805,11 +798,9 @@ WC_OMIT_FRAME_POINTER int fe_isnegative(const fe a)
         "adcs	r1, r2, #0\n\t"
         "adcs	r1, r3, #0\n\t"
         "adcs	r1, r4, #0\n\t"
-        "ldr	r2, [%[a], #-16]\n\t"
         "adc	r1, r5, #0\n\t"
-        "and	%[a], r2, #1\n\t"
         "lsr	r1, r1, #31\n\t"
-        "eor	%[a], %[a], r1\n\t"
+        "eor	%[a], r12, r1\n\t"
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
         : [a] "+r" (a)
         :
@@ -817,7 +808,7 @@ WC_OMIT_FRAME_POINTER int fe_isnegative(const fe a)
         :
         : [a] "r" (a)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
-        : "memory", "cc", "r1", "r2", "r3", "r4", "r5"
+        : "memory", "cc", "r1", "r2", "r3", "r4", "r5", "r12"
     );
     return (word32)(size_t)a;
 }
@@ -2510,9 +2501,9 @@ WC_OMIT_FRAME_POINTER void fe_cmov_table(fe* r, const fe* base, signed char b)
 #if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 6)
 void fe_mul_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_mul_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_mul_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -2902,12 +2893,429 @@ WC_OMIT_FRAME_POINTER void fe_mul_op()
     );
 }
 
+void fe_mul_op_full_red(void);
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op_full_red(void)
+#else
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op_full_red(void)
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+{
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+    __asm__ __volatile__ (
+        "sub	sp, sp, #40\n\t"
+        "str	r0, [sp, #36]\n\t"
+        "mov	r0, #0\n\t"
+        "ldr	r12, [r1]\n\t"
+        /* A[0] * B[0] */
+        "ldr	lr, [r2]\n\t"
+        "umull	r3, r4, r12, lr\n\t"
+        /* A[0] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "umull	r5, r6, r12, lr\n\t"
+        /* A[0] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "umull	r7, r8, r12, lr\n\t"
+        /* A[0] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "umull	r9, r10, r12, lr\n\t"
+        "str	r3, [sp]\n\t"
+        /* A[0] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "mov	r11, r0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[0] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[0] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adcs	r8, r8, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[0] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adcs	r10, r10, #0\n\t"
+        "adc	r3, r0, #0\n\t"
+        "umlal	r10, r3, r12, lr\n\t"
+        /* A[1] * B[0] */
+        "ldr	r12, [r1, #4]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "str	r4, [sp, #4]\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[1] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[1] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[1] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[1] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[1] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[1] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[1] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r4, r0, #0\n\t"
+        "umlal	r3, r4, r12, lr\n\t"
+        /* A[2] * B[0] */
+        "ldr	r12, [r1, #8]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "str	r5, [sp, #8]\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[2] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[2] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[2] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[2] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[2] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[2] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[2] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r5, r0, #0\n\t"
+        "umlal	r4, r5, r12, lr\n\t"
+        /* A[3] * B[0] */
+        "ldr	r12, [r1, #12]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "str	r6, [sp, #12]\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[3] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[3] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[3] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[3] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[3] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[3] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[3] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r6, r0, #0\n\t"
+        "umlal	r5, r6, r12, lr\n\t"
+        /* A[4] * B[0] */
+        "ldr	r12, [r1, #16]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "str	r7, [sp, #16]\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[4] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[4] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[4] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[4] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[4] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[4] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[4] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r7, r0, #0\n\t"
+        "umlal	r6, r7, r12, lr\n\t"
+        /* A[5] * B[0] */
+        "ldr	r12, [r1, #20]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "str	r8, [sp, #20]\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[5] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[5] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[5] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[5] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[5] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[5] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[5] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r8, r0, #0\n\t"
+        "umlal	r7, r8, r12, lr\n\t"
+        /* A[6] * B[0] */
+        "ldr	r12, [r1, #24]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "str	r9, [sp, #24]\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[6] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[6] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[6] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[6] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[6] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[6] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[6] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r9, r0, #0\n\t"
+        "umlal	r8, r9, r12, lr\n\t"
+        /* A[7] * B[0] */
+        "ldr	r12, [r1, #28]\n\t"
+        "ldr	lr, [r2]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "str	r10, [sp, #28]\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[7] * B[1] */
+        "ldr	lr, [r2, #4]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[7] * B[2] */
+        "ldr	lr, [r2, #8]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[7] * B[3] */
+        "ldr	lr, [r2, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[7] * B[4] */
+        "ldr	lr, [r2, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[7] * B[5] */
+        "ldr	lr, [r2, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[7] * B[6] */
+        "ldr	lr, [r2, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[7] * B[7] */
+        "ldr	lr, [r2, #28]\n\t"
+        "adc	r10, r0, #0\n\t"
+        "umlal	r9, r10, r12, lr\n\t"
+        /* Reduce */
+        "ldr	r2, [sp, #28]\n\t"
+        "mov	lr, sp\n\t"
+        "mov	r12, #38\n\t"
+        "umull	r10, r11, r12, r10\n\t"
+        "adds	r10, r10, r2\n\t"
+        "adc	r11, r11, #0\n\t"
+        "mov	r12, #19\n\t"
+        "lsl	r11, r11, #1\n\t"
+        "orr	r11, r11, r10, lsr #31\n\t"
+        "mul	r11, r12, r11\n\t"
+        "ldm	lr!, {r1, r2}\n\t"
+        "mov	r12, #38\n\t"
+        "adds	r1, r1, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r1, r11, r3, r12\n\t"
+        "adds	r2, r2, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r2, r11, r4, r12\n\t"
+        "ldm	lr!, {r3, r4}\n\t"
+        "adds	r3, r3, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r5, r12\n\t"
+        "adds	r4, r4, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r6, r12\n\t"
+        "ldm	lr!, {r5, r6}\n\t"
+        "adds	r5, r5, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r7, r12\n\t"
+        "adds	r6, r6, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r8, r12\n\t"
+        "ldm	lr!, {r7, r8}\n\t"
+        "adds	r7, r7, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r9, r12\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r10, r10, #0x80000000\n\t"
+#else
+        "bfc	r10, #31, #1\n\t"
+#endif
+        "adds	r8, r10, r11\n\t"
+        "adds	r11, r1, #19\n\t"
+        "adcs	r11, r2, #0\n\t"
+        "adcs	r11, r3, #0\n\t"
+        "adcs	r11, r4, #0\n\t"
+        "adcs	r11, r5, #0\n\t"
+        "adcs	r11, r6, #0\n\t"
+        "adcs	r11, r7, #0\n\t"
+        "adc	r11, r8, #0\n\t"
+        "asr	r11, r11, #31\n\t"
+        "and	r11, r11, #19\n\t"
+        "adds	r1, r1, r11\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r8, r8, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r8, r8, #0x80000000\n\t"
+#else
+        "bfc	r8, #31, #1\n\t"
+#endif
+        /* Store */
+        "ldr	r0, [sp, #36]\n\t"
+        "stm	r0, {r1, r2, r3, r4, r5, r6, r7, r8}\n\t"
+        "add	sp, sp, #40\n\t"
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+        :
+        :
+#else
+        :
+        :
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+        : "memory", "cc", "lr"
+    );
+}
+
 #else
 void fe_mul_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_mul_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_mul_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -3056,6 +3464,182 @@ WC_OMIT_FRAME_POINTER void fe_mul_op()
     );
 }
 
+void fe_mul_op_full_red(void);
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op_full_red(void)
+#else
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul_op_full_red(void)
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+{
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+    __asm__ __volatile__ (
+        "sub	sp, sp, #44\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "str	r0, [sp, #36]\n\t"
+        "str	r1, [sp, #40]\n\t"
+#else
+        "strd	r0, r1, [sp, #36]\n\t"
+#endif
+        "mov	lr, r2\n\t"
+        "ldm	r1, {r0, r1, r2, r3}\n\t"
+        "ldm	lr!, {r4, r5, r6}\n\t"
+        "umull	r10, r11, r0, r4\n\t"
+        "umull	r12, r7, r1, r4\n\t"
+        "umaal	r11, r12, r0, r5\n\t"
+        "umull	r8, r9, r2, r4\n\t"
+        "umaal	r12, r8, r1, r5\n\t"
+        "umaal	r12, r7, r0, r6\n\t"
+        "umaal	r8, r9, r3, r4\n\t"
+        "stm	sp, {r10, r11, r12}\n\t"
+        "umaal	r7, r8, r2, r5\n\t"
+        "ldm	lr!, {r4}\n\t"
+        "umull	r10, r11, r1, r6\n\t"
+        "umaal	r8, r9, r2, r6\n\t"
+        "umaal	r7, r10, r0, r4\n\t"
+        "umaal	r8, r11, r3, r5\n\t"
+        "str	r7, [sp, #12]\n\t"
+        "umaal	r8, r10, r1, r4\n\t"
+        "umaal	r9, r11, r3, r6\n\t"
+        "umaal	r9, r10, r2, r4\n\t"
+        "umaal	r10, r11, r3, r4\n\t"
+        "ldm	lr, {r4, r5, r6, r7}\n\t"
+        "mov	r12, #0\n\t"
+        "umlal	r8, r12, r0, r4\n\t"
+        "umaal	r9, r12, r1, r4\n\t"
+        "umaal	r10, r12, r2, r4\n\t"
+        "umaal	r11, r12, r3, r4\n\t"
+        "mov	r4, #0\n\t"
+        "umlal	r9, r4, r0, r5\n\t"
+        "umaal	r10, r4, r1, r5\n\t"
+        "umaal	r11, r4, r2, r5\n\t"
+        "umaal	r12, r4, r3, r5\n\t"
+        "mov	r5, #0\n\t"
+        "umlal	r10, r5, r0, r6\n\t"
+        "umaal	r11, r5, r1, r6\n\t"
+        "umaal	r12, r5, r2, r6\n\t"
+        "umaal	r4, r5, r3, r6\n\t"
+        "mov	r6, #0\n\t"
+        "umlal	r11, r6, r0, r7\n\t"
+        "ldr	r0, [sp, #40]\n\t"
+        "umaal	r12, r6, r1, r7\n\t"
+        "add	r0, r0, #16\n\t"
+        "umaal	r4, r6, r2, r7\n\t"
+        "sub	lr, lr, #16\n\t"
+        "umaal	r5, r6, r3, r7\n\t"
+        "ldm	r0, {r0, r1, r2, r3}\n\t"
+        "str	r6, [sp, #32]\n\t"
+        "ldm	lr!, {r6}\n\t"
+        "mov	r7, #0\n\t"
+        "umlal	r8, r7, r0, r6\n\t"
+        "umaal	r9, r7, r1, r6\n\t"
+        "str	r8, [sp, #16]\n\t"
+        "umaal	r10, r7, r2, r6\n\t"
+        "umaal	r11, r7, r3, r6\n\t"
+        "ldm	lr!, {r6}\n\t"
+        "mov	r8, #0\n\t"
+        "umlal	r9, r8, r0, r6\n\t"
+        "umaal	r10, r8, r1, r6\n\t"
+        "str	r9, [sp, #20]\n\t"
+        "umaal	r11, r8, r2, r6\n\t"
+        "umaal	r12, r8, r3, r6\n\t"
+        "ldm	lr!, {r6}\n\t"
+        "mov	r9, #0\n\t"
+        "umlal	r10, r9, r0, r6\n\t"
+        "umaal	r11, r9, r1, r6\n\t"
+        "str	r10, [sp, #24]\n\t"
+        "umaal	r12, r9, r2, r6\n\t"
+        "umaal	r4, r9, r3, r6\n\t"
+        "ldm	lr!, {r6}\n\t"
+        "mov	r10, #0\n\t"
+        "umlal	r11, r10, r0, r6\n\t"
+        "umaal	r12, r10, r1, r6\n\t"
+        "str	r11, [sp, #28]\n\t"
+        "umaal	r4, r10, r2, r6\n\t"
+        "umaal	r5, r10, r3, r6\n\t"
+        "ldm	lr!, {r11}\n\t"
+        "umaal	r12, r7, r0, r11\n\t"
+        "umaal	r4, r7, r1, r11\n\t"
+        "ldr	r6, [sp, #32]\n\t"
+        "umaal	r5, r7, r2, r11\n\t"
+        "umaal	r6, r7, r3, r11\n\t"
+        "ldm	lr!, {r11}\n\t"
+        "umaal	r4, r8, r0, r11\n\t"
+        "umaal	r5, r8, r1, r11\n\t"
+        "umaal	r6, r8, r2, r11\n\t"
+        "umaal	r7, r8, r3, r11\n\t"
+        "ldm	lr, {r11, lr}\n\t"
+        "umaal	r5, r9, r0, r11\n\t"
+        "umaal	r6, r10, r0, lr\n\t"
+        "umaal	r6, r9, r1, r11\n\t"
+        "umaal	r7, r10, r1, lr\n\t"
+        "umaal	r7, r9, r2, r11\n\t"
+        "umaal	r8, r10, r2, lr\n\t"
+        "umaal	r8, r9, r3, r11\n\t"
+        "umaal	r9, r10, r3, lr\n\t"
+        /* Reduce */
+        "ldr	r0, [sp, #28]\n\t"
+        "mov	lr, #37\n\t"
+        "umaal	r10, r0, r10, lr\n\t"
+        "mov	lr, #19\n\t"
+        "lsl	r0, r0, #1\n\t"
+        "orr	r0, r0, r10, lsr #31\n\t"
+        "mul	r11, r0, lr\n\t"
+        "pop	{r0-r2}\n\t"
+        "mov	lr, #38\n\t"
+        "umaal	r0, r11, r12, lr\n\t"
+        "umaal	r1, r11, r4, lr\n\t"
+        "umaal	r2, r11, r5, lr\n\t"
+        "pop	{r3-r5}\n\t"
+        "umaal	r3, r11, r6, lr\n\t"
+        "umaal	r4, r11, r7, lr\n\t"
+        "umaal	r5, r11, r8, lr\n\t"
+        "pop	{r6}\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r10, r10, #0x80000000\n\t"
+#else
+        "bfc	r10, #31, #1\n\t"
+#endif
+        "umaal	r6, r11, r9, lr\n\t"
+        "add	r7, r10, r11\n\t"
+        "adds	r11, r0, #19\n\t"
+        "adcs	r11, r1, #0\n\t"
+        "adcs	r11, r2, #0\n\t"
+        "adcs	r11, r3, #0\n\t"
+        "adcs	r11, r4, #0\n\t"
+        "adcs	r11, r5, #0\n\t"
+        "adcs	r11, r6, #0\n\t"
+        "adc	r11, r7, #0\n\t"
+        "asr	r11, r11, #31\n\t"
+        "and	r11, r11, #19\n\t"
+        "adds	r0, r0, r11\n\t"
+        "adcs	r1, r1, #0\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adc	r7, r7, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r7, r7, #0x80000000\n\t"
+#else
+        "bfc	r7, #31, #1\n\t"
+#endif
+        "ldr	lr, [sp, #8]\n\t"
+        /* Store */
+        "stm	lr, {r0, r1, r2, r3, r4, r5, r6, r7}\n\t"
+        "add	sp, sp, #16\n\t"
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+        :
+        :
+#else
+        :
+        :
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+        : "memory", "cc", "lr"
+    );
+}
+
 #endif /* WOLFSSL_ARM_ARCH && WOLFSSL_ARM_ARCH < 6 */
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
 WC_OMIT_FRAME_POINTER void fe_mul(fe r_p, const fe a_p, const fe b_p)
@@ -3086,9 +3670,9 @@ WC_OMIT_FRAME_POINTER void fe_mul(fe r, const fe a, const fe b)
 #if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 6)
 void fe_sq_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_sq_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_sq_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -3371,12 +3955,322 @@ WC_OMIT_FRAME_POINTER void fe_sq_op()
     );
 }
 
+void fe_sq_op_full_red(void);
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op_full_red(void)
+#else
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op_full_red(void)
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+{
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+    __asm__ __volatile__ (
+        "sub	sp, sp, #0x44\n\t"
+        "str	r0, [sp, #64]\n\t"
+        /* Square */
+        "mov	r0, #0\n\t"
+        "ldr	r12, [r1]\n\t"
+        /* A[0] * A[1] */
+        "ldr	lr, [r1, #4]\n\t"
+        "umull	r4, r5, r12, lr\n\t"
+        /* A[0] * A[3] */
+        "ldr	lr, [r1, #12]\n\t"
+        "umull	r6, r7, r12, lr\n\t"
+        /* A[0] * A[5] */
+        "ldr	lr, [r1, #20]\n\t"
+        "umull	r8, r9, r12, lr\n\t"
+        /* A[0] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "umull	r10, r3, r12, lr\n\t"
+        /* A[0] * A[2] */
+        "ldr	lr, [r1, #8]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[0] * A[4] */
+        "ldr	lr, [r1, #16]\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[0] * A[6] */
+        "ldr	lr, [r1, #24]\n\t"
+        "adcs	r9, r9, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "str	r4, [sp, #4]\n\t"
+        "str	r5, [sp, #8]\n\t"
+        /* A[1] * A[2] */
+        "ldr	r12, [r1, #4]\n\t"
+        "ldr	lr, [r1, #8]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "str	r6, [sp, #12]\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[1] * A[3] */
+        "ldr	lr, [r1, #12]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, lr\n\t"
+        "str	r7, [sp, #16]\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[1] * A[4] */
+        "ldr	lr, [r1, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[1] * A[5] */
+        "ldr	lr, [r1, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[1] * A[6] */
+        "ldr	lr, [r1, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[1] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "adc	r4, r0, #0\n\t"
+        "umlal	r3, r4, r12, lr\n\t"
+        /* A[2] * A[3] */
+        "ldr	r12, [r1, #8]\n\t"
+        "ldr	lr, [r1, #12]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r8, r11, r12, lr\n\t"
+        "str	r8, [sp, #20]\n\t"
+        "adds	r9, r9, r11\n\t"
+        /* A[2] * A[4] */
+        "ldr	lr, [r1, #16]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, lr\n\t"
+        "str	r9, [sp, #24]\n\t"
+        "adds	r10, r10, r11\n\t"
+        /* A[2] * A[5] */
+        "ldr	lr, [r1, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[2] * A[6] */
+        "ldr	lr, [r1, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[2] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "adc	r5, r0, #0\n\t"
+        "umlal	r4, r5, r12, lr\n\t"
+        /* A[3] * A[4] */
+        "ldr	r12, [r1, #12]\n\t"
+        "ldr	lr, [r1, #16]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r10, r11, r12, lr\n\t"
+        "str	r10, [sp, #28]\n\t"
+        "adds	r3, r3, r11\n\t"
+        /* A[3] * A[5] */
+        "ldr	lr, [r1, #20]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, lr\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[3] * A[6] */
+        "ldr	lr, [r1, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[3] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "adc	r6, r0, #0\n\t"
+        "umlal	r5, r6, r12, lr\n\t"
+        /* A[4] * A[5] */
+        "ldr	r12, [r1, #16]\n\t"
+        "ldr	lr, [r1, #20]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r4, r11, r12, lr\n\t"
+        "adds	r5, r5, r11\n\t"
+        /* A[4] * A[6] */
+        "ldr	lr, [r1, #24]\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, lr\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[4] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "adc	r7, r0, #0\n\t"
+        "umlal	r6, r7, r12, lr\n\t"
+        /* A[5] * A[6] */
+        "ldr	r12, [r1, #20]\n\t"
+        "ldr	lr, [r1, #24]\n\t"
+        "mov	r11, #0\n\t"
+        "umlal	r6, r11, r12, lr\n\t"
+        "adds	r7, r7, r11\n\t"
+        /* A[5] * A[7] */
+        "ldr	lr, [r1, #28]\n\t"
+        "adc	r8, r0, #0\n\t"
+        "umlal	r7, r8, r12, lr\n\t"
+        /* A[6] * A[7] */
+        "ldr	r12, [r1, #24]\n\t"
+        "ldr	lr, [r1, #28]\n\t"
+        "mov	r9, #0\n\t"
+        "umlal	r8, r9, r12, lr\n\t"
+        "add	lr, sp, #32\n\t"
+        "stm	lr, {r3, r4, r5, r6, r7, r8, r9}\n\t"
+        "add	lr, sp, #4\n\t"
+        "ldm	lr, {r4, r5, r6, r7, r8, r9, r10}\n\t"
+        "adds	r4, r4, r4\n\t"
+        "adcs	r5, r5, r5\n\t"
+        "adcs	r6, r6, r6\n\t"
+        "adcs	r7, r7, r7\n\t"
+        "adcs	r8, r8, r8\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "adcs	r10, r10, r10\n\t"
+        "stm	lr!, {r4, r5, r6, r7, r8, r9, r10}\n\t"
+        "ldm	lr, {r3, r4, r5, r6, r7, r8, r9}\n\t"
+        "adcs	r3, r3, r3\n\t"
+        "adcs	r4, r4, r4\n\t"
+        "adcs	r5, r5, r5\n\t"
+        "adcs	r6, r6, r6\n\t"
+        "adcs	r7, r7, r7\n\t"
+        "adcs	r8, r8, r8\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "adc	r10, r0, #0\n\t"
+        "stm	lr, {r3, r4, r5, r6, r7, r8, r9, r10}\n\t"
+        "add	lr, sp, #4\n\t"
+        "ldm	lr, {r4, r5, r6, r7, r8, r9, r10}\n\t"
+        "mov	lr, sp\n\t"
+        /* A[0] * A[0] */
+        "ldr	r12, [r1]\n\t"
+        "umull	r3, r11, r12, r12\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[1] * A[1] */
+        "ldr	r12, [r1, #4]\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, r12\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[2] * A[2] */
+        "ldr	r12, [r1, #8]\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, r12\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[3] * A[3] */
+        "ldr	r12, [r1, #12]\n\t"
+        "adcs	r9, r9, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r9, r11, r12, r12\n\t"
+        "adds	r10, r10, r11\n\t"
+        "stm	lr!, {r3, r4, r5, r6, r7, r8, r9, r10}\n\t"
+        "ldm	lr, {r3, r4, r5, r6, r7, r8, r9, r10}\n\t"
+        /* A[4] * A[4] */
+        "ldr	r12, [r1, #16]\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r12, r12\n\t"
+        "adds	r4, r4, r11\n\t"
+        /* A[5] * A[5] */
+        "ldr	r12, [r1, #20]\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r12, r12\n\t"
+        "adds	r6, r6, r11\n\t"
+        /* A[6] * A[6] */
+        "ldr	r12, [r1, #24]\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r12, r12\n\t"
+        "adds	r8, r8, r11\n\t"
+        /* A[7] * A[7] */
+        "ldr	r12, [r1, #28]\n\t"
+        "adcs	r9, r9, #0\n\t"
+        "adc	r10, r10, #0\n\t"
+        "umlal	r9, r10, r12, r12\n\t"
+        /* Reduce */
+        "ldr	r2, [sp, #28]\n\t"
+        "mov	lr, sp\n\t"
+        "mov	r12, #38\n\t"
+        "umull	r10, r11, r12, r10\n\t"
+        "adds	r10, r10, r2\n\t"
+        "adc	r11, r11, #0\n\t"
+        "mov	r12, #19\n\t"
+        "lsl	r11, r11, #1\n\t"
+        "orr	r11, r11, r10, lsr #31\n\t"
+        "mul	r11, r12, r11\n\t"
+        "ldm	lr!, {r1, r2}\n\t"
+        "mov	r12, #38\n\t"
+        "adds	r1, r1, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r1, r11, r3, r12\n\t"
+        "adds	r2, r2, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r2, r11, r4, r12\n\t"
+        "ldm	lr!, {r3, r4}\n\t"
+        "adds	r3, r3, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r3, r11, r5, r12\n\t"
+        "adds	r4, r4, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r4, r11, r6, r12\n\t"
+        "ldm	lr!, {r5, r6}\n\t"
+        "adds	r5, r5, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r5, r11, r7, r12\n\t"
+        "adds	r6, r6, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r6, r11, r8, r12\n\t"
+        "ldm	lr!, {r7, r8}\n\t"
+        "adds	r7, r7, r11\n\t"
+        "adc	r11, r0, #0\n\t"
+        "umlal	r7, r11, r9, r12\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r10, r10, #0x80000000\n\t"
+#else
+        "bfc	r10, #31, #1\n\t"
+#endif
+        "adds	r8, r10, r11\n\t"
+        "adds	r11, r1, #19\n\t"
+        "adcs	r11, r2, #0\n\t"
+        "adcs	r11, r3, #0\n\t"
+        "adcs	r11, r4, #0\n\t"
+        "adcs	r11, r5, #0\n\t"
+        "adcs	r11, r6, #0\n\t"
+        "adcs	r11, r7, #0\n\t"
+        "adc	r11, r8, #0\n\t"
+        "asr	r11, r11, #31\n\t"
+        "and	r11, r11, #19\n\t"
+        "adds	r1, r1, r11\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r8, r8, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r8, r8, #0x80000000\n\t"
+#else
+        "bfc	r8, #31, #1\n\t"
+#endif
+        /* Store */
+        "ldr	r0, [sp, #64]\n\t"
+        "stm	r0, {r1, r2, r3, r4, r5, r6, r7, r8}\n\t"
+        "add	sp, sp, #0x44\n\t"
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+        :
+        :
+#else
+        :
+        :
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+        : "memory", "cc", "lr"
+    );
+}
+
 #else
 void fe_sq_op(void);
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_sq_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op(void)
 #else
-WC_OMIT_FRAME_POINTER void fe_sq_op()
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op(void)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -3511,6 +4405,168 @@ WC_OMIT_FRAME_POINTER void fe_sq_op()
     );
 }
 
+void fe_sq_op_full_red(void);
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op_full_red(void)
+#else
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq_op_full_red(void)
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+{
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+    __asm__ __volatile__ (
+        "sub	sp, sp, #32\n\t"
+        "str	r0, [sp, #28]\n\t"
+        "ldm	r1, {r0, r1, r2, r3, r4, r5, r6, r7}\n\t"
+        /* Square */
+        "umull	r9, r10, r0, r0\n\t"
+        "umull	r11, r12, r0, r1\n\t"
+        "adds	r11, r11, r11\n\t"
+        "mov	lr, #0\n\t"
+        "umaal	r10, r11, lr, lr\n\t"
+        "stm	sp, {r9, r10}\n\t"
+        "mov	r8, lr\n\t"
+        "umaal	r8, r12, r0, r2\n\t"
+        "adcs	r8, r8, r8\n\t"
+        "umaal	r8, r11, r1, r1\n\t"
+        "umull	r9, r10, r0, r3\n\t"
+        "umaal	r9, r12, r1, r2\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "umaal	r9, r11, lr, lr\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "str	r8, [sp, #8]\n\t"
+        "str	r9, [sp, #12]\n\t"
+#else
+        "strd	r8, r9, [sp, #8]\n\t"
+#endif
+        "mov	r9, lr\n\t"
+        "umaal	r9, r10, r0, r4\n\t"
+        "umaal	r9, r12, r1, r3\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "umaal	r9, r11, r2, r2\n\t"
+        "str	r9, [sp, #16]\n\t"
+        "umull	r9, r8, r0, r5\n\t"
+        "umaal	r9, r12, r1, r4\n\t"
+        "umaal	r9, r10, r2, r3\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "umaal	r9, r11, lr, lr\n\t"
+        "str	r9, [sp, #20]\n\t"
+        "mov	r9, lr\n\t"
+        "umaal	r9, r8, r0, r6\n\t"
+        "umaal	r9, r12, r1, r5\n\t"
+        "umaal	r9, r10, r2, r4\n\t"
+        "adcs	r9, r9, r9\n\t"
+        "umaal	r9, r11, r3, r3\n\t"
+        "str	r9, [sp, #24]\n\t"
+        "umull	r0, r9, r0, r7\n\t"
+        "umaal	r0, r8, r1, r6\n\t"
+        "umaal	r0, r12, r2, r5\n\t"
+        "umaal	r0, r10, r3, r4\n\t"
+        "adcs	r0, r0, r0\n\t"
+        "umaal	r0, r11, lr, lr\n\t"
+        /* R[7] = r0 */
+        "umaal	r9, r8, r1, r7\n\t"
+        "umaal	r9, r10, r2, r6\n\t"
+        "umaal	r12, r9, r3, r5\n\t"
+        "adcs	r12, r12, r12\n\t"
+        "umaal	r12, r11, r4, r4\n\t"
+        /* R[8] = r12 */
+        "umaal	r9, r8, r2, r7\n\t"
+        "umaal	r10, r9, r3, r6\n\t"
+        "mov	r2, lr\n\t"
+        "umaal	r10, r2, r4, r5\n\t"
+        "adcs	r10, r10, r10\n\t"
+        "umaal	r11, r10, lr, lr\n\t"
+        /* R[9] = r11 */
+        "umaal	r2, r8, r3, r7\n\t"
+        "umaal	r2, r9, r4, r6\n\t"
+        "adcs	r3, r2, r2\n\t"
+        "umaal	r10, r3, r5, r5\n\t"
+        /* R[10] = r10 */
+        "mov	r1, lr\n\t"
+        "umaal	r1, r8, r4, r7\n\t"
+        "umaal	r1, r9, r5, r6\n\t"
+        "adcs	r4, r1, r1\n\t"
+        "umaal	r3, r4, lr, lr\n\t"
+        /* R[11] = r3 */
+        "umaal	r8, r9, r5, r7\n\t"
+        "adcs	r8, r8, r8\n\t"
+        "umaal	r4, r8, r6, r6\n\t"
+        /* R[12] = r4 */
+        "mov	r5, lr\n\t"
+        "umaal	r5, r9, r6, r7\n\t"
+        "adcs	r5, r5, r5\n\t"
+        "umaal	r8, r5, lr, lr\n\t"
+        /* R[13] = r8 */
+        "adcs	r9, r9, r9\n\t"
+        "umaal	r9, r5, r7, r7\n\t"
+        "adcs	r7, r5, lr\n\t"
+        /* R[14] = r9 */
+        /* R[15] = r7 */
+        /* Reduce */
+        "mov	r6, #37\n\t"
+        "umaal	r7, r0, r7, r6\n\t"
+        "mov	r6, #19\n\t"
+        "lsl	r0, r0, #1\n\t"
+        "orr	r0, r0, r7, lsr #31\n\t"
+        "mul	lr, r0, r6\n\t"
+        "pop	{r0-r1}\n\t"
+        "mov	r6, #38\n\t"
+        "umaal	r0, lr, r12, r6\n\t"
+        "umaal	r1, lr, r11, r6\n\t"
+        "mov	r12, r3\n\t"
+        "mov	r11, r4\n\t"
+        "pop	{r2-r4}\n\t"
+        "umaal	r2, lr, r10, r6\n\t"
+        "umaal	r3, lr, r12, r6\n\t"
+        "umaal	r4, lr, r11, r6\n\t"
+        "mov	r12, r6\n\t"
+        "pop	{r5-r6}\n\t"
+        "umaal	r5, lr, r8, r12\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r7, r7, #0x80000000\n\t"
+#else
+        "bfc	r7, #31, #1\n\t"
+#endif
+        "umaal	r6, lr, r9, r12\n\t"
+        "add	r7, r7, lr\n\t"
+        "adds	lr, r0, #19\n\t"
+        "adcs	lr, r1, #0\n\t"
+        "adcs	lr, r2, #0\n\t"
+        "adcs	lr, r3, #0\n\t"
+        "adcs	lr, r4, #0\n\t"
+        "adcs	lr, r5, #0\n\t"
+        "adcs	lr, r6, #0\n\t"
+        "adc	lr, r7, #0\n\t"
+        "asr	lr, lr, #31\n\t"
+        "and	lr, lr, #19\n\t"
+        "adds	r0, r0, lr\n\t"
+        "adcs	r1, r1, #0\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adc	r7, r7, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r7, r7, #0x80000000\n\t"
+#else
+        "bfc	r7, #31, #1\n\t"
+#endif
+        "pop	{lr}\n\t"
+        /* Store */
+        "stm	lr, {r0, r1, r2, r3, r4, r5, r6, r7}\n\t"
+#ifndef WOLFSSL_NO_VAR_ASSIGN_REG
+        :
+        :
+#else
+        :
+        :
+#endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
+        : "memory", "cc", "lr"
+    );
+}
+
 #endif /* WOLFSSL_ARM_ARCH && WOLFSSL_ARM_ARCH < 6 */
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
 WC_OMIT_FRAME_POINTER void fe_sq(fe r_p, const fe a_p)
@@ -3540,9 +4596,9 @@ WC_OMIT_FRAME_POINTER void fe_sq(fe r, const fe a)
 #ifdef HAVE_CURVE25519
 #if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 6)
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_mul121666(fe r_p, fe a_p)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul121666(fe r_p, fe a_p)
 #else
-WC_OMIT_FRAME_POINTER void fe_mul121666(fe r, fe a)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul121666(fe r, fe a)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -3624,9 +4680,9 @@ WC_OMIT_FRAME_POINTER void fe_mul121666(fe r, fe a)
 
 #else
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_mul121666(fe r_p, fe a_p)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul121666(fe r_p, fe a_p)
 #else
-WC_OMIT_FRAME_POINTER void fe_mul121666(fe r, fe a)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_mul121666(fe r, fe a)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -3871,17 +4927,17 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "ldr	r2, [sp, #160]\n\t"
         "add	r1, sp, #0x60\n\t"
         "add	r0, sp, #32\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x80\n\t"
         "mov	r1, sp\n\t"
         "mov	r0, sp\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r1, sp, #0x80\n\t"
         "add	r0, sp, #0x80\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "ldr	r1, [sp, #160]\n\t"
         "add	r0, sp, #0x60\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "mov	r3, sp\n\t"
         "add	r2, sp, #32\n\t"
         "mov	r1, sp\n\t"
@@ -3890,7 +4946,7 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "add	r2, sp, #0x80\n\t"
         "add	r1, sp, #0x60\n\t"
         "ldr	r0, [sp, #160]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x80\n\t"
         "add	r1, sp, #0x60\n\t"
         "add	r0, sp, #0x60\n\t"
@@ -3903,7 +4959,7 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "bl	fe_mul121666\n\t"
         "add	r1, sp, #0x40\n\t"
         "add	r0, sp, #0x40\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "add	r2, sp, #32\n\t"
         "add	r1, sp, #0x80\n\t"
         "add	r0, sp, #0x80\n\t"
@@ -3911,11 +4967,11 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "mov	r2, sp\n\t"
         "ldr	r1, [sp, #168]\n\t"
         "add	r0, sp, #32\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x80\n\t"
         "add	r1, sp, #0x60\n\t"
         "mov	r0, sp\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "ldr	%[a], [sp, #176]\n\t"
         "ldr	%[n], [sp, #180]\n\t"
         "subs	%[n], %[n], #1\n\t"
@@ -4208,17 +5264,17 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "ldr	r2, [sp, #176]\n\t"
         "add	r1, sp, #0x60\n\t"
         "ldr	r0, [sp, #188]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x80\n\t"
         "ldr	r1, [sp, #184]\n\t"
         "ldr	r0, [sp, #184]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r1, sp, #0x80\n\t"
         "add	r0, sp, #0x60\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "ldr	r1, [sp, #176]\n\t"
         "add	r0, sp, #0x80\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "ldr	r3, [sp, #184]\n\t"
         "ldr	r2, [sp, #188]\n\t"
         "ldr	r1, [sp, #184]\n\t"
@@ -4227,7 +5283,7 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "add	r2, sp, #0x60\n\t"
         "add	r1, sp, #0x80\n\t"
         "ldr	r0, [sp, #176]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x60\n\t"
         "add	r1, sp, #0x80\n\t"
         "add	r0, sp, #0x80\n\t"
@@ -4240,7 +5296,7 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "bl	fe_mul121666\n\t"
         "ldr	r1, [sp, #180]\n\t"
         "ldr	r0, [sp, #180]\n\t"
-        "bl	fe_sq_op\n\t"
+        "bl	fe_sq_op_full_red\n\t"
         "ldr	r2, [sp, #188]\n\t"
         "add	r1, sp, #0x60\n\t"
         "add	r0, sp, #0x60\n\t"
@@ -4248,11 +5304,11 @@ WC_OMIT_FRAME_POINTER int curve25519(byte* r, const byte* n, const byte* a)
         "ldr	r2, [sp, #184]\n\t"
         "ldr	r1, [sp, #172]\n\t"
         "ldr	r0, [sp, #188]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "add	r2, sp, #0x60\n\t"
         "add	r1, sp, #0x80\n\t"
         "ldr	r0, [sp, #184]\n\t"
-        "bl	fe_mul_op\n\t"
+        "bl	fe_mul_op_full_red\n\t"
         "ldr	%[a], [sp, #168]\n\t"
         "subs	%[a], %[a], #1\n\t"
         "bge	L_curve25519_bits_%=\n\t"
@@ -4645,9 +5701,9 @@ WC_OMIT_FRAME_POINTER void fe_invert(fe r, const fe a)
 
 #if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 6)
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_sq2(fe r_p, const fe a_p)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq2(fe r_p, const fe a_p)
 #else
-WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -4959,6 +6015,29 @@ WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
 #endif
         "adcs	r7, r7, #0\n\t"
         "adc	r8, r8, #0\n\t"
+        "adds	r11, r1, #19\n\t"
+        "adcs	r11, r2, #0\n\t"
+        "adcs	r11, r3, #0\n\t"
+        "adcs	r11, r4, #0\n\t"
+        "adcs	r11, r5, #0\n\t"
+        "adcs	r11, r6, #0\n\t"
+        "adcs	r11, r7, #0\n\t"
+        "adc	r11, r8, #0\n\t"
+        "asr	r11, r11, #31\n\t"
+        "and	r11, r11, #19\n\t"
+        "adds	r1, r1, r11\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adcs	r7, r7, #0\n\t"
+        "adc	r8, r8, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r8, r8, #0x80000000\n\t"
+#else
+        "bfc	r8, #31, #1\n\t"
+#endif
         /* Store */
         "ldr	r0, [sp, #64]\n\t"
         "stm	r0, {r1, r2, r3, r4, r5, r6, r7, r8}\n\t"
@@ -4976,9 +6055,9 @@ WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
 
 #else
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
-WC_OMIT_FRAME_POINTER void fe_sq2(fe r_p, const fe a_p)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq2(fe r_p, const fe a_p)
 #else
-WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
+WC_KEEP_FOR_ASM WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
 #endif /* !WOLFSSL_NO_VAR_ASSIGN_REG */
 {
 #ifndef WOLFSSL_NO_VAR_ASSIGN_REG
@@ -5148,6 +6227,29 @@ WC_OMIT_FRAME_POINTER void fe_sq2(fe r, const fe a)
 #endif
         "adcs	r6, r6, #0\n\t"
         "adc	r7, r7, #0\n\t"
+        "adds	r12, r0, #19\n\t"
+        "adcs	r12, r1, #0\n\t"
+        "adcs	r12, r2, #0\n\t"
+        "adcs	r12, r3, #0\n\t"
+        "adcs	r12, r4, #0\n\t"
+        "adcs	r12, r5, #0\n\t"
+        "adcs	r12, r6, #0\n\t"
+        "adc	r12, r7, #0\n\t"
+        "asr	r12, r12, #31\n\t"
+        "and	r12, r12, #19\n\t"
+        "adds	r0, r0, r12\n\t"
+        "adcs	r1, r1, #0\n\t"
+        "adcs	r2, r2, #0\n\t"
+        "adcs	r3, r3, #0\n\t"
+        "adcs	r4, r4, #0\n\t"
+        "adcs	r5, r5, #0\n\t"
+        "adcs	r6, r6, #0\n\t"
+        "adc	r7, r7, #0\n\t"
+#if defined(WOLFSSL_ARM_ARCH) && (WOLFSSL_ARM_ARCH < 7)
+        "bic	r7, r7, #0x80000000\n\t"
+#else
+        "bfc	r7, #31, #1\n\t"
+#endif
         "pop	{r12, lr}\n\t"
         /* Store */
         "stm	r12, {r0, r1, r2, r3, r4, r5, r6, r7}\n\t"
@@ -9347,7 +10449,7 @@ WC_OMIT_FRAME_POINTER void sc_muladd(byte* s, const byte* a, const byte* b,
 
 #endif /* !CURVE25519_SMALL || !ED25519_SMALL */
 #endif /* HAVE_CURVE25519 || HAVE_ED25519 */
-#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
-#endif /* WOLFSSL_ARMASM */
 
 #endif /* WOLFSSL_ARMASM_INLINE */
+#endif /* !__aarch64__ && !WOLFSSL_ARMASM_THUMB2 */
+#endif /* WOLFSSL_ARMASM */

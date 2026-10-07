@@ -245,6 +245,19 @@ int wc_HKDF_Extract(
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
+    \return WC_PENDING_E May be returned in a WOLF_CRYPTO_CB build when the
+    registered crypto callback device has taken the request but not yet
+    finished it. The caller must re-invoke with identical arguments until the
+    result is no longer WC_PENDING_E; HKDF has no WC_ASYNC_DEV, so this is a
+    poll and not a wc_AsyncWait(). In a WOLFSSL_ASYNC_CRYPT build the TLS 1.3
+    key schedule resumes a pending HKDF request by re-invoking the callback
+    with identical arguments; without WOLFSSL_ASYNC_CRYPT a device also used
+    for TLS 1.3 must complete HKDF requests synchronously. wc_HKDF_ex()
+    follows the same contract and re-issues its extract step on every retry,
+    so a device that pends must serve a repeated identical request from its
+    completed result. There is no request handle: a device should key its
+    completion tracking on the output pointer plus the argument tuple, and
+    one that cannot correlate a retry that way must not pend.
 
     \param type hash type to use for the HKDF. Valid types are: WC_MD5, WC_SHA,
     WC_SHA256, WC_SHA384, WC_SHA512, WC_SHA3_224, WC_SHA3_256, WC_SHA3_384 or
@@ -254,7 +267,8 @@ int wc_HKDF_Extract(
     \param saltSz length of the salt. Use 0 if not using a salt
     \param inKey pointer to the buffer containing the key to use for KDF
     \param inKeySz length of the input key
-    \param out pointer to the buffer in which to store the derived key
+    \param out pointer to the buffer in which to store the derived key. Must be
+    digest length per hash 'type'.  See wc_HmacSizeByType()
     \param heap  heap hint to use for memory. Can be NULL
     \param devId ID to use with crypto callbacks or async hardware. Set to INVALID_DEVID (-2) if not used
 
@@ -275,6 +289,7 @@ int wc_HKDF_Extract(
     \sa wc_HKDF_Extract
     \sa wc_HKDF_Expand
     \sa wc_HKDF_Expand_ex
+    \sa wc_HmacSizeByType
 */
 int wc_HKDF_Extract_ex(
     int type,
@@ -355,6 +370,19 @@ int wc_HKDF_Expand(
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
+    \return WC_PENDING_E May be returned in a WOLF_CRYPTO_CB build when the
+    registered crypto callback device has taken the request but not yet
+    finished it. The caller must re-invoke with identical arguments until the
+    result is no longer WC_PENDING_E; HKDF has no WC_ASYNC_DEV, so this is a
+    poll and not a wc_AsyncWait(). In a WOLFSSL_ASYNC_CRYPT build the TLS 1.3
+    key schedule resumes a pending HKDF request by re-invoking the callback
+    with identical arguments; without WOLFSSL_ASYNC_CRYPT a device also used
+    for TLS 1.3 must complete HKDF requests synchronously. wc_HKDF_ex()
+    follows the same contract and re-issues its extract step on every retry,
+    so a device that pends must serve a repeated identical request from its
+    completed result. There is no request handle: a device should key its
+    completion tracking on the output pointer plus the argument tuple, and
+    one that cannot correlate a retry that way must not pend.
 
     \param type hash type to use for the HKDF. Valid types are: WC_MD5, WC_SHA,
     WC_SHA256, WC_SHA384, WC_SHA512, WC_SHA3_224, WC_SHA3_256, WC_SHA3_384 or
@@ -403,27 +431,30 @@ int wc_HKDF_Expand_ex(
     key derivation
 
     \return 0 Returned upon successfully generating a key with the given inputs
-    \return BAD_FUNC_ARG Returned if an invalid hash type is given (see type param)
+    \return BAD_FUNC_ARG Returned if an invalid hash type is given (see digest
+    param), if prk is NULL, or if ikm is NULL and ikmLen is not 0
     \return MEMORY_E Returned if there is an error allocating memory
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
 
     \param prk     Generated pseudorandom key
-    \param salt    salt.
+    \param salt    salt. May be NULL, in which case saltLen is ignored
     \param saltLen length of the salt
-    \param ikm     pointer to putput for keying material
-    \param ikmLen  length of the input keying material buffer
-    \param digest  hash type to use for the HKDF. Valid types are: WC_SHA256, WC_SHA384 or WC_SHA512
+    \param ikm     input keying material. May be NULL when ikmLen is 0
+    \param ikmLen  length of the input keying material. 0 substitutes a digest
+    length zeroed IKM per RFC 8446, not an empty IKM
+    \param digest  hash type to use for the HKDF. Valid types are: WC_SHA256,
+    WC_SHA384, WC_SHA512 or WC_SM3
 
     _Example_
     \code
-    byte secret[] = { // initialize with random key };
+    byte ikm[] = { // initialize with input keying material };
     byte salt[] = { // initialize with optional salt };
-    byte masterSecret[MAX_DIGEST_SIZE];
+    byte prk[MAX_DIGEST_SIZE];
 
-    int ret = wc_Tls13_HKDF_Extract(secret, salt, sizeof(salt), 0,
-        masterSecret, sizeof(masterSecret), WC_SHA512);
+    int ret = wc_Tls13_HKDF_Extract(prk, salt, sizeof(salt), ikm, sizeof(ikm),
+        WC_SHA512);
     if ( ret != 0 ) {
 	    // error generating derived key
     }
@@ -448,29 +479,38 @@ int wc_Tls13_HKDF_Extract(
     key derivation. This is the _ex version adding heap hint and device identifier.
 
     \return 0 Returned upon successfully generating a key with the given inputs
-    \return BAD_FUNC_ARG Returned if an invalid hash type is given (see type param)
+    \return BAD_FUNC_ARG Returned if an invalid hash type is given (see digest
+    param), if prk is NULL, or if ikm is NULL and ikmLen is not 0
     \return MEMORY_E Returned if there is an error allocating memory
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
+    \return WC_PENDING_E May be returned in a WOLF_CRYPTO_CB build when the
+    registered crypto callback device has taken the request but not yet
+    finished it; the caller re-invokes with identical arguments until the
+    result is no longer WC_PENDING_E. The TLS 1.3 key schedule does this in
+    WOLFSSL_ASYNC_CRYPT builds.
 
     \param prk     Generated pseudorandom key
-    \param salt    Salt.
+    \param salt    Salt. May be NULL; saltLen is then ignored unless a crypto
+    callback handles the request
     \param saltLen Length of the salt
-    \param ikm     Pointer to output for keying material
-    \param ikmLen  Length of the input keying material buffer
-    \param digest  Hash type to use for the HKDF. Valid types are: WC_SHA256, WC_SHA384 or WC_SHA512
+    \param ikm     Input keying material. May be NULL when ikmLen is 0
+    \param ikmLen  Length of the input keying material. 0 substitutes a digest
+    length zeroed IKM per RFC 8446, not an empty IKM
+    \param digest  Hash type to use for the HKDF. Valid types are: WC_SHA256,
+    WC_SHA384, WC_SHA512 or WC_SM3
     \param heap    Heap hint to use for memory. Can be NULL
     \param devId   ID to use with crypto callbacks or async hardware. Set to INVALID_DEVID (-2) if not used
 
     _Example_
     \code
-    byte secret[] = { // initialize with random key };
+    byte ikm[] = { // initialize with input keying material };
     byte salt[] = { // initialize with optional salt };
-    byte masterSecret[MAX_DIGEST_SIZE];
+    byte prk[MAX_DIGEST_SIZE];
 
-    int ret = wc_Tls13_HKDF_Extract_ex(secret, salt, sizeof(salt), 0,
-        masterSecret, sizeof(masterSecret), WC_SHA512, NULL, INVALID_DEVID);
+    int ret = wc_Tls13_HKDF_Extract_ex(prk, salt, sizeof(salt), ikm,
+        sizeof(ikm), WC_SHA512, NULL, INVALID_DEVID);
     if ( ret != 0 ) {
 	    // error generating derived key
     }
@@ -501,6 +541,11 @@ int wc_Tls13_HKDF_Extract_ex(
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
+    \return WC_PENDING_E May be returned in a WOLF_CRYPTO_CB build when the
+    registered crypto callback device has taken the request but not yet
+    finished it; the caller re-invokes with identical arguments until the
+    result is no longer WC_PENDING_E. The TLS 1.3 key schedule does this in
+    WOLFSSL_ASYNC_CRYPT builds.
 
     \param okm         Generated pseudorandom key - output key material.
     \param okmLen      Length of generated pseudorandom key - output key material.
@@ -582,6 +627,11 @@ int wc_Tls13_HKDF_Expand_Label(
     \return HMAC_MIN_KEYLEN_E May be returned when using a FIPS implementation
     and the key length specified is shorter than the minimum acceptable FIPS
     standard
+    \return WC_PENDING_E May be returned in a WOLF_CRYPTO_CB build when the
+    registered crypto callback device has taken the request but not yet
+    finished it; the caller re-invokes with identical arguments until the
+    result is no longer WC_PENDING_E. The TLS 1.3 key schedule does this in
+    WOLFSSL_ASYNC_CRYPT builds.
 
     \param okm         Generated pseudorandom key - output key material.
     \param okmLen      Length of generated pseudorandom key - output key material.

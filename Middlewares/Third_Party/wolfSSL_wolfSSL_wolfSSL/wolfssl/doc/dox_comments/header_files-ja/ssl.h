@@ -2267,7 +2267,7 @@ int wolfSSL_GetSessionAtIndex(int index, WOLFSSL_SESSION* session);
 /*!
     \ingroup Setup
 
-    \brief この関数はリモートピアの検証方法を設定し、また検証コールバックをSSLコンテキストに登録できるようにします。検証コールバックは検証失敗が発生した場合にのみ呼び出されます。検証コールバックが不要な場合は、verify_callbackにNULLポインタを使用できます。ピア証明書の検証モードは論理OR演算されたフラグのリストです。可能なフラグ値は以下の通りです。SSL_VERIFY_NONE クライアントモード：クライアントはサーバーから受信した証明書を検証せず、ハンドシェイクは通常通り続行されます。サーバーモード：サーバーはクライアントに証明書要求を送信しません。したがって、クライアント検証は有効になりません。SSL_VERIFY_PEER クライアントモード：クライアントはハンドシェイク中にサーバーから受信した証明書を検証します。これはwolfSSLではデフォルトで有効になっているため、このオプションを使用しても効果はありません。サーバーモード：サーバーはクライアントに証明書要求を送信し、受信したクライアント証明書を検証します。SSL_VERIFY_FAIL_IF_NO_PEER_CERT クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：クライアントが要求されたときに証明書の送信に失敗した場合（SSLサーバーでSSL_VERIFY_PEERを使用している場合）、サーバー側で検証が失敗します。SSL_VERIFY_FAIL_EXCEPT_PSK クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：検証はSSL_VERIFY_FAIL_IF_NO_PEER_CERTと同じですが、PSK接続の場合を除きます。PSK接続が行われている場合、接続はピア証明書なしで続行されます。
+    \brief この関数はリモートピアの検証方法を設定し、また検証コールバックをSSLコンテキストに登録できるようにします。検証コールバックは検証失敗が発生した場合にのみ呼び出されます。検証コールバックが不要な場合は、verify_callbackにNULLポインタを使用できます。ピア証明書の検証モードは論理OR演算されたフラグのリストです。可能なフラグ値は以下の通りです。SSL_VERIFY_NONE クライアントモード：クライアントはサーバーから受信した証明書を検証せず、ハンドシェイクは通常通り続行されます。サーバーモード：サーバーはクライアントに証明書要求を送信しません。したがって、クライアント検証は有効になりません。SSL_VERIFY_PEER クライアントモード：クライアントはハンドシェイク中にサーバーから受信した証明書を検証します。これはwolfSSLではデフォルトで有効になっているため、このオプションを使用しても効果はありません。サーバーモード：サーバーはクライアントに証明書要求を送信し、受信したクライアント証明書を検証します。SSL_VERIFY_FAIL_IF_NO_PEER_CERT クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：クライアントが要求されたときに証明書の送信に失敗した場合（SSLサーバーでSSL_VERIFY_PEERを使用している場合）、サーバー側で検証が失敗します。SSL_VERIFY_FAIL_EXCEPT_PSK クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：検証はSSL_VERIFY_FAIL_IF_NO_PEER_CERTと同じですが、PSK接続の場合を除きます。PSK接続が行われている場合、接続はピア証明書なしで続行されます。SSL_VERIFY_CLIENT_ONCE 受け入れられますが無視されます。OpenSSL由来のコードをそのままコンパイルできるように用意されているフラグで、wolfSSLはこのビットに対して何も行わず、保存もしないため、wolfSSL_get_verify_mode()やwolfSSL_CTX_get_verify_mode()から返されることはありません。modeに含めても他のフラグには影響しません。
 
     \return none 返り値はありません。
 
@@ -2291,7 +2291,7 @@ void wolfSSL_CTX_set_verify(WOLFSSL_CTX* ctx, int mode,
 /*!
     \ingroup Setup
 
-    \brief この関数はリモートピアの検証方法を設定し、また検証コールバックをSSLセッションに登録できるようにします。検証コールバックは検証失敗が発生した場合にのみ呼び出されます。検証コールバックが不要な場合は、verify_callbackにNULLポインタを使用できます。ピア証明書の検証モードは論理OR演算されたフラグのリストです。可能なフラグ値は以下の通りです。SSL_VERIFY_NONE クライアントモード：クライアントはサーバーから受信した証明書を検証せず、ハンドシェイクは通常通り続行されます。サーバーモード：サーバーはクライアントに証明書要求を送信しません。したがって、クライアント検証は有効になりません。SSL_VERIFY_PEER クライアントモード：クライアントはハンドシェイク中にサーバーから受信した証明書を検証します。これはwolfSSLではデフォルトで有効になっているため、このオプションを使用しても効果はありません。サーバーモード：サーバーはクライアントに証明書要求を送信し、受信したクライアント証明書を検証します。SSL_VERIFY_FAIL_IF_NO_PEER_CERT クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：クライアントが要求されたときに証明書の送信に失敗した場合（SSLサーバーでSSL_VERIFY_PEERを使用している場合）、サーバー側で検証が失敗します。SSL_VERIFY_FAIL_EXCEPT_PSK クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：検証はSSL_VERIFY_FAIL_IF_NO_PEER_CERTと同じですが、PSK接続の場合を除きます。PSK接続が行われている場合、接続はピア証明書なしで続行されます。
+    \brief この関数はリモートピアの検証方法を設定し、また検証コールバックをSSLセッションに登録できるようにします。検証コールバックは検証失敗が発生した場合にのみ呼び出されます。検証コールバックが不要な場合は、verify_callbackにNULLポインタを使用できます。ピア証明書の検証モードは論理OR演算されたフラグのリストです。可能なフラグ値は以下の通りです。SSL_VERIFY_NONE クライアントモード：クライアントはサーバーから受信した証明書を検証せず、ハンドシェイクは通常通り続行されます。サーバーモード：サーバーはクライアントに証明書要求を送信しません。したがって、クライアント検証は有効になりません。SSL_VERIFY_PEER クライアントモード：クライアントはハンドシェイク中にサーバーから受信した証明書を検証します。これはwolfSSLではデフォルトで有効になっているため、このオプションを使用しても効果はありません。サーバーモード：サーバーはクライアントに証明書要求を送信し、受信したクライアント証明書を検証します。SSL_VERIFY_FAIL_IF_NO_PEER_CERT クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：クライアントが要求されたときに証明書の送信に失敗した場合（SSLサーバーでSSL_VERIFY_PEERを使用している場合）、サーバー側で検証が失敗します。SSL_VERIFY_FAIL_EXCEPT_PSK クライアントモード：クライアント側で使用しても効果はありません。サーバーモード：検証はSSL_VERIFY_FAIL_IF_NO_PEER_CERTと同じですが、PSK接続の場合を除きます。PSK接続が行われている場合、接続はピア証明書なしで続行されます。SSL_VERIFY_CLIENT_ONCE 受け入れられますが無視されます。OpenSSL由来のコードをそのままコンパイルできるように用意されているフラグで、wolfSSLはこのビットに対して何も行わず、保存もしないため、wolfSSL_get_verify_mode()やwolfSSL_CTX_get_verify_mode()から返されることはありません。modeに含めても他のフラグには影響しません。
 
     \return none 返り値はありません。
 
@@ -4529,6 +4529,138 @@ int  wolfSSL_CTX_get_read_ahead(WOLFSSL_CTX* ctx);
     \sa wolfSSL_CTX_get_read_ahead
 */
 int  wolfSSL_CTX_set_read_ahead(WOLFSSL_CTX* ctx, int v);
+
+/*!
+    \ingroup Setup
+
+    \brief この関数は、このWOLFSSL_CTXから作成されるセッションに対して、リードアヘッドの
+    受信ウィンドウサイズを設定します。リードアヘッドが有効な場合
+    （wolfSSL_CTX_set_read_ahead()）、1回のrecv()で最大 \p len バイトを読み込みます。
+      - \p len が0の場合、ウィンドウは1レコード分のデフォルトにリセットされます。これは
+        新しく作成されたコンテキストがすでに持つウィンドウでもあり、レコードのボディが
+        ヘッダーと一緒に読み込まれるため、2回目のシステムコールを必要としません。
+      - \p len が1レコードより大きい場合、1回のrecv()で連続する複数のレコードをまとめて
+        読み込むことができ、レコードごとに1回ではなく1回のシステムコールで済みます。
+      - \p len が1レコードより小さい場合、ピアのレコードが小さいと分かっているとき
+        （例：4KB）に受信バッファのフットプリントを抑え、1レコード分のデフォルトと比べて
+        ヒープを節約します。
+    \p len は投機的な先読みウィンドウであり、上限ではありません。\p len より大きな
+    レコードも正しく受信されます。入力バッファはそのレコードの実際のサイズまでオンデマンドで
+    拡張され（そのレコードについては追加のシステムコールと再割り当てのコストがかかります）、
+    その後ウィンドウサイズまで縮小されます。そのため、保持されるフットプリントは、観測された
+    最大のレコードではなく \p len によって制限されたままになります。この設定は、ライブラリが
+    リードアヘッドサポート付き（--enable-readahead / WOLFSSL_TLS_READ_AHEAD）で
+    ビルドされている場合にのみI/Oに影響します。それ以外の場合、値は保存されますが効果は
+    ありません。これはOpenSSLのSSL_CTX_set_default_read_buffer_len()に相当するwolfSSLの
+    関数ですが、OpenSSLと異なりステータスコードを返し（戻り値を無視する呼び出し元も
+    ソース互換のままです）、1レコードより小さいサイズも尊重します（OpenSSLはバッファを
+    拡大することしかしません）。\p len がWOLFSSL_MAX_READ_AHEAD_SZ（16MB）を超える場合、
+    その最大値に制限されます。0と過大な値はどちらも正規化されるため、
+    wolfSSL_CTX_get_default_read_buffer_len()は生の引数ではなく、実効ウィンドウ（未設定の
+    場合は0ではなく1レコード分のデフォルト）を報告します。
+
+    \note これはメモリとシステムコールのトレードオフです。リードアヘッドが有効な間、入力
+    バッファは接続の存続期間中保持されます（\p len に制限されます）。そのため、大きな
+    \p len に多数の同時接続を掛け合わせると恒常的なメモリ消費となり、一方で小さな \p len は
+    接続ごとのフットプリントを抑えますが、それを超えるレコードではより多くのシステムコールが
+    必要になります。
+
+    \return SSL_SUCCESS バッファ長が設定された場合。
+    \return SSL_FAILURE ctxがNULLの場合。
+
+    \param ctx リードアヘッドバッファ長を設定するWOLFSSL_CTX構造体。
+    \param len リードアヘッドの結合バッファサイズ（バイト単位、0 = 1レコード）。
+
+    _Example_
+    \code
+    WOLFSSL_CTX* ctx;
+    // ctxをセットアップ
+    wolfSSL_CTX_set_read_ahead(ctx, 1);
+    // 1回のrecv()で最大4つの最大サイズレコードをまとめて読み込む
+    wolfSSL_CTX_set_default_read_buffer_len(ctx, 4 * 16384);
+    \endcode
+
+    \sa wolfSSL_CTX_set_read_ahead
+    \sa wolfSSL_set_default_read_buffer_len
+    \sa wolfSSL_has_pending
+*/
+int  wolfSSL_CTX_set_default_read_buffer_len(WOLFSSL_CTX* ctx, size_t len);
+
+/*!
+    \ingroup Setup
+
+    \brief この関数は、単一のWOLFSSLセッションにリードアヘッドの結合バッファサイズを設定し、
+    そのWOLFSSL_CTXから継承した値を上書きします。詳しい説明、1レコード分のデフォルト、および
+    メモリとシステムコールのトレードオフについては、
+    wolfSSL_CTX_set_default_read_buffer_len()を参照してください。
+
+    \return SSL_SUCCESS バッファ長が設定された場合。
+    \return SSL_FAILURE sslがNULLの場合。
+
+    \param ssl リードアヘッドバッファ長を設定するWOLFSSL構造体。
+    \param len リードアヘッドの結合バッファサイズ（バイト単位、0 = 1レコード）。
+
+    \sa wolfSSL_CTX_set_default_read_buffer_len
+    \sa wolfSSL_set_read_ahead
+    \sa wolfSSL_has_pending
+*/
+int  wolfSSL_set_default_read_buffer_len(WOLFSSL* ssl, size_t len);
+
+/*!
+    \ingroup Setup
+
+    \brief この関数は、wolfSSL_CTX_set_default_read_buffer_len()によってWOLFSSL_CTXに
+    設定されたリードアヘッドの結合バッファサイズを返します。設定時に長さ0と過大な値は
+    正規化されるため、報告される値は生の引数ではなく、実際に使用されている実効ウィンドウ
+    （長さが一度も変更されていない場合は0ではなく1レコード分のデフォルト）です。
+
+    \return len 成功時にはリードアヘッドバッファ長（バイト単位）を返します。
+    \return SSL_FAILURE ctxがNULLの場合。
+
+    \param ctx リードアヘッドバッファ長を取得するWOLFSSL_CTX構造体。
+
+    _Example_
+    \code
+    WOLFSSL_CTX* ctx;
+    long len;
+    // ctxをセットアップ
+    len = wolfSSL_CTX_get_default_read_buffer_len(ctx);
+    // lenを確認
+    \endcode
+
+    \sa wolfSSL_CTX_set_default_read_buffer_len
+    \sa wolfSSL_get_default_read_buffer_len
+    \sa wolfSSL_CTX_set_read_ahead
+*/
+long wolfSSL_CTX_get_default_read_buffer_len(WOLFSSL_CTX* ctx);
+
+/*!
+    \ingroup Setup
+
+    \brief この関数は、単一のWOLFSSLセッションで有効なリードアヘッドの結合バッファサイズを
+    返します。この値は、そのWOLFSSL_CTXから継承されたものか、
+    wolfSSL_set_default_read_buffer_len()で上書きされたもののいずれかです。WOLFSSL_CTXの
+    ゲッターと同様に、報告される値は生の引数ではなく、実際に使用されている実効ウィンドウです。
+
+    \return len 成功時にはリードアヘッドバッファ長（バイト単位）を返します。
+    \return SSL_FAILURE sslがNULLの場合。
+
+    \param ssl リードアヘッドバッファ長を取得するWOLFSSL構造体。
+
+    _Example_
+    \code
+    WOLFSSL* ssl;
+    long len;
+    // sslをセットアップ
+    len = wolfSSL_get_default_read_buffer_len(ssl);
+    // lenを確認
+    \endcode
+
+    \sa wolfSSL_set_default_read_buffer_len
+    \sa wolfSSL_CTX_get_default_read_buffer_len
+    \sa wolfSSL_set_read_ahead
+*/
+long wolfSSL_get_default_read_buffer_len(const WOLFSSL* ssl);
 
 /*!
     \ingroup Setup
@@ -12319,7 +12451,7 @@ int  wolfSSL_set1_sigalgs_list(WOLFSSL* ssl, const char* list);
     | ML_KEM_768  |
     | ML_KEM_1024 |
 
-    ML-KEM ハイブリッドグループは、上記に加えて HAVE_ECC、および WOLFSSL_WC_MLKEM または HAVE_LIBOQS、さらに WOLFSSL_PQC_HYBRIDS（"extra" セットには WOLFSSL_EXTRA_PQC_HYBRIDS）が必要です:
+    ML-KEM ハイブリッドグループは、上記に加えて HAVE_ECC、および WOLFSSL_WC_MLKEM、さらに WOLFSSL_PQC_HYBRIDS（"extra" セットには WOLFSSL_EXTRA_PQC_HYBRIDS）が必要です:
 
     | 名前                | 必要なハイブリッドフラグ   |
     | ------------------- | -------------------------- |
@@ -12332,7 +12464,7 @@ int  wolfSSL_set1_sigalgs_list(WOLFSSL* ssl, const char* list);
     | X25519MLKEM512      | WOLFSSL_EXTRA_PQC_HYBRIDS  |
     | X448MLKEM768        | WOLFSSL_EXTRA_PQC_HYBRIDS  |
 
-    レガシー Kyber グループ（WOLFSSL_MLKEM_KYBER が必要。ハイブリッドはさらに HAVE_ECC と、WOLFSSL_WC_MLKEM または HAVE_LIBOQS が必要）:
+    レガシー Kyber グループ（WOLFSSL_MLKEM_KYBER が必要。ハイブリッドはさらに HAVE_ECC と、WOLFSSL_WC_MLKEM が必要）:
 
     | 名前                  |
     | --------------------- |
@@ -12506,7 +12638,7 @@ int  wolfSSL_preferred_group(WOLFSSL* ssl);
     | WOLFSSL_ML_KEM_768 |
     | WOLFSSL_ML_KEM_1024|
 
-    ML-KEM ハイブリッドグループは、上記に加えて HAVE_ECC、および WOLFSSL_WC_MLKEM または HAVE_LIBOQS、さらに WOLFSSL_PQC_HYBRIDS（"extra" セットには WOLFSSL_EXTRA_PQC_HYBRIDS）が必要です:
+    ML-KEM ハイブリッドグループは、上記に加えて HAVE_ECC、および WOLFSSL_WC_MLKEM、さらに WOLFSSL_PQC_HYBRIDS（"extra" セットには WOLFSSL_EXTRA_PQC_HYBRIDS）が必要です:
 
     | 識別子                           | 必要なハイブリッドフラグ   |
     | -------------------------------- | -------------------------- |
@@ -12519,7 +12651,7 @@ int  wolfSSL_preferred_group(WOLFSSL* ssl);
     | WOLFSSL_X25519MLKEM512           | WOLFSSL_EXTRA_PQC_HYBRIDS  |
     | WOLFSSL_X448MLKEM768             | WOLFSSL_EXTRA_PQC_HYBRIDS  |
 
-    レガシー Kyber グループ（HAVE_PQC と WOLFSSL_MLKEM_KYBER が必要。ハイブリッドはさらに HAVE_ECC と、WOLFSSL_WC_MLKEM または HAVE_LIBOQS が必要）:
+    レガシー Kyber グループ（HAVE_PQC と WOLFSSL_MLKEM_KYBER が必要。ハイブリッドはさらに HAVE_ECC と、WOLFSSL_WC_MLKEM が必要）:
 
     | 識別子                      |
     | --------------------------- |
@@ -12818,7 +12950,8 @@ int  wolfSSL_read_early_data(WOLFSSL* ssl, void* data, int sz,
     \param [in] sz 注入するデータのバイト数。
 
     \return BAD_FUNC_ARG いずれかのポインタパラメータがNULLまたはsz <= 0の場合。
-    \return APP_DATA_READY 読み取るべきアプリケーションデータが残っている場合。
+    \return BUFFER_ERROR 入力バッファの長さに矛盾がある場合。
+    \return APP_DATA_READY 読み取るべきアプリケーションデータが残っている状態で入力バッファの拡張が必要になった場合。
     \return MEMORY_E 割り当てが失敗した場合。
     \return WOLFSSL_SUCCESS 成功時。
 

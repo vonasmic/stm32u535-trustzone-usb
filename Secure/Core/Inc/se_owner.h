@@ -20,7 +20,11 @@ int se_owner_pw_ok(const uint8_t *pw, uint16_t len);
 lt_ret_t se_owner_hash_pw(const uint8_t *pw, uint16_t len, uint8_t out[SE_NV_PW_HASH_LEN]);
 lt_ret_t se_owner_verify_pw(const uint8_t *pw, uint16_t len);
 
-/** Empty slot only. */
+/** Last OWNER SET fail: 0 none, 1 begin, 2 parse, 3 owner, 4 tropic wipe, 5 nv, 6 id, 7 ca. */
+extern volatile uint32_t se_owner_die;
+extern volatile int se_owner_die_err;
+
+/** Empty MCU owner only (hash + NV page). No Tropic I/O. */
 lt_ret_t se_owner_set(const uint8_t *pw, uint16_t pw_len, const uint8_t *spki, uint16_t spki_len);
 
 /** Password-authorized replace: wipe user state, keep pairing, install new owner. */

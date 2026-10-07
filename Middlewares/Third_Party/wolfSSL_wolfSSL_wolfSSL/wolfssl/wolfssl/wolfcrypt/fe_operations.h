@@ -29,31 +29,10 @@
 
 #include <wolfssl/wolfcrypt/types.h>
 
-#if defined(USE_INTEL_SPEEDUP) && !defined(NO_CURVED25519_X64)
-    #define CURVED25519_X64
-#elif defined(HAVE___UINT128_T) && !defined(NO_CURVED25519_128BIT)
-    #define CURVED25519_128BIT
-#endif
-
-#if defined(CURVED25519_X64)
-    #define CURVED25519_ASM_64BIT
-    #define CURVED25519_ASM
-#endif
-#if defined(WOLFSSL_ARMASM)
-    #ifdef __aarch64__
-        #define CURVED25519_ASM_64BIT
-    #else
-        #define CURVED25519_ASM_32BIT
-    #endif
-    #define CURVED25519_ASM
-#endif
-
-#if (defined(CURVED25519_ASM_64BIT) || defined(HAVE_ED25519)) && \
-        !defined(WOLFSSL_CURVE25519_BLINDING) && \
-        !defined(WOLFSSL_CURVE25519_NOT_USE_ED25519)
-    #undef  WOLFSSL_CURVE25519_USE_ED25519
-    #define WOLFSSL_CURVE25519_USE_ED25519
-#endif
+/* CURVED25519_X64, CURVED25519_128BIT, CURVED25519_ASM[_32BIT|_64BIT] and
+ * WOLFSSL_CURVE25519_USE_ED25519 are derived in settings.h, so that the
+ * generated assembly - which only ever sees settings.h - is guarded by the
+ * same macros as the C sources. */
 
 /*
 fe means field element.
@@ -111,6 +90,13 @@ WOLFSSL_LOCAL int curve25519_nb(byte * q, const byte * n, const byte * p,
 WOLFSSL_LOCAL void fe_init(void);
 
 WOLFSSL_LOCAL int curve25519(byte * q, const byte * n, const byte * p);
+#if defined(CURVED25519_X64) || (defined(WOLFSSL_ARMASM) && defined(__aarch64__))
+/* Fixed-base scalar multiply provided by the x64/aarch64 assembly
+ * (fe_x25519_asm.S, armv8-curve25519); declared here as no other header
+ * prototypes it, which otherwise breaks a strict C (implicit-declaration)
+ * build of curve25519.c. */
+WOLFSSL_LOCAL int curve25519_base(byte * q, const byte * n);
+#endif
 #ifdef WOLFSSL_CURVE25519_BLINDING
 WOLFSSL_LOCAL int curve25519_blind(byte* q, const byte* n, const byte* mask,
     const byte* p, const byte* rz);

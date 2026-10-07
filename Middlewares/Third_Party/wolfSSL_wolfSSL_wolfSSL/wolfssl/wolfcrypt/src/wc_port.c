@@ -26,6 +26,9 @@
 #elif defined(__FreeBSD__)
     /* for __FreeBSD_version */
     #include <sys/param.h>
+#elif (defined(__CYGWIN__) || defined(__MSYS__)) && !defined(_GNU_SOURCE)
+    /* dladdr and Dl_info, for the RNG fork handler pin, hide behind it */
+    #define _GNU_SOURCE 1
 #endif
 
 /*
@@ -89,6 +92,11 @@ Threading/Mutex options:
  * WOLFSSL_USER_DEFINED_ATOMICS: User-provided atomic impl     default: off
  * WOLFSSL_HAVE_ATOMIC_H: Has C11 atomic.h header              default: off
  *
+ * Socket options:
+ * HAVE_ACCEPT4:        Use accept4() for close-on-exec accept  default: auto
+ *                      (configure/CMake detect it; set it for
+ *                      musl or another unrecognised libc)
+ *
  * General options:
  * WOLFCRYPT_ONLY:      Exclude TLS/SSL, wolfCrypt only build   default: off
  * WOLFSSL_LEANPSK:     Lean PSK build, minimal features        default: off
@@ -115,8 +123,15 @@ Threading/Mutex options:
 #ifdef WOLFSSL_ASYNC_CRYPT
     #include <wolfssl/wolfcrypt/async.h>
 #endif
-#if defined(HAVE_HASHDRBG) && !defined(WC_NO_RNG)
+#ifndef WC_NO_RNG
+    /* random.h defines HAVE_HASHDRBG itself, so no HAVE_HASHDRBG test here */
     #include <wolfssl/wolfcrypt/random.h>
+    #ifdef WC_RNG_LOCK_ATFORK
+        #include <dlfcn.h>      /* the pin, which the handlers require */
+        #include <pthread.h>    /* pthread_atfork, cancel state */
+        #include <semaphore.h>  /* the one unlock a fork child may call */
+        #include <errno.h>      /* EINTR from sem_wait */
+    #endif
 #endif
 
 #ifdef FREESCALE_LTC_TFM
@@ -194,6 +209,10 @@ Threading/Mutex options:
     #include <wolfssl/wolfcrypt/cryptocb.h>
 #endif
 
+#if defined(WOLFSSL_VERSAL_GEN2_ASU)
+    #include <wolfssl/wolfcrypt/port/xilinx/versal_gen2_asu/asu_cryptocb.h>
+#endif
+
 #ifdef HAVE_INTEL_QA_SYNC
     #include <wolfssl/wolfcrypt/port/intel/quickassist_sync.h>
 #endif
@@ -223,9 +242,6 @@ Threading/Mutex options:
     #include <wolfssl/wolfcrypt/port/psa/psa.h>
 #endif
 
-#if defined(HAVE_LIBOQS)
-    #include <wolfssl/wolfcrypt/port/liboqs/liboqs.h>
-#endif
 
 #if defined(FREERTOS) && defined(WOLFSSL_ESPIDF)
     #include <freertos/FreeRTOS.h>
@@ -237,7 +253,6 @@ Threading/Mutex options:
 #if defined(WOLFSSL_ZEPHYR)
 #if defined(CONFIG_BOARD_NATIVE_POSIX) || defined(CONFIG_BOARD_NATIVE_SIM)
 #include "native_rtc.h"
-#define CONFIG_RTC
 #endif
 #endif
 
@@ -415,6 +430,328 @@ static WC_DECLARE_INIT_STATE(wolfcrypt_init_state);
 int aarch64_use_sb = 0;
 #endif
 
+#ifdef WC_RNG_HAVE_AUTO_LOCK
+/* Cancellation off while a lock is held, so a cancel cannot strand it.  Where
+ * the platform has no cancellation both are empty and the value is unused.
+ */
+WOLFSSL_LOCAL int wc_CancelDisable(void)
+{
+#ifdef PTHREAD_CANCEL_DISABLE
+    int old = PTHREAD_CANCEL_ENABLE;   /* what a failed call leaves behind */
+    (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+#else
+    int old = 0;
+#endif
+    return old;
+}
+
+WOLFSSL_LOCAL void wc_CancelRestore(int state)
+{
+#ifdef PTHREAD_CANCEL_DISABLE
+    (void)pthread_setcancelstate(state, NULL);
+#else
+    (void)state;
+#endif
+}
+#endif /* WC_RNG_HAVE_AUTO_LOCK */
+
+#ifdef WC_RNG_LOCK_ATFORK
+#if !defined(RTLD_NOLOAD) || !defined(RTLD_NODELETE)
+    #error "WC_RNG_AUTOFORK needs RTLD_NOLOAD and RTLD_NODELETE"
+#endif
+/* The fork handlers can never be unregistered, so the image that holds them
+ * is pinned against dlclose() before they are registered. */
+WOLFSSL_LOCAL void wc_PinImage(void* fn)
+{
+    Dl_info info;
+    const char* name;   /* a pointer on most libcs, an array on Cygwin */
+    if (dladdr(fn, &info) == 0 || (name = info.dli_fname) == NULL ||
+        name[0] == '\0' ||
+        dlopen(name, RTLD_NOLOAD | RTLD_NODELETE | RTLD_LAZY) == NULL) {
+        /* no dlopen() handle means no dlclose() can reach this image */
+        WOLFSSL_MSG("RNG fork handlers: no dlopen handle, nothing to pin");
+    }
+}
+
+/* One lock per object, held with an unnamed semaphore so a fork child can
+ * release it: sem_post() is async-signal-safe, pthread_mutex_unlock() is not. */
+struct wc_ForkLock {
+    sem_t sem;
+    void* heap;
+    struct wc_ForkLock* next;
+    struct wc_ForkLock** prev;   /* the link that leads here */
+    /* Read once per lock acquire, written once per fork: a load, never a
+     * read-modify-write, so no contended line and no bus traffic. */
+    wolfSSL_Atomic_Int broken;   /* fails closed; a lone child or dead sem */
+    /* Set by prepare, cleared by parent and child: no other thread reads it. */
+    int forkState;   /* one of the WC_FORK_LOCK_* values */
+    int cancel;   /* the holder's cancel state, back on exit */
+};
+
+/* Real thread local storage, not the do-nothing THREAD_LS_T fallback. */
+#if defined(HAVE_THREAD_LS) && !defined(NO_THREAD_LS) && \
+    !defined(FREERTOS) && !defined(FREERTOS_TCP) && !defined(WOLFSSL_ZEPHYR)
+    #define WC_FORK_LOCK_HAVE_TLS
+#endif
+
+#ifndef WC_FORK_LOCK_HAVE_TLS
+    /* Without it the prepare handler cannot tell which locks this thread
+     * holds, and a fork() from a seed callback would wait on itself. */
+    #error "the RNG fork handlers need thread local storage"
+#endif
+/* What this thread holds.  Only this thread touches it, so no atomics.
+ * The library never nests these; the spare slots cover a callback that does. */
+#define WC_FORK_MINE_MAX 4   /* past this, taking the lock is refused */
+static THREAD_LS_T wc_ForkLock* forkMine[WC_FORK_MINE_MAX];
+
+/* Returns 0 when there is no slot left to record it in. */
+static int ForkMineAdd(wc_ForkLock* lock)
+{
+    int i;
+    for (i = 0; i < WC_FORK_MINE_MAX; i++) {
+        if (forkMine[i] == NULL) {
+            forkMine[i] = lock;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void ForkMineDrop(wc_ForkLock* lock)
+{
+    int i;
+    for (i = 0; i < WC_FORK_MINE_MAX; i++) {
+        if (forkMine[i] == lock) {
+            forkMine[i] = NULL;
+            return;
+        }
+    }
+}
+
+/* Does the calling thread hold this one? */
+static int ForkMineHeld(const wc_ForkLock* lock)
+{
+    int i;
+    for (i = 0; i < WC_FORK_MINE_MAX; i++) {
+        if (forkMine[i] == lock) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static wc_ForkLock* forkList = NULL;   /* every live lock, under forkListSem */
+static sem_t forkListSem;
+static wolfSSL_Atomic_Int forkListDead =
+    WOLFSSL_ATOMIC_INITIALIZER(0);   /* registry unusable: handlers back off */
+static pthread_once_t forkOnce = PTHREAD_ONCE_INIT;
+static int forkOnceRet = 0;
+
+/* sem_wait() is a cancellation point; a cancel here would strand the lock. */
+static int ForkSemWait(sem_t* s)
+{
+    int ret = 0;
+    int old = PTHREAD_CANCEL_ENABLE;
+    (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+    while (sem_wait(s) != 0) {
+        if (errno != EINTR) {
+            ret = BAD_MUTEX_E;
+            break;
+        }
+    }
+    (void)pthread_setcancelstate(old, NULL);
+    return ret;
+}
+
+/* Before fork(): the forking thread takes the registry and every lock. */
+static void ForkPrepare(void)
+{
+    wc_ForkLock* n;
+    if (WOLFSSL_ATOMIC_LOAD(forkListDead))
+        return;
+    if (ForkSemWait(&forkListSem) != 0) {
+        WOLFSSL_ATOMIC_STORE(forkListDead, 1); /* nothing held, and never again */
+        return;
+    }
+    for (n = forkList; n != NULL; n = n->next) {
+        if (WOLFSSL_ATOMIC_LOAD(n->broken)) {
+            continue;
+        }
+        /* Waiting on one this thread already holds would never return.  The
+         * child's only thread is this one, and it releases it as usual. */
+        if (ForkMineHeld(n)) {
+            n->forkState = WC_FORK_LOCK_OWNED;
+            continue;
+        }
+        if (ForkSemWait(&n->sem) != 0) {
+            WOLFSSL_ATOMIC_STORE(n->broken, 1);
+        }
+        else {
+            n->forkState = WC_FORK_LOCK_TAKEN;
+        }
+    }
+}
+
+/* After fork() in the parent: give back exactly what prepare took.
+ * Re-reading broken here could post a lock prepare never held. */
+static void ForkParent(void)
+{
+    wc_ForkLock* n;
+    if (WOLFSSL_ATOMIC_LOAD(forkListDead))
+        return;
+    for (n = forkList; n != NULL; n = n->next) {
+        if (n->forkState == WC_FORK_LOCK_TAKEN) {
+            (void)sem_post(&n->sem);
+        }
+        /* An owned one needs nothing: its holder still has it. */
+        n->forkState = WC_FORK_LOCK_UNTAKEN;
+    }
+    (void)sem_post(&forkListSem);
+}
+
+/* Child after fork(): stores and sem_post() only, all POSIX allows here.
+ * An untaken lock fails closed; an owned one is freed by this thread. */
+static void ForkChild(void)
+{
+    wc_ForkLock* n;
+    for (n = forkList; n != NULL; n = n->next) {   /* forward links stay whole */
+        if (n->forkState == WC_FORK_LOCK_TAKEN) {
+            (void)sem_post(&n->sem);
+        }
+        else if (n->forkState == WC_FORK_LOCK_UNTAKEN) {
+            WOLFSSL_ATOMIC_STORE(n->broken, 1);
+        }
+        n->forkState = WC_FORK_LOCK_UNTAKEN;
+    }
+    if (!WOLFSSL_ATOMIC_LOAD(forkListDead))
+        (void)sem_post(&forkListSem);
+}
+
+static void ForkLockInitOnce(void)
+{
+    /* pin first: the handlers can never be unregistered */
+    wc_PinImage((void*)(wc_ptr_t)ForkPrepare);
+    forkOnceRet = (sem_init(&forkListSem, 0, 1) == 0) ? 0 : BAD_MUTEX_E;
+    if (forkOnceRet == 0 &&
+        pthread_atfork(ForkPrepare, ForkParent, ForkChild) != 0)
+    {
+        (void)sem_destroy(&forkListSem);
+        forkOnceRet = MEMORY_E;
+    }
+}
+
+WOLFSSL_LOCAL int wc_ForkLockInit(void)
+{
+    (void)pthread_once(&forkOnce, ForkLockInitOnce);
+    return forkOnceRet;
+}
+
+WOLFSSL_LOCAL int wc_ForkLock_New(wc_ForkLock** lock, void* heap)
+{
+    wc_ForkLock* n;
+    int ret = wc_ForkLockInit();
+    if (ret != 0)
+        return ret;
+    if (WOLFSSL_ATOMIC_LOAD(forkListDead)) {
+        WOLFSSL_MSG("wc_ForkLock_New: registry dead since a fork");
+        return BAD_MUTEX_E;
+    }
+    n = (wc_ForkLock*)XMALLOC(sizeof(*n), heap, DYNAMIC_TYPE_RNG);
+    if (n == NULL)
+        return MEMORY_E;
+    XMEMSET(n, 0, sizeof(*n));
+    n->heap = heap;
+    if (ForkSemWait(&forkListSem) != 0) {
+        XFREE(n, heap, DYNAMIC_TYPE_RNG);
+        return BAD_MUTEX_E;
+    }
+    ret = (sem_init(&n->sem, 0, 1) == 0) ? 0 : BAD_MUTEX_E;
+    if (ret == 0) {
+        n->next = forkList;
+        n->prev = &forkList;
+        if (forkList != NULL)
+            forkList->prev = &n->next;
+        forkList = n;
+    }
+    (void)sem_post(&forkListSem);
+    if (ret != 0) {
+        XFREE(n, heap, DYNAMIC_TYPE_RNG);
+        return ret;
+    }
+    *lock = n;
+    return 0;
+}
+
+/* Safe on a NULL lock that was never created. */
+WOLFSSL_LOCAL void wc_ForkLock_Free(wc_ForkLock** lock)
+{
+    wc_ForkLock* n;
+    if (lock == NULL || *lock == NULL)
+        return;
+    n = *lock;
+    if (WOLFSSL_ATOMIC_LOAD(forkListDead) || ForkSemWait(&forkListSem) != 0) {
+        /* No registry to unlink under, so the node stays on the list and
+         * is leaked; broken keeps every later handler off it. */
+        WOLFSSL_ATOMIC_STORE(n->broken, 1);
+        WOLFSSL_MSG("wc_ForkLock_Free: registry unavailable, node leaked");
+        *lock = NULL;
+        return;
+    }
+    *n->prev = n->next;
+    if (n->next != NULL)
+        n->next->prev = n->prev;
+    (void)sem_post(&forkListSem);
+    (void)sem_destroy(&n->sem);
+    XFREE(n, n->heap, DYNAMIC_TYPE_RNG);
+    *lock = NULL;
+}
+
+/* Cancellation stays off while the lock is held: a reseed reads a device,
+ * a cancellation point, and a cancelled holder would strand every fork(). */
+WOLFSSL_API int wc_ForkLock_Enter(wc_ForkLock* lock)
+{
+    int old = PTHREAD_CANCEL_ENABLE;
+    int ret;
+    if (lock == NULL)
+        return 0;
+    if (WOLFSSL_ATOMIC_LOAD(lock->broken))
+        return BAD_MUTEX_E;
+    (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old);
+    ret = ForkSemWait(&lock->sem);
+    if (ret != 0) {
+        (void)pthread_setcancelstate(old, NULL);
+    }
+    else if (!ForkMineAdd(lock)) {
+        /* Unrecorded means prepare would wait on a lock this thread holds,
+         * so refuse it here rather than hand back a fork() that hangs. */
+        (void)sem_post(&lock->sem);
+        (void)pthread_setcancelstate(old, NULL);
+        ret = BAD_MUTEX_E;
+    }
+    else {
+        lock->cancel = old;
+    }
+    return ret;
+}
+
+WOLFSSL_API   void wc_ForkLock_Exit(wc_ForkLock* lock)
+{
+    int old;
+    if (lock == NULL)
+        return;
+    old = lock->cancel;
+    ForkMineDrop(lock);
+    (void)sem_post(&lock->sem);
+    (void)pthread_setcancelstate(old, NULL);
+}
+
+WOLFSSL_API   void wc_ForkLock_SetBroken(wc_ForkLock* lock, int broken)
+{
+    if (lock != NULL)
+        WOLFSSL_ATOMIC_STORE(lock->broken, broken);
+}
+#endif
+
 /* Used to initialize state for wolfcrypt
    return 0 on success
  */
@@ -530,9 +867,9 @@ int wolfCrypt_Init(void)
     #endif
 
     #if defined(WOLFSSL_USE_SAVE_VECTOR_REGISTERS) && defined(WOLFSSL_LINUXKM)
-        ret = allocate_wolfcrypt_linuxkm_fpu_states();
+        ret = wc_linuxkm_allocate_svr_states();
         if (ret != 0) {
-            WOLFSSL_MSG("allocate_wolfcrypt_linuxkm_fpu_states failed");
+            WOLFSSL_MSG("wc_linuxkm_allocate_svr_states failed");
             WOLFCRYPT_INIT_RAISE_BAD_STATE();
         }
     #endif
@@ -555,6 +892,14 @@ int wolfCrypt_Init(void)
             WOLFCRYPT_INIT_RAISE_BAD_STATE();
         }
     #endif
+    #ifdef WC_RNG_LOCK_ATFORK
+        /* here, before the app has threads, so no fork can race it */
+        ret = wc_ForkLockInit();
+        if (ret != 0) {
+            WOLFSSL_MSG("RNG fork handler registration failed");
+            WOLFCRYPT_INIT_RAISE_BAD_STATE();
+        }
+    #endif
 
     #if defined(FREESCALE_LTC_TFM) || defined(FREESCALE_LTC_ECC)
         ret = ksdk_port_init();
@@ -568,6 +913,15 @@ int wolfCrypt_Init(void)
     #if defined(MAX3266X_AES) && defined(WOLF_CRYPTO_CB)
         ret = wc_CryptoCb_RegisterDevice(WOLFSSL_MAX3266X_DEVID, wc_MxcCryptoCb,
                                             NULL);
+        if (ret != 0) {
+            WOLFCRYPT_INIT_RAISE_BAD_STATE();
+        }
+    #endif
+
+    /* Register the Versal Gen2 ASU device so wolfCrypt operations route to the
+     * ASU hardware. Registering also brings the ASU client up. */
+    #if defined(WOLFSSL_VERSAL_GEN2_ASU) && defined(WOLF_CRYPTO_CB)
+        ret = wc_AsuCryptoCb_RegisterDevice(WOLFSSL_VERSAL_GEN2_ASU_DEVID);
         if (ret != 0) {
             WOLFCRYPT_INIT_RAISE_BAD_STATE();
         }
@@ -637,10 +991,15 @@ int wolfCrypt_Init(void)
     #endif
 
     #if defined(WOLFSSL_SE050) && defined(WOLFSSL_SE050_INIT)
-        ret = wc_se050_init(NULL);
-        if (ret != 0) {
-            WOLFSSL_MSG("SE050 init failed");
-            WOLFCRYPT_INIT_RAISE_BAD_STATE();
+        /* An application may need runtime SCP03 keys to open the SE05x
+         * before calling wolfCrypt_Init(). Keep that configured session
+         * instead of trying to replace it with the compiled-in defaults. */
+        if (wc_se050_get_session() == NULL) {
+            ret = wc_se050_init(NULL);
+            if (ret != 0) {
+                WOLFSSL_MSG("SE050 init failed");
+                WOLFCRYPT_INIT_RAISE_BAD_STATE();
+            }
         }
     #endif
 
@@ -759,11 +1118,6 @@ int wolfCrypt_Init(void)
         rpcmem_init();
 #endif
 
-#if defined(HAVE_LIBOQS)
-        if ((ret = wolfSSL_liboqsInit()) != 0) {
-            WOLFCRYPT_INIT_RAISE_BAD_STATE();
-        }
-#endif
 
 #undef WOLFCRYPT_INIT_RAISE_BAD_STATE
 
@@ -874,6 +1228,16 @@ int wolfCrypt_Cleanup(void)
                 ret = ret2;
         }
     #endif
+    #if defined(WOLFSSL_SE050) && defined(WOLFSSL_SE050_INIT)
+        if (wc_se050_get_session() != NULL) {
+            int ret2 = wc_se050_close();
+
+            /* A session installed with wc_se050_set_config() is owned by the
+             * application and wc_se050_close() deliberately rejects it. */
+            if ((ret == 0) && (ret2 != WC_NO_ERR_TRACE(BAD_STATE_E)))
+                ret = ret2;
+        }
+    #endif
     #if defined(WOLFSSL_TROPIC01)
         Tropic01_Deinit();
     #endif
@@ -888,7 +1252,7 @@ int wolfCrypt_Cleanup(void)
         wolfSSL_CleanupHandle();
     #endif
     #if defined(WOLFSSL_USE_SAVE_VECTOR_REGISTERS) && defined(WOLFSSL_LINUXKM)
-        free_wolfcrypt_linuxkm_fpu_states();
+        wc_linuxkm_free_svr_states();
     #endif
 
     #ifdef HAVE_ENTROPY_MEMUSE
@@ -918,9 +1282,6 @@ int wolfCrypt_Cleanup(void)
         wc_MemZero_Free();
     #endif
 
-#if defined(HAVE_LIBOQS)
-        wolfSSL_liboqsClose();
-#endif
 
         {
             int ret2 = wc_local_InitDownDone(&wolfcrypt_init_state);
@@ -1547,34 +1908,52 @@ char* wc_strsep(char **stringp, const char *delim)
 #ifdef USE_WOLF_STRLCPY
 size_t wc_strlcpy(char *dst, const char *src, size_t dstSize)
 {
-    size_t i;
+    size_t i = 0;
 
-    if (!dstSize)
-        return 0;
-
-    /* Always have to leave a space for NULL */
-    for (i = 0; i < (dstSize - 1) && *src != '\0'; i++) {
-        *dst++ = *src++;
+    if (dstSize != 0) {
+        /* Always have to leave a space for NULL */
+        for (; i < (dstSize - 1) && *src != '\0'; i++) {
+            *dst++ = *src++;
+        }
+        *dst = '\0';
     }
-    *dst = '\0';
 
-    return i; /* return length without NULL */
+    /* strlcpy() returns the length of src, not the number of bytes copied, so
+     * that a caller can detect truncation with (ret >= dstSize). Walk whatever
+     * did not fit -- src already points at the first byte not copied, and at
+     * the whole string when dstSize was 0 (which writes nothing). */
+    while (*src != '\0') {
+        i++;
+        src++;
+    }
+
+    return i; /* length of src, excluding the NULL */
 }
 #endif /* USE_WOLF_STRLCPY */
 
 #ifdef USE_WOLF_STRLCAT
 size_t wc_strlcat(char *dst, const char *src, size_t dstSize)
 {
-    size_t dstLen;
+    size_t dstLen = 0;
 
-    if (!dstSize)
-        return 0;
+    /* Find the end of dst without going past dstSize. XSTRLEN() would run off
+     * the end of a dst that holds no NUL within dstSize -- the very case this
+     * bound exists to contain. */
+    while (dstLen < dstSize && dst[dstLen] != '\0') {
+        dstLen++;
+    }
 
-    dstLen = XSTRLEN(dst);
+    if (dstLen == dstSize) {
+        /* No NUL within dstSize: the length of dst is taken to be dstSize,
+         * nothing is appended, and dst is left un-terminated because there is
+         * no room for the NUL. Only reachable when dstSize is wrong or dst is
+         * not a C string; returning here is what stops the append from running
+         * off the end. */
+        return dstSize + XSTRLEN(src);
+    }
 
-    if (dstSize < dstLen)
-        return dstLen + XSTRLEN(src);
-
+    /* Total length attempted: the initial length of dst plus the length of
+     * src, which is what wc_strlcpy() returns. */
     return dstLen + wc_strlcpy(dst + dstLen, src, dstSize - dstLen);
 }
 #endif /* USE_WOLF_STRLCAT */
@@ -1631,6 +2010,57 @@ char* wc_strdup_ex(const char *src, int memType) {
     return ret;
 }
 #endif
+
+#ifdef WOLFSSL_WIDE_BYTE
+
+/* Packed octet stream -> one octet per byte cell.  See WC_OCTETS_PER_BYTE in
+ * types.h.  in holds the packed stream, low octet of a cell first, and must not
+ * overlap out.  Returns 0, BAD_FUNC_ARG on NULL, BUFFER_E if either buffer is
+ * short. */
+int wc_UnpackOctets(byte* out, word32 outSz, const byte* in, word32 inSz,
+    word32 octetSz)
+{
+    word32 i;
+
+    if ((out == NULL) || (in == NULL)) {
+        return BAD_FUNC_ARG;
+    }
+    if ((outSz < octetSz) || (inSz < WC_PACKED_CELLS(octetSz))) {
+        return BUFFER_E;
+    }
+
+    for (i = 0; i < octetSz; i++) {
+        out[i] = WC_OCTET((word32)in[i / WC_OCTETS_PER_BYTE] >>
+            ((i % WC_OCTETS_PER_BYTE) * 8));
+    }
+
+    return 0;
+}
+
+/* Inverse of wc_UnpackOctets(), for flash or a byte-oriented peripheral.  in
+ * holds one octet per cell and must not overlap out. */
+int wc_PackOctets(byte* out, word32 outSz, const byte* in, word32 inSz,
+    word32 octetSz)
+{
+    word32 i;
+
+    if ((out == NULL) || (in == NULL)) {
+        return BAD_FUNC_ARG;
+    }
+    if ((outSz < WC_PACKED_CELLS(octetSz)) || (inSz < octetSz)) {
+        return BUFFER_E;
+    }
+
+    XMEMSET(out, 0, WC_PACKED_CELLS(octetSz));   /* zero-fill partial tail */
+    for (i = 0; i < octetSz; i++) {
+        out[i / WC_OCTETS_PER_BYTE] |= (byte)((word32)WC_OCTET(in[i]) <<
+            ((i % WC_OCTETS_PER_BYTE) * 8));
+    }
+
+    return 0;
+}
+
+#endif /* WOLFSSL_WIDE_BYTE */
 
 #ifdef WOLFSSL_ATOMIC_OPS
 
@@ -2153,6 +2583,28 @@ void wolfSSL_RefWithMutexInc2(wolfSSL_RefWithMutex* ref, int *new_count,
     *err = ret;
 }
 
+void wolfSSL_RefWithMutexInc_IfAtLeast(wolfSSL_RefWithMutex* ref,
+                                       int cur_at_least, int *new_count,
+                                       int* err)
+{
+    *err = wc_LockMutex(&ref->mutex);
+    if (*err != 0) {
+        WOLFSSL_MSG("Failed to lock mutex for reference increment!");
+        *new_count = -1;
+    }
+    else {
+        if (ref->count < cur_at_least) {
+            *new_count = ref->count;
+            *err = BAD_STATE_E;
+        }
+        else {
+            *new_count = ++ref->count;
+            *err = 0;
+        }
+        wc_UnLockMutex(&ref->mutex);
+    }
+}
+
 int wolfSSL_RefWithMutexLock(wolfSSL_RefWithMutex* ref)
 {
     return wc_LockMutex(&ref->mutex);
@@ -2198,6 +2650,29 @@ void wolfSSL_RefWithMutexDec2(wolfSSL_RefWithMutex* ref, int* new_count,
     }
     *err = ret;
 }
+
+void wolfSSL_RefWithMutexDec_IfEquals(wolfSSL_RefWithMutex* ref,
+                                      int current_count, int* new_count,
+                                      int* err)
+{
+    *err = wc_LockMutex(&ref->mutex);
+    if (*err != 0) {
+        WOLFSSL_MSG("Failed to lock mutex for reference decrement!");
+        *new_count = -1;
+    }
+    else {
+        if (ref->count != current_count) {
+            *new_count = ref->count;
+            *err = BAD_STATE_E;
+        }
+        else {
+            *new_count = --ref->count;
+            *err = 0;
+        }
+        wc_UnLockMutex(&ref->mutex);
+    }
+}
+
 #endif /* ! SINGLE_THREADED */
 
 #if WOLFSSL_CRYPT_HW_MUTEX
@@ -2232,12 +2707,17 @@ int wolfSSL_CryptHwMutexLock(void)
 }
 int wolfSSL_CryptHwMutexUnLock(void)
 {
+#ifndef WOLFSSL_MUTEX_INITIALIZER
     if (wcCryptHwMutexInit) {
         return wc_UnLockMutex(&wcCryptHwMutex);
     }
     else {
         return BAD_MUTEX_E;
     }
+#else
+    /* statically initialized (no runtime init flag) -- always valid to unlock */
+    return wc_UnLockMutex(&wcCryptHwMutex);
+#endif
 }
 #endif /* WOLFSSL_CRYPT_HW_MUTEX */
 
@@ -2476,6 +2956,58 @@ int wolfSSL_HwPkMutexUnLock(void)
         return compat_mutex_cb;
     }
 #endif /* defined(OPENSSL_EXTRA) || defined(HAVE_WEBSERVER) */
+
+#ifndef WOLFSSL_MUTEX_INITIALIZER
+/* Initialize a static mutex exactly once.
+ *
+ * Backstop for callers that reach a subsystem without wolfCrypt_Init(). One
+ * atomic with three states: 0 = uninitialized, 1 = in progress, 2 = ready.
+ * Losers of the race wait for the winner rather than failing, so callers do
+ * not need a retry path. Same pattern as the SP ECC cache locks.
+ *
+ * @param [in]      m     Mutex to initialize.
+ * @param [in, out] flag  Election state, statically zero initialized.
+ * @return  0 on success, or when the mutex is already initialized.
+ * @return  Error from wc_InitMutex() otherwise.
+ */
+int wc_local_InitMutexOnce(wolfSSL_Mutex* m, wc_MutexOnceFlag* flag)
+{
+    int ret = 0;
+#if defined(WOLFSSL_ATOMIC_OPS) && !defined(SINGLE_THREADED)
+    WC_ATOMIC_UINT_ARG expected;
+
+    if (WOLFSSL_ATOMIC_LOAD(*flag) == 2) {
+        return 0;
+    }
+
+    for (;;) {
+        expected = 0;
+        if (wolfSSL_Atomic_Uint_CompareExchange(flag, &expected, 1) == 1) {
+            /* Won the race. On failure reset to 0 so a later call retries. */
+            ret = wc_InitMutex(m);
+            WOLFSSL_ATOMIC_STORE(*flag, (ret == 0) ? 2U : 0U);
+            break;
+        }
+        if (expected == 2) {
+            /* Another thread completed the initialization. */
+            break;
+        }
+        /* Initialization in progress in another thread. */
+        WC_RELAX_LONG_LOOP();
+    }
+#else
+    /* No atomics to elect with: single-threaded cannot race, and opt-out
+     * builds keep their existing behavior. */
+    if (*flag != 2) {
+        ret = wc_InitMutex(m);
+        if (ret == 0) {
+            *flag = 2;
+        }
+    }
+#endif
+    return ret;
+}
+#endif /* !WOLFSSL_MUTEX_INITIALIZER */
 
 #if defined(WC_MUTEX_OPS_INLINE)
 
@@ -4386,16 +4918,13 @@ time_t xilinx_time(time_t * timer)
 
 time_t z_time(time_t * timer)
 {
-    struct timespec ts;
-
-    #if defined(CONFIG_RTC) && \
-        (defined(CONFIG_PICOLIBC) || defined(CONFIG_NEWLIB_LIBC))
-
     #if defined(CONFIG_BOARD_NATIVE_POSIX) || defined(CONFIG_BOARD_NATIVE_SIM)
 
-    /* When using native sim, get time from simulator rtc */
+    /* native_sim: read the simulator RTC for a real host wall-clock. The
+     * real-target RTC/libc gate below is compiled out under the host libc. */
     uint32_t nsec = 0;
     uint64_t sec = 0;
+
     native_rtc_gettime(RTC_CLOCK_PSEUDOHOSTREALTIME, &nsec, &sec);
 
     if (timer != NULL)
@@ -4404,6 +4933,11 @@ time_t z_time(time_t * timer)
     return sec;
 
     #else
+
+    struct timespec ts = { 0 };
+
+    #if defined(CONFIG_RTC) && \
+        (defined(CONFIG_PICOLIBC) || defined(CONFIG_NEWLIB_LIBC))
 
     /* Try to obtain the actual time from an RTC */
     static const struct device *rtc = DEVICE_DT_GET(DT_NODELABEL(rtc));
@@ -4423,16 +4957,21 @@ time_t z_time(time_t * timer)
             return epochTime;
         }
     }
-    #endif /* CONFIG_BOARD_NATIVE_POSIX || CONFIG_BOARD_NATIVE_SIM */
-    #endif
+    #endif /* CONFIG_RTC && (CONFIG_PICOLIBC || CONFIG_NEWLIB_LIBC) */
 
     /* Fallback to uptime since boot. This works for relative times, but
      * not for ASN.1 date validation */
+    #ifdef SYS_CLOCK_REALTIME
+    if (sys_clock_gettime(SYS_CLOCK_REALTIME, &ts) == 0)
+    #else
     if (clock_gettime(CLOCK_REALTIME, &ts) == 0)
+    #endif
         if (timer != NULL)
             *timer = ts.tv_sec;
 
     return ts.tv_sec;
+
+    #endif /* CONFIG_BOARD_NATIVE_POSIX || CONFIG_BOARD_NATIVE_SIM */
 }
 
 #endif /* WOLFSSL_ZEPHYR */
@@ -5089,11 +5628,19 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
 
         XMEMSET(thread, 0, sizeof(*thread));
 
+        thread->tid = (TX_THREAD *)XMALLOC(sizeof(TX_THREAD), NULL,
+                DYNAMIC_TYPE_OS_BUF);
+        if (thread->tid == NULL)
+            return MEMORY_E;
+        XMEMSET(thread->tid, 0, sizeof(TX_THREAD));
+
         thread->threadStack = (void *)XMALLOC(WOLFSSL_NETOS_STACK_SZ, NULL,
                 DYNAMIC_TYPE_OS_BUF);
-        if (thread->threadStack == NULL)
+        if (thread->threadStack == NULL) {
+            XFREE(thread->tid, NULL, DYNAMIC_TYPE_OS_BUF);
+            thread->tid = NULL;
             return MEMORY_E;
-
+        }
 
         /* first create the idle thread:
          * ARGS:
@@ -5104,7 +5651,7 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
          * Param6: stack size
          * Param7 and 8: priority level and preempt threshold
          * Param9 and 10: time slice and auto-start indicator */
-        result = tx_thread_create(&thread->tid,
+        result = tx_thread_create(thread->tid,
                            "wolfSSL thread",
                            (entry_functionType)cb, (ULONG)arg,
                            thread->threadStack,
@@ -5114,6 +5661,8 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
         if (result != TX_SUCCESS) {
             XFREE(thread->threadStack, NULL, DYNAMIC_TYPE_OS_BUF);
             thread->threadStack = NULL;
+            XFREE(thread->tid, NULL, DYNAMIC_TYPE_OS_BUF);
+            thread->tid = NULL;
             return MEMORY_E;
         }
 
@@ -5122,10 +5671,42 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
 
     int wolfSSL_JoinThread(THREAD_TYPE thread)
     {
-        /* TODO: maybe have to use tx_thread_delete? */
+        UINT state = TX_READY;
+        int ret = 0;
+
+        if (thread.tid == NULL)
+            return BAD_FUNC_ARG;
+
+        /* The thread runs on threadStack, so it has to be done with it before
+         * the stack is released. Wait for the entry function to return, or for
+         * the thread to be terminated by someone else. */
+        while (ret == 0 && state != TX_COMPLETED && state != TX_TERMINATED) {
+            if (tx_thread_info_get(thread.tid, TX_NULL, &state, TX_NULL,
+                        TX_NULL, TX_NULL, TX_NULL, TX_NULL, TX_NULL)
+                    != TX_SUCCESS) {
+                /* The control block is not a thread ThreadX knows about, so
+                 * nothing is running on the stack either. */
+                ret = BAD_STATE_E;
+            }
+            else if (state != TX_COMPLETED && state != TX_TERMINATED) {
+                tx_thread_sleep(1);
+            }
+        }
+
+        /* Unregister the thread before its control block and stack go away. */
+        if (ret == 0 && tx_thread_delete(thread.tid) != TX_SUCCESS) {
+            /* ThreadX still owns the control block and the thread may still be
+             * running on the stack, so neither can be released here. */
+            WOLFSSL_MSG("tx_thread_delete failed, leaking thread resources");
+            return BAD_STATE_E;
+        }
+
         XFREE(thread.threadStack, NULL, DYNAMIC_TYPE_OS_BUF);
         thread.threadStack = NULL;
-        return 0;
+        XFREE(thread.tid, NULL, DYNAMIC_TYPE_OS_BUF);
+        thread.tid = NULL;
+
+        return ret;
     }
 
 #elif defined(WOLFSSL_ZEPHYR)
@@ -5208,8 +5789,78 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
     }
 
 #ifdef WOLFSSL_COND
-    /* Use the pthreads translation layer for signaling */
+    /* Native Zephyr condition variables (k_condvar) over a k_mutex; no POSIX
+     * pthread layer required. Semantics mirror the pthread implementation. */
+    int wolfSSL_CondInit(COND_TYPE* cond)
+    {
+        int ret;
 
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        ret = wc_InitMutex(&cond->mutex);
+        if (ret == 0) {
+            /* k_condvar_init always returns 0 on Zephyr. */
+            (void)k_condvar_init(&cond->cond);
+        }
+
+        return ret;
+    }
+
+    int wolfSSL_CondFree(COND_TYPE* cond)
+    {
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        /* k_condvar has no destroy; just release the backing mutex. */
+        return wc_FreeMutex(&cond->mutex);
+    }
+
+    int wolfSSL_CondStart(COND_TYPE* cond)
+    {
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        if (wc_LockMutex(&cond->mutex) != 0)
+            return BAD_MUTEX_E;
+
+        return 0;
+    }
+
+    int wolfSSL_CondSignal(COND_TYPE* cond)
+    {
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        /* Caller holds cond->mutex; wake a single waiter. */
+        (void)k_condvar_signal(&cond->cond);
+
+        return 0;
+    }
+
+    int wolfSSL_CondWait(COND_TYPE* cond)
+    {
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        /* Atomically releases the mutex, blocks, and re-acquires it on wake,
+         * matching pthread_cond_wait semantics. */
+        if (k_condvar_wait(&cond->cond, &cond->mutex, K_FOREVER) != 0)
+            return BAD_MUTEX_E;
+
+        return 0;
+    }
+
+    int wolfSSL_CondEnd(COND_TYPE* cond)
+    {
+        if (cond == NULL)
+            return BAD_FUNC_ARG;
+
+        if (wc_UnLockMutex(&cond->mutex) != 0)
+            return BAD_MUTEX_E;
+
+        return 0;
+    }
 #endif /* WOLFSSL_COND */
 
 #elif defined(WOLFSSL_PTHREADS) || \
@@ -5440,12 +6091,29 @@ char* wolfSSL_strnstr(const char* s1, const char* s2, size_t n)
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #ifndef O_CLOEXEC
     #define O_CLOEXEC 0
 #endif
 #ifndef SOCK_CLOEXEC
     #define SOCK_CLOEXEC 0
+#endif
+
+/* accept4(): HAVE_ACCEPT4 is set by the configure/CMake probe, or in
+ * user_settings.h for a libc not recognised here, such as musl. Recognised:
+ * glibc 2.10, uClibc-ng, bionic API 21, FreeBSD 10. */
+#if (defined(__linux__) || defined(__ANDROID__)) && \
+    (defined(HAVE_ACCEPT4) || \
+     (defined(__USE_GNU) && \
+      ((defined(__GLIBC__) && \
+        (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 10))) || \
+       (defined(__UCLIBC_LINUX_SPECIFIC__) && (__UCLIBC_MAJOR__ >= 1)) || \
+       (defined(__ANDROID_API__) && (__ANDROID_API__ >= 21)))))
+    #define WC_HAVE_ACCEPT4
+#elif defined(__FreeBSD__) && defined(__BSD_VISIBLE) && __BSD_VISIBLE && \
+    (__FreeBSD_version >= 1000000)
+    #define WC_HAVE_ACCEPT4
 #endif
 
 void wc_set_cloexec(int fd)
@@ -5474,6 +6142,46 @@ int wc_open_cloexec(const char* path, int flags)
     return fd;
 }
 
+/* As wc_open_cloexec(), for flags with O_CREAT, where open() needs a mode. */
+int wc_open_cloexec_mode(const char* path, int flags, int mode)
+{
+    int fd = open(path, flags | O_CLOEXEC, mode);
+#ifdef FD_CLOEXEC
+    if (fd < 0 && errno == EINVAL) {
+        fd = open(path, flags, mode);
+        wc_set_cloexec(fd);
+    }
+#endif
+    return fd;
+}
+
+#if !defined(NO_FILESYSTEM) && defined(XFDOPEN)
+#include <sys/stat.h>
+
+/* Truncate or create path for writing, owner read/write only. */
+XFILE wc_fopen_owner_only(const char* path)
+{
+    XFILE file;
+    int fd = wc_open_cloexec_mode(path, O_RDWR | O_CREAT | O_TRUNC,
+                                  S_IRUSR | S_IWUSR);
+    if (fd < 0)
+        return XBADFILE;
+
+#ifndef WOLFSSL_NO_FCHMOD
+    if (fchmod(fd, S_IRUSR | S_IWUSR) != 0) {
+        close(fd);
+        return XBADFILE;
+    }
+#endif
+
+    file = XFDOPEN(fd, "w+b");
+    if (file == XBADFILE)
+        close(fd);
+
+    return file;
+}
+#endif /* !NO_FILESYSTEM && XFDOPEN */
+
 int wc_socket_cloexec(int domain, int type, int protocol)
 {
     int fd = socket(domain, type | SOCK_CLOEXEC, protocol);
@@ -5489,9 +6197,7 @@ int wc_socket_cloexec(int domain, int type, int protocol)
 int wc_accept_cloexec(int sockfd, void* addr, void* addrlen)
 {
     int fd;
-#if (defined(__USE_GNU) && (defined(__linux__) || defined(__ANDROID__))) || \
-    (defined(__FreeBSD__) && defined(__BSD_VISIBLE) && __BSD_VISIBLE && \
-     (__FreeBSD_version >= 1000000))
+#ifdef WC_HAVE_ACCEPT4
     fd = accept4(sockfd, (struct sockaddr*)addr, (socklen_t*)addrlen,
                  SOCK_CLOEXEC);
     if (fd >= 0)

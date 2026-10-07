@@ -4,14 +4,17 @@
  *
  * Bytes [0,32) are generate-once secure_dwk (Tropic AEAD / PIN / pw hash).
  * The record starts at offset 32. Pairing priv and the device SK are only
- * copied when those APIs run. The 8 KB work buffer is write-only.
+ * copied when those APIs run. The 8 KB work buffer is the SRAM4 NV page.
  */
 #include "se_nv.h"
 #include "se_nv_internal.h"
 #include "se_le.h"
 #include "se_tropic_port.h"
+#include "se_ram.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
+
+static uint8_t *s_nv_page; /* se_nv_page_acquire, not the arena */
 
 #define SE_NV_MAGIC   0x53454E56u /* SENV */
 #define SE_NV_VERSION 7u
@@ -48,7 +51,6 @@
 
 static uint8_t s_pending_fill[SE_NV_FILL_ID_LEN];
 static uint8_t s_pending_valid;
-static uint8_t s_nv_page[SE_NV_PAGE_SIZE];
 static uint8_t s_ops[SE_NV_OPS_LEN];
 
 static int otp_dir_ok(se_nv_otp_dir_t dir)
@@ -75,7 +77,8 @@ static int slice_blank(const uint8_t *p, uint16_t len)
 
 static void nv_work_wipe(void)
 {
-    wc_ForceZero(s_nv_page, sizeof(s_nv_page));
+    s_nv_page = NULL;
+    se_nv_page_release();
     wc_ForceZero(s_ops, sizeof(s_ops));
 }
 
@@ -222,6 +225,10 @@ static lt_ret_t nv_begin_write(void)
     wc_ForceZero(dwk, sizeof(dwk));
     if (ret != LT_OK) {
         return ret;
+    }
+    s_nv_page = se_nv_page_acquire();
+    if (s_nv_page == NULL) {
+        return LT_FAIL;
     }
     ret = se_tropic_port_nv_page_read(s_nv_page);
     if (ret != LT_OK) {

@@ -307,7 +307,10 @@ typedef enum wc_XmssRc (*wc_xmss_read_private_key_cb)(byte* priv, word32 privSz,
 
 
 /* Type for hash address. */
+#ifndef WC_HASHADDRESS_TYPE_DEFINED
 typedef word32 HashAddress[8];
+    #define WC_HASHADDRESS_TYPE_DEFINED
+#endif
 
 /* XMSS/XMSS^MT fixed parameters. */
 typedef struct XmssParams {
@@ -385,6 +388,7 @@ struct XmssKey {
     char                 label[XMSS_MAX_LABEL_LEN];
     int                  labelLen;
 #endif
+    WC_BITFIELD          pubSet:1;  /* pk holds a public key */
 };
 
 #ifndef WC_XMSSKEY_TYPE_DEFINED
@@ -428,6 +432,11 @@ typedef struct XmssState {
 
 #ifdef __cplusplus
     extern "C" {
+#endif
+
+#if FIPS_VERSION3_GE(7,0,0)
+    extern const unsigned int wolfCrypt_FIPS_xmss_ro_sanity[2];
+    WOLFSSL_LOCAL int wolfCrypt_FIPS_XMSS_sanity(void);
 #endif
 
 WOLFSSL_API int  wc_XmssKey_Init(XmssKey* key, void* heap, int devId);

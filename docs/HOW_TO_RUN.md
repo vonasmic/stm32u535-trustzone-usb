@@ -99,7 +99,11 @@ STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob BOOT_LOCK=0x1 -rst
 
 ### 3. Program both images
 
+Erase the whole flash, then program both images. Pages 21 and 22 (creds and NV) are not in the ELFs, so they stay blank. `-e all` does not change option bytes.
+
 ```text
+STM32_Programmer_CLI.exe -c port=SWD mode=UR -e all
+
 STM32_Programmer_CLI.exe -c port=SWD mode=UR -w "Secure\Debug\SE_firmware_Secure.elf" -v
 
 STM32_Programmer_CLI.exe -c port=SWD mode=UR -w "NonSecure\Debug\SE_firmware_NonSecure.elf" -v -rst
@@ -107,13 +111,7 @@ STM32_Programmer_CLI.exe -c port=SWD mode=UR -w "NonSecure\Debug\SE_firmware_Non
 
 ### 4. Open the console
 
-Reset or power-cycle. USB re-enumerates as CDC ACM. Open the serial port (any terminal). Idle prompt:
-
-```text
-waiting PROVISION|ENCRYPT|DECRYPT|MANAGE <unix>
-```
-
-USB command lines are at most **160** characters. `HELP` lists names.
+Reset or power-cycle. USB re-enumerates as CDC ACM. Do not open a raw serial terminal: every CDC byte is a frame (`0x6767` / type `0x00` command / type `0x01` Secure). Use UserApp or SaeNode (`fel.cvut.usb`). Command payloads are at most **160** bytes. `HELP` lists names. Wire format: **[COMMUNICATION.md](COMMUNICATION.md)**.
 
 ### 5. Tropic bring-up
 
@@ -152,8 +150,7 @@ MANAGE <unix>    # PAIRING LOAD, body = slot | priv | pub (after reflash)
 ### 7. First USER peers, then first SAE provision
 
 `PEER ADD` is optional and runs over **USER** MANAGE TLS (unsigned), not SAE.
-Need a live UserApp for that step. Then a live SAE TLS server (TerminalBridge USB
-relay) for `PROVISION`.
+Need a live UserApp for that step. Then a live SaeNode on the same CDC for `PROVISION`.
 
 ```text
 MANAGE <unix>    # PEER ADD
@@ -164,13 +161,13 @@ With an empty NV peer list the uplink has 7 items (no peer pairs). Peer hash is 
 
 `<unix>` is decimal Unix UTC seconds, non-zero. Secure also requires it in `[2024-01-01, 2038-01-01]`. If it is behind the stored TIME floor, firmware keeps the floor. PIN is **not** a console argument; ENCRYPT/DECRYPT take it inside mTLS, and MANAGE takes it only on KEM INIT.
 
-CDC RX then becomes an opaque TLS pipe until the session ends.
+After a successful arm, type `0x01` frames carry TLS until the session ends. A type `0x00` command sent in that window is queued and runs after IDLE. A host that does not frame (plain `socat`) is not a peer.
 
 ---
 
 ## Subsequent runs
 
-No option-byte rewrite unless the flash map changed. Re-flash ELFs only when firmware changed.
+No option-byte rewrite unless the flash map changed. Re-flash with the same erase-all, then program both images, when firmware changed. That blanks creds and NV. A reset does not.
 
 1. Power-cycle or reopen the serial port.
 2. Skip `KEYGEN` / `KEM INIT` if ECC slot 0 and R-MEM slot 510 already hold keys (`TROPIC PUB` succeeds / occupied 510). Replace the P-256 key with MANAGE KEYGEN.

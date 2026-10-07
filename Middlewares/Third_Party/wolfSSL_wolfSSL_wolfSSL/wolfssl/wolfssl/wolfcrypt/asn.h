@@ -254,9 +254,19 @@ enum ASNItem_DataType {
     ASN_DATA_TYPE_MP_POS_NEG     = 10,
     /* ASN.1 CHOICE. A 0 terminated list of tags that are valid. */
     ASN_DATA_TYPE_CHOICE         = 11
+#ifdef WOLFSSL_ASN_TEMPLATE_NEED_SET_INT32
+    /* 32-bit integer value encoded as an INTEGER's content even when the
+     * item is implicitly tagged. */
+    ,ASN_DATA_TYPE_WORD32_INT    = 12
+#endif
 };
 
-/* A template entry describing an ASN.1 item. */
+/* A template entry describing an ASN.1 item.
+ *
+ * Templates are tables of these, used by both GetASN_Items() to decode and
+ * SizeASN_Items()/SetASN_Items() to encode. How to write one is documented
+ * in wolfcrypt/src/ASN_TEMPLATE.md - read that before adding a template.
+ */
 typedef struct ASNItem {
     /* Depth of ASN.1 item - how many constructed ASN.1 items above. */
     byte depth;
@@ -390,6 +400,10 @@ WOLFSSL_LOCAL void GetASN_OIDData(const ASNGetData * dataASN, const byte** data,
 WOLFSSL_LOCAL void SetASN_Boolean(ASNSetData *dataASN, byte val);
 WOLFSSL_LOCAL void SetASN_Int8Bit(ASNSetData *dataASN, byte num);
 WOLFSSL_LOCAL void SetASN_Int16Bit(ASNSetData *dataASN, word16 num);
+#ifdef WOLFSSL_ASN_TEMPLATE_NEED_SET_INT32
+WOLFSSL_LOCAL void SetASN_Int32Bit(ASNSetData *dataASN, word32 num);
+WOLFSSL_LOCAL void SetASN_Int32BitInt(ASNSetData *dataASN, word32 num);
+#endif
 WOLFSSL_LOCAL void SetASN_Buffer(ASNSetData *dataASN, const byte* data,
     word32 length);
 WOLFSSL_LOCAL void SetASN_ReplaceBuffer(ASNSetData *dataASN, const byte* data,
@@ -588,6 +602,33 @@ WOLFSSL_LOCAL void SetASN_OID(ASNSetData *dataASN, int oid, int oidType);
         (dataASN)->data.u16 = (num);                                   \
     } while (0)
 
+#ifdef WOLFSSL_ASN_TEMPLATE_NEED_SET_INT32
+/* Setup an ASN data item to set a 32-bit number.
+ *
+ * @param [in] dataASN  Dynamic ASN data item.
+ * @param [in] num      32-bit number to set.
+ */
+#define SetASN_Int32Bit(dataASN, num)                                  \
+    do {                                                               \
+        (dataASN)->dataType = ASN_DATA_TYPE_WORD32;                    \
+        (dataASN)->data.u32 = (num);                                   \
+    } while (0)
+
+/* Setup an ASN data item to set a 32-bit number encoded as an INTEGER.
+ *
+ * For implicitly tagged INTEGERs - a zero byte is prepended to keep the
+ * number positive, as is done for INTEGER tagged items.
+ *
+ * @param [in] dataASN  Dynamic ASN data item.
+ * @param [in] num      32-bit number to set.
+ */
+#define SetASN_Int32BitInt(dataASN, num)                               \
+    do {                                                               \
+        (dataASN)->dataType = ASN_DATA_TYPE_WORD32_INT;                \
+        (dataASN)->data.u32 = (num);                                   \
+    } while (0)
+#endif
+
 /* Setup an ASN data item to set the data in a buffer.
  *
  * @param [in] dataASN  Dynamic ASN data item.
@@ -723,6 +764,32 @@ WOLFSSL_LOCAL void SetASN_OID(ASNSetData *dataASN, int oid, int oidType);
     }                                                                  \
     while (0)
 
+/* Set the node, and when a header, all nodes below to not be encoded.
+ *
+ * A node that is not a header has no nodes below - no need to check
+ * further nodes at a lower depth.
+ *
+ * @param [in] dataASN  Dynamic ASN data item.
+ * @param [in] asn      ASN template item.
+ * @param [in] header   Node is a header - nodes below are also set to not
+ *                      be encoded.
+ * @param [in] node     Node which should not be encoded.
+ * @param [in] dataASNLen Number of items in dataASN.
+ */
+#define SetASNItem_NoOutNode_ex(dataASN, asn, header, node, dataASNLen) \
+    do {                                                                \
+        (dataASN)[node].noOut = 1;                                      \
+        if (header) {                                                   \
+            int ii;                                                     \
+            for (ii = (node) + 1; ii < (int)(dataASNLen); ii++) {       \
+                if ((asn)[ii].depth <= (asn)[node].depth)               \
+                    break;                                              \
+                (dataASN)[ii].noOut = 1;                                \
+            }                                                           \
+        }                                                               \
+    }                                                                   \
+    while (0)
+
 /* Set the node and all nodes below to not be encoded.
  *
  * @param [in] dataASN  Dynamic ASN data item.
@@ -732,16 +799,7 @@ WOLFSSL_LOCAL void SetASN_OID(ASNSetData *dataASN, int oid, int oidType);
  * @param [in] dataASNLen Number of items in dataASN.
  */
 #define SetASNItem_NoOutNode(dataASN, asn, node, dataASNLen)           \
-    do {                                                               \
-        int ii;                                                        \
-        (dataASN)[node].noOut = 1;                                     \
-        for (ii = (node) + 1; ii < (int)(dataASNLen); ii++) {          \
-            if ((asn)[ii].depth <= (asn)[node].depth)                  \
-                break;                                                 \
-            (dataASN)[ii].noOut = 1;                                   \
-        }                                                              \
-    }                                                                  \
-    while (0)
+    SetASNItem_NoOutNode_ex(dataASN, asn, 1, node, dataASNLen)
 
 #endif /* WOLFSSL_ASN_TEMPLATE */
 
@@ -760,12 +818,14 @@ enum DN_Tags {
     ASN_BUS_CAT       = 0x0f,   /* businessCategory */
     ASN_POSTAL_CODE   = 0x11,   /* postalCode */
     ASN_USER_ID       = 0x12,   /* UserID */
-#ifdef WOLFSSL_CERT_NAME_ALL
+    /* 2.5.4.41 - 2.5.4.46. Always defined - the name component table is
+     * indexed with these ids whether or not the components are stored. */
     ASN_NAME          = 0x29,   /* name */
     ASN_GIVEN_NAME    = 0x2a,   /* GN */
     ASN_INITIALS      = 0x2b,   /* initials */
+    ASN_GEN_QUALIFIER = 0x2c,   /* generationQualifier - not stored */
+    ASN_X500_UNIQUE_ID = 0x2d,  /* x500UniqueIdentifier (2.5.4.45) */
     ASN_DNQUALIFIER   = 0x2e,   /* dnQualifier */
-#endif /* WOLFSSL_CERT_NAME_ALL */
 
 
     ASN_CONTENT_TYPE  = 0x97, /* not actual OID (see attrPkcs9ContentTypeOid) */
@@ -830,6 +890,7 @@ extern const WOLFSSL_ObjectInfo wolfssl_object_info[];
 #define WOLFSSL_RFC822_MAILBOX   "/rfc822Mailbox="
 #define WOLFSSL_FAVOURITE_DRINK  "/favouriteDrink="
 #define WOLFSSL_CONTENT_TYPE     "/contentType="
+#define WOLFSSL_X500_UNIQUE_ID   "/x500UniqueIdentifier="
 
 #if defined(WOLFSSL_APACHE_HTTPD)
     /* otherName strings */
@@ -883,7 +944,16 @@ extern const WOLFSSL_ObjectInfo wolfssl_object_info[];
     #endif
 #endif
 
-#if defined(HAVE_FALCON) || defined(WOLFSSL_HAVE_MLDSA)
+/* Maximum size of a CertificateVerify signature buffer. Retained as public API
+ * for backward compatibility; wolfSSL no longer uses it internally. The TLS and
+ * certificate-generation paths now size their buffers from the actual signature
+ * length instead of this worst case, which balloons to ~50KB when SLH-DSA is
+ * enabled. Downstream code that sizes a stack buffer with this should account
+ * for that when SLH-DSA is compiled in. */
+#if defined(WOLFSSL_HAVE_SLHDSA)
+    /* SLH-DSA signatures are large (up to ~50KB for the 'f' parameter sets). */
+    #define WC_MAX_CERT_VERIFY_SZ (WC_SLHDSA_MAX_SIG_LEN + 1024)
+#elif defined(HAVE_FALCON) || defined(WOLFSSL_HAVE_MLDSA)
     #define WC_MAX_CERT_VERIFY_SZ 6000            /* For ML-DSA */
 #elif defined(WOLFSSL_CERT_EXT)
     #define WC_MAX_CERT_VERIFY_SZ 2048            /* For larger extensions */
@@ -1039,6 +1109,10 @@ extern const WOLFSSL_ObjectInfo wolfssl_object_info[];
 #define WC_LN_userId "userId"
 #define WC_NID_userId 458
 
+#define WC_SN_x500UniqueIdentifier "x500UniqueIdentifier"
+#define WC_LN_x500UniqueIdentifier "X500 unique identifier"
+#define WC_NID_x500UniqueIdentifier 503     /* 2.5.4.45 */
+
 #define WC_LN_registeredAddress "registeredAddress"
 #define WC_NID_registeredAddress 870
 
@@ -1175,6 +1249,10 @@ extern const WOLFSSL_ObjectInfo wolfssl_object_info[];
 #define SN_userId WC_SN_userId
 #define LN_userId WC_LN_userId
 #define NID_userId WC_NID_userId
+
+#define SN_x500UniqueIdentifier WC_SN_x500UniqueIdentifier
+#define LN_x500UniqueIdentifier WC_LN_x500UniqueIdentifier
+#define NID_x500UniqueIdentifier WC_NID_x500UniqueIdentifier
 
 #define LN_registeredAddress WC_LN_registeredAddress
 #define NID_registeredAddress WC_NID_registeredAddress
@@ -1429,6 +1507,7 @@ enum KeyIdType {
     #define EXTKEYUSE_SSH_CLIENT_AUTH    0x01
     #define EXTKEYUSE_SSH_MSCL           0x02
     #define EXTKEYUSE_SSH_KP_CLIENT_AUTH 0x04
+    #define EXTKEYUSE_SSH_SERVER_AUTH    0x08
 #endif /* WOLFSSL_WOLFSSH */
 
 #define WC_NS_SSL_CLIENT      0x80
@@ -1449,6 +1528,19 @@ enum KeyIdType {
     #define WOLFSSL_IP6_ADDR_LEN 16
 #endif /* OPENSSL_ALL || WOLFSSL_IP_ALT_NAME */
 
+/* No allocator: reference key/alt-name data in the source DER, not copies. */
+#if defined(WOLFSSL_NO_MALLOC) && defined(NO_WOLFSSL_MEMORY) && \
+    !defined(XMALLOC_USER) && !defined(WOLFSSL_STATIC_MEMORY)
+    #define WC_ASN_NO_HEAP
+#endif
+
+#ifdef WC_ASN_NO_HEAP
+    #ifndef WC_ASN_MAX_ALTNAMES
+        /* Total no-heap SAN pool slots across all lists; excess is rejected. */
+        #define WC_ASN_MAX_ALTNAMES 8
+    #endif
+#endif
+
 typedef struct DNS_entry   DNS_entry;
 
 struct DNS_entry {
@@ -1456,7 +1548,8 @@ struct DNS_entry {
     int        type;   /* i.e. ASN_DNS_TYPE */
     int        len;    /* actual DNS len */
     const char*
-               name;   /* actual DNS name */
+               name;   /* actual DNS name; under WC_ASN_NO_HEAP this points into
+                        * the source DER and is NOT NUL-terminated - use len */
     int        nameStored;
 #ifdef WOLFSSL_IP_ALT_NAME
     char*      ipString; /* human readable form of IP address */
@@ -1469,6 +1562,9 @@ struct DNS_entry {
 
 #ifdef WOLFSSL_FPKI
     int        oidSum; /* provide oid sum for verification */
+#endif
+#ifdef WC_ASN_NO_HEAP
+    WC_BITFIELD entryStored:1; /* 1 = heap node to free; 0 = no-heap pool node */
 #endif
 };
 
@@ -1734,6 +1830,11 @@ typedef struct EncodedName {
      * WOLFSSL_MAX_PATH_LEN to a preferred value at build time
      */
     #define WOLFSSL_MAX_PATH_LEN 127
+#endif
+
+#ifndef WOLFSSL_MAX_CHAIN_DEPTH
+    /* Max cert chain depth for ancestor walks. */
+    #define WOLFSSL_MAX_CHAIN_DEPTH 20
 #endif
 
 typedef struct DecodedName DecodedName;
@@ -2088,7 +2189,10 @@ struct DecodedCert {
     WC_BITFIELD extPolicyConstIpmSet:1; /* inhibitPolicyMapping set */
     WC_BITFIELD extSubjAltNameSet:1;
     WC_BITFIELD inhibitAnyOidSet:1;
-    WC_BITFIELD selfSigned:1;           /* Indicates subject and issuer are same */
+#ifndef IGNORE_NETSCAPE_CERT_TYPE
+    WC_BITFIELD extNetscapeCertTypeSet:1;  /* Netscape certificate type seen */
+#endif
+    WC_BITFIELD selfSigned:1;          /* Indicates subject and issuer are same */
 #if defined(WOLFSSL_SEP) || defined(WOLFSSL_CERT_EXT)
     WC_BITFIELD extCertPolicySet:1;
 #endif
@@ -2135,6 +2239,10 @@ struct DecodedCert {
 #ifdef HAVE_RPK
     WC_BITFIELD isRPK:1;   /* indicate the cert is Raw-Public-Key cert in RFC7250 */
 #endif
+    WC_BITFIELD allowTrailing:1;        /* permit data after the cert's outer
+                                         * SEQUENCE. Used internally for the
+                                         * TRUSTED CERTIFICATE auxiliary trust
+                                         * info. */
 #ifdef WC_ASN_UNKNOWN_EXT_CB
     wc_UnknownExtCallback unknownExtCallback;
     wc_UnknownExtCallbackEx unknownExtCallbackEx;
@@ -2170,6 +2278,15 @@ struct DecodedCert {
     WOLFSSL_AIA_ENTRY extAuthInfoList[WOLFSSL_MAX_AIA_ENTRIES];
     WC_BITFIELD extAuthInfoListSz:7;
     WC_BITFIELD extAuthInfoListOverflow:1;
+    /* Appended to preserve the offsets of existing members. */
+    word32  extExtKeyUsageOidCnt;    /* Number of EKU KeyPurposeIds seen,
+                                      * recognized or not                */
+#ifdef WC_ASN_NO_HEAP
+    /* No-heap SAN pool; entries chain through altNames into the source DER.
+     * Adds ~WC_ASN_MAX_ALTNAMES * sizeof(DNS_entry) of stack per parse. */
+    DNS_entry altNamePool[WC_ASN_MAX_ALTNAMES];
+    word32    altNamePoolUsed;
+#endif
 };
 
 #if defined(WOLFSSL_SM2) && defined(WOLFSSL_SM3)
@@ -2207,6 +2324,10 @@ struct Signer {
      */
     WC_BITFIELD extNameConstraintCrit:1;
     WC_BITFIELD extNameConstraintHasUnsupported:1;
+#ifndef NO_SKID
+    WC_BITFIELD authKeyIdSet:1;      /* true when authKeyIdHash holds the
+                                      * AKID extension's keyId */
+#endif
 #endif
     const byte* publicKey;
     int     nameLen;
@@ -2218,15 +2339,20 @@ struct Signer {
 #endif
     byte    subjectNameHash[SIGNER_DIGEST_SIZE];
                                      /* sha hash of names in certificate */
-#if defined(HAVE_OCSP) || defined(HAVE_CRL) || defined(WOLFSSL_AKID_NAME)
+#if defined(HAVE_OCSP) || defined(HAVE_CRL) || defined(WOLFSSL_AKID_NAME) || \
+    !defined(IGNORE_NAME_CONSTRAINTS)
     byte    issuerNameHash[SIGNER_DIGEST_SIZE];
-                                    /* sha hash of issuer names in certificate.
-                                    * Used in OCSP to check for authorized
-                                    * responders. */
+                                     /* sha hash of issuer names; used by
+                                      * OCSP and name-constraint walk */
 #endif
 #ifndef NO_SKID
     byte    subjectKeyIdHash[SIGNER_DIGEST_SIZE];
                                     /* sha hash of key in certificate */
+#ifndef IGNORE_NAME_CONSTRAINTS
+    byte    authKeyIdHash[SIGNER_DIGEST_SIZE];
+                                     /* sha hash of AKID; locates signer
+                                      * during name-constraint walk */
+#endif
 #endif
 #ifdef HAVE_OCSP
     byte subjectKeyHash[KEYID_SIZE];
@@ -2259,25 +2385,7 @@ struct Signer {
 #ifdef WOLFSSL_TRUST_PEER_CERT
 /* used for having trusted peer certs rather then CA */
 struct TrustedPeerCert {
-    int     nameLen;
-    const char*
-            name;                    /* common name */
-    #ifndef IGNORE_NAME_CONSTRAINTS
-        Base_entry* permittedNames;
-        Base_entry* excludedNames;
-    #endif /* IGNORE_NAME_CONSTRAINTS */
-    byte    subjectNameHash[SIGNER_DIGEST_SIZE];
-                                     /* sha hash of names in certificate */
-    #ifndef WOLFSSL_NO_ISSUERHASH_TDPEER
-    byte    issuerHash[SIGNER_DIGEST_SIZE];
-                                    /* sha hash of issuer name in certificate */
-    #endif
-    #ifndef NO_SKID
-        byte    subjectKeyIdHash[SIGNER_DIGEST_SIZE];
-                                     /* sha hash of SKID in certificate */
-    #endif
-    word32 sigLen;
-    byte*  sig;
+    byte   certHash[KEYID_SIZE];     /* hash of the whole certificate DER */
     struct TrustedPeerCert* next;
 };
 #endif /* WOLFSSL_TRUST_PEER_CERT */
@@ -2390,6 +2498,11 @@ WOLFSSL_LOCAL int StreamOctetString(const byte* inBuf, word32 inBufSz,
 WOLFSSL_ASN_API void FreeAltNames(DNS_entry* altNames, void* heap);
 WOLFSSL_ASN_API DNS_entry* AltNameNew(void* heap);
 WOLFSSL_ASN_API DNS_entry* AltNameDup(DNS_entry* from, void* heap);
+#if defined(WOLFSSL_ASN_TEMPLATE) && defined(WOLFSSL_CERT_GEN) && \
+    defined(WOLFSSL_ALT_NAMES)
+WOLFSSL_ASN_API int wc_SetDNSEntry(void* heap, const char* str, int strLen,
+                                   int type, DNS_entry** entries);
+#endif
 #ifndef IGNORE_NAME_CONSTRAINTS
     WOLFSSL_ASN_API void FreeNameSubtrees(Base_entry* names, void* heap);
 #endif /* IGNORE_NAME_CONSTRAINTS */
@@ -2471,7 +2584,7 @@ WOLFSSL_LOCAL int DecodeKeyUsage(const byte* input, word32 sz,
 WOLFSSL_LOCAL int DecodeExtKeyUsage(const byte* input, word32 sz,
         const byte **extExtKeyUsageSrc, word32 *extExtKeyUsageSz,
         word32 *extExtKeyUsageCount, byte *extExtKeyUsage,
-        byte *extExtKeyUsageSsh);
+        byte *extExtKeyUsageSsh, word32 *extExtKeyUsageOidCnt);
 
 WOLFSSL_LOCAL int TryDecodeRPKToKey(DecodedCert* cert);
 WOLFSSL_LOCAL int wc_GetPubX509(DecodedCert* cert, int verify, int* badDate);
@@ -2528,7 +2641,8 @@ WOLFSSL_LOCAL int GetTimeString(byte* date, int format, char* buf, int len,
 #endif
 #if !defined(NO_ASN_TIME) && !defined(USER_TIME) && \
     !defined(TIME_OVERRIDES) && (defined(OPENSSL_EXTRA) || \
-            defined(HAVE_PKCS7) || defined(HAVE_OCSP_RESPONDER))
+            defined(HAVE_PKCS7) || defined(HAVE_OCSP_RESPONDER) || \
+            defined(WOLFSSL_TSP))
 WOLFSSL_LOCAL int GetFormattedTime(void* currTime, byte* buf, word32 len);
 WOLFSSL_LOCAL int GetAsnTimeString(void* currTime, byte* buf, word32 len);
 WOLFSSL_LOCAL int GetFormattedTime_ex(void* currTime, byte* buf, word32 len, byte format);
@@ -2677,6 +2791,11 @@ WOLFSSL_API int wc_DhPublicKeyDecode(const byte* input, word32* inOutIdx,
 #endif
 WOLFSSL_LOCAL int FlattenAltNames(byte* output, word32 outputSz,
                                   const DNS_entry* names);
+#if defined(WOLFSSL_CERT_GEN) && defined(WOLFSSL_ALT_NAMES)
+WOLFSSL_ASN_API int wc_FlattenAltNames(byte* output, word32 outputSz,
+                                       const DNS_entry* names);
+WOLFSSL_ASN_API int wc_SetAltNamesFromList(Cert* cert, const DNS_entry* names);
+#endif
 
 WOLFSSL_LOCAL int wc_EncodeName(EncodedName* name, const char* nameStr,
         char nameType, byte type);
@@ -2779,7 +2898,8 @@ enum cert_enums {
     SLH_DSA_SHAKE_256F_KEY   = 35,
     LMS_KEY                  = 36,
     XMSS_KEY                 = 37,
-    XMSSMT_KEY               = 38
+    XMSSMT_KEY               = 38,
+    FRODOKEM_KEY             = 39
 };
 
 #ifndef WOLFSSL_NO_DILITHIUM_LEGACY_NAMES
@@ -2994,7 +3114,6 @@ struct OcspRequest {
     byte   nonce[MAX_OCSP_NONCE_SZ];
     int    nonceSz;
     void*  heap;
-    void*  ssl;
 };
 
 WOLFSSL_LOCAL void InitOcspResponse(OcspResponse* resp, OcspEntry* single,
@@ -3149,6 +3268,11 @@ struct DecodedCRL {
     WC_BITFIELD extAuthKeyIdSet:1;       /* Auth key identifier set indicator */
 #endif
     WC_BITFIELD crlNumberSet:1;          /* CRL number set indicator */
+#ifdef WC_ASN_UNKNOWN_EXT_CB
+    wc_UnknownExtCallback   unknownExtCallback;
+    wc_UnknownExtCallbackEx unknownExtCallbackEx;
+    void*                   unknownExtCallbackExCtx;
+#endif
 };
 
 WOLFSSL_LOCAL void InitDecodedCRL(DecodedCRL* dcrl, void* heap);
@@ -3197,6 +3321,12 @@ struct DecodedAcert {
     const byte * rawAttr; /* Not owned, points into raw acert. */
     word32       rawAttrLen;
     SignatureCtx sigCtx;
+#ifdef WC_ASN_NO_HEAP
+    /* No-heap alt-name pool, used like DecodedCert.altNamePool.
+     * Adds ~WC_ASN_MAX_ALTNAMES * sizeof(DNS_entry) of stack per parse. */
+    DNS_entry    altNamePool[WC_ASN_MAX_ALTNAMES];
+    word32       altNamePoolUsed;
+#endif
 };
 
 typedef struct DecodedAcert DecodedAcert;
@@ -3222,17 +3352,23 @@ WOLFSSL_TEST_VIS int  wolfssl_local_MatchIpSubnet(const byte* ip, int ipSz,
 WOLFSSL_TEST_VIS int  wolfssl_local_MatchUriNameConstraint(const char* uri,
                                                   int uriSz, const char* base,
                                                   int baseSz);
+WOLFSSL_LOCAL int  wolfssl_local_UriNameHasDnsHost(const char* uri,
+                                                  int uriSz);
 WOLFSSL_TEST_VIS int  wolfssl_local_MatchDnsConstraintWildcard(
                                                   const char* name, int nameSz,
                                                   const char* base, int baseSz,
                                                   int permitted);
+WOLFSSL_LOCAL int  wolfssl_local_MatchDnsNameConstraint(const char* name,
+                                                  int nameSz, const char* base,
+                                                  int baseSz, int permitted);
 #endif
 
 #if ((defined(HAVE_ED25519) && defined(HAVE_ED25519_KEY_IMPORT)) \
     || (defined(HAVE_CURVE25519) && defined(HAVE_CURVE25519_KEY_IMPORT)) \
     || (defined(HAVE_ED448) && defined(HAVE_ED448_KEY_IMPORT)) \
     || (defined(HAVE_CURVE448) && defined(HAVE_CURVE448_KEY_IMPORT)) \
-    || defined(HAVE_FALCON) || defined(WOLFSSL_HAVE_MLDSA) || defined(WOLFSSL_HAVE_SLHDSA))
+    || defined(HAVE_FALCON) || defined(WOLFSSL_HAVE_MLDSA) \
+    || defined(WOLFSSL_HAVE_SLHDSA) || defined(WOLFSSL_HAVE_FRODOKEM))
 WOLFSSL_LOCAL int DecodeAsymKey_Assign(const byte* input, word32* inOutIdx,
     word32 inSz, const byte** seed, word32* seedLen, const byte** privKey,
     word32* privKeyLen, const byte** pubKey, word32* pubKeyLen,

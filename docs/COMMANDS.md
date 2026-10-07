@@ -2,7 +2,7 @@
 
 Authoritative tables live in [NonSecure/Core/Src/tls_usb_io.c](../NonSecure/Core/Src/tls_usb_io.c). Host `se_host` compiles that same file over a PTY.
 
-TLS framing after arming: **[COMMUNICATION.md](COMMUNICATION.md)**. Tropic slots: **[TROPIC.md](TROPIC.md)**. How to run: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
+USB frames and TLS after arming: **[COMMUNICATION.md](COMMUNICATION.md)**. Tropic slots: **[TROPIC.md](TROPIC.md)**. How to run: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
 
 The device is a TLS client. **SAE** is the peer for `PROVISION`. **USER** (UserApp) is the peer for `ENCRYPT` / `DECRYPT` / `MANAGE`. UserApp is not an SAE.
 
@@ -10,15 +10,19 @@ The device is a TLS client. **SAE** is the peer for `PROVISION`. **USER** (UserA
 
 ## Parsing
 
+CDC is framed. Command text is the payload of a type `0x00` frame, not a raw `\n` line. Wire format: **[COMMUNICATION.md](COMMUNICATION.md)**. Host `se_host` compiles the same NonSecure parser over a PTY, so the PTY also carries frames.
 
-| Rule       | USB CDC                                                        | Host `se_host`              |
+
+| Rule       | USB CDC / PTY                                                  | Meaning                     |
 | ---------- | -------------------------------------------------------------- | --------------------------- |
-| Line end   | `\n` (`\r` ignored)                                            | Same (PTY + stdin)          |
-| Max line   | **160** chars                                                  | **160** chars (same parser) |
+| Frame      | magic `0x6767`, type `0x00`, length, payload                   | Console command or reply    |
+| Max command | **160** bytes in the `0x00` payload                           | Same parser on `se_host`    |
 | Whitespace | Trim spaces/tabs                                               | Same                        |
 | Match      | Case-sensitive prefix; optional spaces/tabs/`=` after the name | Same                        |
-| Empty line | Ignored                                                        | Ignored                     |
-| Unknown    | `failed`                                                       | `failed`                    |
+| Empty payload | Ignored                                                     | Ignored                     |
+| Unknown    | `failed` (type `0x00`)                                         | `failed`                    |
+| During TLS / OWNER SET | type `0x00` is queued (4 deep) and run after IDLE | `CLIENT CSR` after MANAGE   |
+| Type `0x01` | Secure payload: TLS, or the OWNER SET blob after begin `ok`  | Not parsed as a command     |
 
 
 `HELP` prints every `usage` string. `?` is an alias (not listed in HELP). Stop `se_host` with Ctrl-C (unlinks the PTY).
@@ -67,7 +71,7 @@ Reply: `u8 status | u16le msg_len | msg` (ASCII, no NUL on the wire, max 160). P
 | `ENCRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots.                            |
 | `DECRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots).                                                                                                           |
 | `MANAGE <unix>`    | yes   | yes   | same                  | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command ([MANAGE commands](#manage-commands)), status reply, shutdown.                  |
-| `OWNER SET`        | yes   | yes   | then unsigned blob    | First USB wins if the owner slot is empty; else ASCII `refused`. Begin prints `ok`, then apply prints `ok`/`failed`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip.                                         |
+| `OWNER SET`        | yes   | yes   | then type `0x01` blob | First USB wins if the owner slot is empty; else type `0x00` `refused`. Begin and apply `ok`/`failed` are type `0x00` ASCII. The blob is type `0x01`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
 | `PEER LIST`        | yes   | yes   | —                     | Dump: `u8 count | (u8 nlen | name | 48 hash)*`                                                                                                                                                                                                    |
 | `CLIENT HASH`      | yes   | yes   | —                     | Dump 48-byte `SHA384(device_cert_spki || ecc_pub)`                                                                                                                                                                                                |
 | `CLIENT CSR`       | yes   | yes   | —                     | Dump raw ML-DSA-44 pub (1312 B)                                                                                                                                                                                                                   |
@@ -81,9 +85,9 @@ Reply: `u8 status | u16le msg_len | msg` (ASCII, no NUL on the wire, max 160). P
 - Decimal (`strtoul` base 10), **must be non-zero**, no extra tokens. Else `failed`.
 - Silicon and `se_host`: `SECURE_TlsStart_nsc_call` → `se_time_set_unix` then `se_tls_arm`. Accepted range **1704067200–2145916800** (2024-01-01 … 2038-01-01). If the value is behind the TIME floor, firmware keeps the floor (no USB notice). Host wolfSSL still uses the **process clock** (no `TIME_OVERRIDES`).
 
-On USB (silicon or PTY), success sets `s_tls_armed`: further RX is opaque TLS until `SECURE_USB_IDLE`, error, disconnect, DTR off, or RX overflow.
+On USB (silicon or PTY), success sets `s_tls_armed`: further type `0x01` is the TLS byte stream until `SECURE_USB_IDLE`, error, disconnect, DTR off, or RX overflow. A type `0x00` command that arrives in that window is queued.
 
-TLS arm failure: ASCII line `failed` (no Tropic/TLS/auth taxonomy).
+TLS arm failure: type `0x00` line `failed` (no Tropic/TLS/auth taxonomy).
 
 ---
 
@@ -152,10 +156,11 @@ There is no status **2**.
 
 ---
 
-Console replies (PUB, CSR, HASH, KEM PUB, OTP STATUS, PEER LIST, OWNER SET) are
-**ASCII only**. The host drains until idle and prints. Binary payloads are hex
-lines; occupancy / refuse use the words `empty` / `refused`; hard errors are
-`failed`. There is no `0xB1` frame.
+Console replies (PUB, CSR, HASH, KEM PUB, OTP STATUS, PEER LIST, OWNER SET)
+are **ASCII in type `0x00` frames**. The host drains until idle and prints.
+Binary payloads are hex lines; occupancy / refuse use the words `empty` /
+`refused`; hard errors are `failed`. The OWNER SET blob is type `0x01`; begin
+and apply status stay type `0x00`.
 
 ---
 
@@ -263,13 +268,13 @@ Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.
 | Console                                        | NSC                                                                                                                   |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE` | `SECURE_TlsStart_nsc_call(mode, unix)`                                                                                |
-| `OWNER SET`                                    | `SECURE_OwnerBegin_nsc_call` then unsigned USB blob                                                                   |
+| `OWNER SET`                                    | `SECURE_OwnerBegin_nsc_call` then type `0x01` blob                                                                    |
+| Armed USB RX/TX                                | type `0x01` payload → `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call`              |
 | `PEER LIST`                                    | `SECURE_PeerGet_nsc_call`                                                                                             |
 | `CLIENT HASH`                                  | `SECURE_TropicClientHash_nsc_call`                                                                                    |
 | `CLIENT CSR`                                   | `SECURE_ClientCsr_nsc_call`                                                                                           |
 | `TROPIC OTP STATUS`                            | `SECURE_TropicOtpLeft_nsc_call`                                                                                       |
 | `TROPIC PING` …                                | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
-| Armed USB RX/TX                                | `SECURE_UsbRx_nsc_call` / `SECURE_UsbTx_nsc_call` / `SECURE_UsbService_nsc_call`                                      |
-| Console ASCII                                  | `SECURE_UsbLog_nsc_call`                                                                                              |
+| Console ASCII                                  | `SECURE_UsbLog_nsc_call` (TX wrapped as type `0x00` when idle)                                                      |
 
 

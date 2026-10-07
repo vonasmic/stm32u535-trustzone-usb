@@ -11,6 +11,7 @@
 #include "secure_lv.h"
 #include "se_le.h"
 #include "se_creds.h"
+#include "se_ram.h"
 #include "se_cert_spki.h"
 #include "wolfssl/wolfcrypt/sha512.h"
 #include "wolfssl/wolfcrypt/wc_port.h"
@@ -20,14 +21,14 @@
 #define SE_TROPIC_SESSION_SIG_LEN 64u
 
 /* 1184-byte ML-KEM PK is too large for the TLS task stack. */
-static uint8_t s_uplink_kem_pk[SE_TROPIC_MLKEM_PK_LEN];
-static uint8_t s_hash_cert[SE_CREDS_DER_MAX];
+static uint8_t s_uplink_kem_pk[SE_TROPIC_MLKEM_PK_LEN] SE_SRAM4_BSS;
 
 /** client_hash = SHA384(device_cert_spki || ecc_pub). Same value as uplink item 2. */
 static int client_hash_from_pub(const uint8_t ecc_pub[SE_TROPIC_ECC_PUB_LEN],
                                 uint8_t client_hash[SE_TROPIC_CLIENT_HASH_LEN])
 {
     wc_Sha384 sha;
+    uint8_t *cert = se_der_scratch();
     const uint8_t *spki = NULL;
     uint32_t spki_len = 0U;
     uint16_t cert_len = 0U;
@@ -36,15 +37,15 @@ static int client_hash_from_pub(const uint8_t ecc_pub[SE_TROPIC_ECC_PUB_LEN],
     if ((ecc_pub == NULL) || (client_hash == NULL)) {
         return -1;
     }
-    if (se_creds_get_device_cert(s_hash_cert, &cert_len, (uint16_t)sizeof(s_hash_cert)) != LT_OK) {
+    if (se_creds_get_device_cert(cert, &cert_len, SE_CREDS_DER_MAX) != LT_OK) {
         return -1;
     }
-    if (se_cert_spki_raw(s_hash_cert, cert_len, &spki, &spki_len) != 0) {
-        wc_ForceZero(s_hash_cert, sizeof(s_hash_cert));
+    if (se_cert_spki_raw(cert, cert_len, &spki, &spki_len) != 0) {
+        wc_ForceZero(cert, SE_DER_SCRATCH_SIZE);
         return -1;
     }
     if (wc_InitSha384(&sha) != 0) {
-        wc_ForceZero(s_hash_cert, sizeof(s_hash_cert));
+        wc_ForceZero(cert, SE_DER_SCRATCH_SIZE);
         return -1;
     }
     if ((wc_Sha384Update(&sha, spki, spki_len) == 0) &&
@@ -53,7 +54,7 @@ static int client_hash_from_pub(const uint8_t ecc_pub[SE_TROPIC_ECC_PUB_LEN],
         rc = 0;
     }
     wc_Sha384Free(&sha);
-    wc_ForceZero(s_hash_cert, sizeof(s_hash_cert));
+    wc_ForceZero(cert, SE_DER_SCRATCH_SIZE);
     return rc;
 }
 

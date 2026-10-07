@@ -60,7 +60,7 @@ int wc_AsconHash256_Update(wc_AsconHash256* a, const byte* data, word32 dataSz);
 
 /*!
     \ingroup ASCON
-    \brief この関数は、ASCONハッシュを完了し、出力を生成します。
+    \brief この関数は、ASCONハッシュを完了し、出力を生成します。ASCONハッシュコンテキストの状態をリセットします。
 
     \return 0 成功時。
     \return BAD_FUNC_ARG コンテキストまたは出力ポインタがNULLの場合。
@@ -233,7 +233,8 @@ int wc_AsconAEAD128_SetNonce(wc_AsconAEAD128* a, const byte* nonce);
     \brief この関数は、Ascon AEADコンテキストの関連データを設定します。
 
     \return 0 成功時。
-    \return BAD_FUNC_ARG コンテキストまたは関連データポインタがNULLの場合。
+    \return BAD_FUNC_ARG コンテキストがNULLの場合、または関連データサイズが0より
+            大きいのに関連データポインタがNULLの場合。
     \return BAD_STATE_E 鍵またはnonceが設定されていない場合。
 
     \param a 初期化されたAscon AEADコンテキストへのポインタ。
@@ -314,7 +315,7 @@ int wc_AsconAEAD128_EncryptUpdate(wc_AsconAEAD128* a, byte* out, const byte* in,
 
 /*!
     \ingroup ASCON
-    \brief この関数は、Ascon AEADを使用した暗号化プロセスを完了し、認証タグを生成します。
+    \brief この関数は、Ascon AEADを使用した暗号化プロセスを完了し、認証タグを生成します。Ascon AEADコンテキストの状態をリセットします。
 
     \return 0 成功時。
     \return BAD_FUNC_ARG コンテキストまたは出力ポインタがNULLの場合、または入力サイズが0より大きいのに入力がNULLの場合。
@@ -407,7 +408,7 @@ int wc_AsconAEAD128_DecryptUpdate(wc_AsconAEAD128* a, byte* out, const byte* in,
 
 /*!
     \ingroup ASCON
-    \brief この関数は、Ascon AEADを使用した復号プロセスを完了し、認証タグを検証します。
+    \brief この関数は、Ascon AEADを使用した復号プロセスを完了し、認証タグを検証します。Ascon AEADコンテキストの状態をリセットします。
 
     \return 0 成功時。
     \return BAD_FUNC_ARG コンテキストまたはタグポインタがNULLの場合。

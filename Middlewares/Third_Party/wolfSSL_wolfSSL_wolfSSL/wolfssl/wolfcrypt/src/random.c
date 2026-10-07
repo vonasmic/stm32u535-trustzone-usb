@@ -35,12 +35,18 @@ This library contains implementation for the random number generator.
  * WC_RNG_BLOCKING:          Make RNG operations blocking         default: off
  * WC_VERBOSE_RNG:           Enable verbose RNG debug output      default: off
  * WC_RNG_SEED_CB:           Use custom seed callback function    default: off
- * WC_RNG_BANK_SUPPORT:      Enable RNG bank (pre-generated)     default: off
- *                            random data support
- * WOLFSSL_RNG_USE_FULL_SEED: Use full-length seed for DRBG      default: off
+ * WC_HAVE_RNG_BANKREF:      Enable RNG bank indirect RNG         default: off
+ *                            support
+ * WC_RNG_NO_AUTO_LOCK:      Leave out the lock that lets threads default: off
+ *                            share one WC_RNG (lock on unless set)
+ * WC_RNG_WANT_AUTO_LOCK:    Keep that lock even where this build default: off
+ *                            would otherwise skip it
+ * WC_RNG_AUTOFORK:          pthread_atfork handlers so a forked  default: on
+ *                            child can keep using its WC_RNG     where found
+ * WOLFSSL_RNG_USE_FULL_SEED: Use full-length seed for DRBG       default: off
  * WOLFSSL_GENSEED_FORTEST:  Use deterministic seed for testing   default: off
  *                            WARNING: not for production use
- * WOLFSSL_KEEP_RNG_SEED_FD_OPEN: Keep /dev/random fd open       default: off
+ * WOLFSSL_KEEP_RNG_SEED_FD_OPEN: Keep /dev/random fd open        default: off
  *                            between seed operations
  *
  * Custom RNG Sources:
@@ -58,6 +64,9 @@ This library contains implementation for the random number generator.
  * FORCE_FAILURE_GETRANDOM:  Force getrandom failure (testing)    default: off
  * NO_DEV_RANDOM:            Don't use /dev/random for seeding    default: off
  * NO_DEV_URANDOM:           Don't use /dev/urandom for seeding   default: off
+ * WC_RNG_SEED_DEVICE:       Device tried before the usual seed   default: off
+ *                            sources. Must be a quoted string,
+ *                            e.g. -DWC_RNG_SEED_DEVICE='"/dev/hwrng"'
  * HAVE_INTEL_RDRAND:        Use Intel RDRAND instruction         default: off
  * HAVE_INTEL_RDSEED:        Use Intel RDSEED instruction         default: off
  * HAVE_AMD_RDSEED:          Use AMD RDSEED instruction           default: off
@@ -88,11 +97,11 @@ This library contains implementation for the random number generator.
  * FREESCALE_RNGA:           Freescale RNGA                       default: off
  * FREESCALE_K70_RNGA:       Freescale K70 RNGA                   default: off
  * FREESCALE_RNGB:           Freescale RNGB                       default: off
- * FREESCALE_KSDK_2_0_RNGA:  Freescale KSDK 2.0 RNGA             default: off
- * FREESCALE_KSDK_2_0_TRNG:  Freescale KSDK 2.0 TRNG             default: off
- * MAX3266X_RNG:             MAX3266X hardware RNG                 default: off
+ * FREESCALE_KSDK_2_0_RNGA:  Freescale KSDK 2.0 RNGA              default: off
+ * FREESCALE_KSDK_2_0_TRNG:  Freescale KSDK 2.0 TRNG              default: off
+ * MAX3266X_RNG:             MAX3266X hardware RNG                default: off
  * QAT_ENABLE_RNG:           Intel QAT hardware RNG               default: off
- * WOLFSSL_ATECC_RNG:        ATECC508/608 hardware RNG             default: off
+ * WOLFSSL_ATECC_RNG:        ATECC508/608 hardware RNG            default: off
  * WOLFSSL_SILABS_TRNG:      Silicon Labs TRNG                    default: off
  * WOLFSSL_SCE_NO_TRNG:      Disable Renesas SCE TRNG             default: off
  * WOLFSSL_SCE_TRNG_HANDLE:  Renesas SCE TRNG handle              default: off
@@ -100,7 +109,16 @@ This library contains implementation for the random number generator.
  * WOLFSSL_PSA_NO_RNG:       Disable PSA RNG                      default: off
  * HAVE_IOTSAFE_HWRNG:       IoT-Safe hardware RNG                default: off
  * WOLFSSL_XILINX_CRYPT_VERSAL: Xilinx Versal crypto RNG          default: off
+ * WOLFSSL_VA416X0_TRNG:     Vorago VA416x0 hardware TRNG         default: off
+ *                           (seeds Hash-DRBG; needs the VA416xx
+ *                           SDK header va416xx.h on the include
+ *                           path). See the wc_GenerateSeed()
+ *                           implementation below for SDK API and
+ *                           tuning details.
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_RANDOM_C
 
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
@@ -115,9 +133,6 @@ This library contains implementation for the random number generator.
 #if defined(HAVE_FIPS) && \
     defined(HAVE_FIPS_VERSION) && (HAVE_FIPS_VERSION >= 2)
 
-    /* set NO_WRAPPERS before headers, use direct internal f()s not wrappers */
-    #define FIPS_NO_WRAPPERS
-
     #ifdef USE_WINDOWS_API
         #pragma code_seg(".fipsA$i")
         #pragma const_seg(".fipsB$i")
@@ -126,7 +141,14 @@ This library contains implementation for the random number generator.
 
 
 #include <wolfssl/wolfcrypt/random.h>
-#ifdef WC_RNG_BANK_SUPPORT
+#ifdef WC_RNG_LOCK_ATFORK
+    #include <errno.h>   /* for the fork handlers, whatever the seed source */
+#endif
+#ifdef WC_HAVE_RNG_BANKREF
+    #if defined(HAVE_FIPS) && !defined(WOLFSSL_EXPERIMENTAL_SETTINGS) && \
+        !defined(WOLFSSL_FIPS_DEV)
+        #error WC_HAVE_RNG_BANKREF is unsupported in FIPS configurations.
+    #endif
     #include <wolfssl/wolfcrypt/rng_bank.h>
 #endif
 #include <wolfssl/wolfcrypt/cpuid.h>
@@ -166,7 +188,8 @@ This library contains implementation for the random number generator.
     wolfSSL_Mutex wnr_mutex WOLFSSL_MUTEX_INITIALIZER_CLAUSE(wnr_mutex);    /* global netRandom mutex */
     int wnr_timeout     = 0;    /* entropy timeout, milliseconds */
     #ifndef WOLFSSL_MUTEX_INITIALIZER
-    int wnr_mutex_inited = 0;   /* flag for mutex init */
+    /* Elects a single initializer for wnr_mutex. */
+    wc_MutexOnceFlag wnr_mutex_inited = WOLFSSL_ATOMIC_INITIALIZER(0);
     #endif
     int wnr_inited = 0;    /* flag for whether wc_InitNetRandom() has been called */
     wnr_context*  wnr_ctx;      /* global netRandom context */
@@ -184,6 +207,8 @@ This library contains implementation for the random number generator.
     #include "wolfssl/wolfcrypt/port/xilinx/xil-versal-trng.h"
 #elif defined(WOLFSSL_RPIPICO)
     #include "wolfssl/wolfcrypt/port/rpi_pico/pico.h"
+#elif defined(WOLFSSL_C2000_ENTROPY)
+    #include "wolfssl/wolfcrypt/port/ti/ti-c2000-entropy.h"
 #elif defined(NO_DEV_RANDOM)
 #elif defined(CUSTOM_RAND_GENERATE)
 #elif defined(CUSTOM_RAND_GENERATE_BLOCK)
@@ -285,6 +310,75 @@ This library contains implementation for the random number generator.
 #endif /* USE_WINDOWS_API */
 #endif
 
+/* RNG health states */
+#define DRBG_NOT_INIT     WC_DRBG_NOT_INIT
+#define DRBG_OK           WC_DRBG_OK
+#define DRBG_FAILED       WC_DRBG_FAILED
+#define DRBG_CONT_FAILED  WC_DRBG_CONT_FAILED
+
+/* enforcement helper for WC_RNG_LOCK_REQUIRED and
+ * WC_RNG_LOCK_ENTROPY_INVALIDATED: instance-consuming public APIs call this on
+ * entry. */
+static WC_MAYBE_UNUSED WC_INLINE int rng_lock_required_check(WC_RNG* rng)
+{
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+#ifndef WC_RNG_HAVE_LOCK
+    return 0;
+#else /* WC_RNG_HAVE_LOCK */
+    else {
+    #ifdef WOLFSSL_NO_ATOMICS
+        WC_RNG_lock_t lock_state = rng->lock;
+    #else
+        WC_RNG_lock_arg_t lock_state = WOLFSSL_ATOMIC_LOAD(rng->lock);
+    #endif
+        if ((lock_state & WC_RNG_LOCK_REQUIRED) &&
+            (! (lock_state & WC_RNG_LOCK_HELD)))
+        {
+            return OBJECT_NOT_LOCKED_E;
+        }
+        /* WC_RNG_LOCK_ENTROPY_INVALIDATED deliberately does not gate entry
+         * here: on lock-required instances the lock API refuses new leases,
+         * and on unlocked instances the saturated reseedCtr (see
+         * wc_RNG_invalidate_entropy()) forces a credited reseed -- which
+         * clears the flag -- before the next generate.  Refusing here would
+         * brick unlocked instances, with no path to recovery. */
+        return 0;
+    }
+#endif /* WC_RNG_HAVE_LOCK */
+}
+
+/* Read-only accessor for the RNG health status (enum wc_RngHealthState).
+ * Returns the status, or BAD_FUNC_ARG for a NULL rng. */
+int wc_RNG_GetStatus(const WC_RNG* rng)
+{
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    return (int)rng->status;
+}
+
+/* Returns 1 if rng has an instantiated DRBG, else 0.  An in-service WC_RNG can
+ * lack one: _InitRng() in HAVE_INTEL_RDRAND configurations bypasses DRBG
+ * instantiation when the CPU has RDRAND (). */
+int wc_RNG_DRBG_Present(const WC_RNG* rng)
+{
+    if (rng == NULL)
+        return 0;
+#if defined(HAVE_HASHDRBG) && !defined(NO_SHA256)
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL))
+        return 1;
+#endif
+#if defined(HAVE_HASHDRBG) && defined(WOLFSSL_DRBG_SHA512)
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL))
+        return 1;
+#endif
+    return 0;
+}
+
+#ifdef WC_RNG_HAVE_POOL
+static WARN_UNUSED_RESULT int PoolPurge(WC_RNG* rng);
+#endif
+
 /* Start NIST DRBG code */
 #ifdef HAVE_HASHDRBG
 
@@ -309,17 +403,35 @@ int wc_SetSeed_Cb(wc_RngSeed_Cb cb)
 
 
 /* Internal return codes */
-#define DRBG_SUCCESS      0
-#define DRBG_FAILURE      1
-#define DRBG_NEED_RESEED  2
-#define DRBG_CONT_FAILURE 3
-#define DRBG_NO_SEED_CB   4
+enum {
+    DRBG_SUCCESS = 0,
+    DRBG_FAILURE = 1,
+    DRBG_NEED_RESEED = 2,
+    DRBG_CONT_FAILURE = 3,
+    DRBG_NO_SEED_CB = 4
+};
 
-/* RNG health states */
-#define DRBG_NOT_INIT     WC_DRBG_NOT_INIT
-#define DRBG_OK           WC_DRBG_OK
-#define DRBG_FAILED       WC_DRBG_FAILED
-#define DRBG_CONT_FAILED  WC_DRBG_CONT_FAILED
+/* Numerous existing code points assume DRBG_SUCCESS is 0 -- for now, just
+ * assert safety around that. */
+wc_static_assert(DRBG_SUCCESS == 0);
+
+#ifdef WOLFSSL_DEBUG_TRACE_ERROR_CODES
+    enum {
+        CONST_NUM_ERR_DRBG_FAILURE = DRBG_FAILURE,
+        CONST_NUM_ERR_DRBG_NEED_RESEED = DRBG_NEED_RESEED,
+        CONST_NUM_ERR_DRBG_CONT_FAILURE = DRBG_CONT_FAILURE,
+        CONST_NUM_ERR_DRBG_NO_SEED_CB = DRBG_NO_SEED_CB
+    };
+    /* DRBG_SUCCESS needs to be macroized to avoid "enumerated and
+     * non-enumerated type in conditional expression" in C++. */
+    #define DRBG_SUCCESS (byte)DRBG_SUCCESS
+    #define DRBG_FAILURE (byte)WC_ERR_TRACE(DRBG_FAILURE)
+    #define DRBG_NEED_RESEED (byte)WC_ERR_TRACE(DRBG_NEED_RESEED)
+    #define DRBG_CONT_FAILURE (byte)WC_ERR_TRACE(DRBG_CONT_FAILURE)
+    #define DRBG_NO_SEED_CB (byte)WC_ERR_TRACE(DRBG_NO_SEED_CB)
+    #define WC_DRBG_FAILED (byte)WC_ERR_TRACE(WC_DRBG_FAILED)
+    #define WC_DRBG_CONT_FAILED (byte)WC_ERR_TRACE(WC_DRBG_CONT_FAILED)
+#endif
 
 #define SEED_SZ           WC_DRBG_SEED_SZ
 #define MAX_SEED_SZ       WC_DRBG_MAX_SEED_SZ
@@ -327,6 +439,11 @@ int wc_SetSeed_Cb(wc_RngSeed_Cb cb)
 /* Verify max gen block len */
 #if RNG_MAX_BLOCK_LEN > MAX_REQUEST_LEN
     #error RNG_MAX_BLOCK_LEN is larger than NIST DBRG max request length
+#endif
+
+/* the seed device is read through the filesystem API */
+#if defined(WC_RNG_SEED_DEVICE) && defined(NO_FILESYSTEM)
+    #error WC_RNG_SEED_DEVICE requires filesystem support
 #endif
 
 enum {
@@ -344,13 +461,14 @@ typedef struct DRBG_internal DRBG_internal;
 #ifdef WOLFSSL_DRBG_SHA512
 typedef struct DRBG_SHA512_internal DRBG_SHA512_internal;
 
-static int Hash512_DRBG_Reseed(DRBG_SHA512_internal* drbg, const byte* seed,
-                               word32 seedSz,
+static WARN_UNUSED_RESULT int Hash512_DRBG_Reseed(DRBG_SHA512_internal* drbg,
+                               const byte* seed, word32 seedSz,
                                const byte* additional, word32 additionalSz);
-static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
-                                 word32 outSz,
+static WARN_UNUSED_RESULT int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg,
+                                 byte* out, word32 outSz,
                                  const byte* additional, word32 additionalSz);
-static int Hash512_DRBG_Instantiate(DRBG_SHA512_internal* drbg,
+static WARN_UNUSED_RESULT int Hash512_DRBG_Instantiate(
+                                    DRBG_SHA512_internal* drbg,
                                     const byte* seed, word32 seedSz,
                                     const byte* nonce, word32 nonceSz,
                                     const byte* perso, word32 persoSz,
@@ -365,37 +483,53 @@ static int Hash512_DRBG_Uninstantiate(DRBG_SHA512_internal* drbg);
  * calls cannot bypass the mutual-exclusion guard and disable both DRBG types.
  * _InitRng also holds the mutex while reading the flags to get a consistent
  * snapshot, and returns BAD_STATE_E if both are somehow disabled. */
+#if !defined(HAVE_SELFTEST) && (!defined(HAVE_FIPS) || FIPS_VERSION3_GE(7,0,0))
 #ifndef NO_SHA256
 #ifdef WOLFSSL_NO_SHA256_DRBG
 static int sha256DrbgDisabled = 1;
 #else
 static int sha256DrbgDisabled = 0;
-#endif
-#endif
+#endif /* WOLFSSL_NO_SHA256_DRBG */
+#endif /* !NO_SHA256 */
 #ifdef WOLFSSL_DRBG_SHA512
 static int sha512DrbgDisabled = 0;
-#endif
+#endif /* WOLFSSL_DRBG_SHA512 */
+
 
 #ifndef SINGLE_THREADED
 static wolfSSL_Mutex drbgStateMutex
     WOLFSSL_MUTEX_INITIALIZER_CLAUSE(drbgStateMutex);
 #ifndef WOLFSSL_MUTEX_INITIALIZER
-static int drbgStateMutex_inited = 0;
-#endif
-#endif /* !SINGLE_THREADED */
+enum {
+    WC_DRBG_MUTEX_UNINITED,
+    WC_DRBG_MUTEX_INITED
+};
+/* Ports with no static mutex initializer must create drbgStateMutex at run
+ * time, so its readiness is tracked here.
+ *
+ * wc_DrbgState_MutexInit and wc_DrbgState_MutexFree are called only from
+ * wolfCrypt_Init() and wolfCrypt_Cleanup(), inside the span serialized by the
+ * init-state machine, so this flag is not otherwise synchronized. */
+static int drbgStateMutex_inited = WC_DRBG_MUTEX_UNINITED;
+#endif /* !defined(WOLFSSL_MUTEX_INITIALIZER) */
+#endif /* !defined(SINGLE_THREADED) */
+
 
 int wc_DrbgState_MutexInit(void)
 {
 #ifndef SINGLE_THREADED
 #ifndef WOLFSSL_MUTEX_INITIALIZER
-    if (!drbgStateMutex_inited) {
+    if (drbgStateMutex_inited == WC_DRBG_MUTEX_UNINITED) {
         int ret = wc_InitMutex(&drbgStateMutex);
-        if (ret != 0)
+        if (ret != 0) {
+            /* flag left unchanged because mutex was not inited */
             return ret;
-        drbgStateMutex_inited = 1;
+        }
+        drbgStateMutex_inited = WC_DRBG_MUTEX_INITED;
     }
-#endif
-#endif
+
+#endif /* !defined(WOLFSSL_MUTEX_INITIALIZER) */
+#endif /* !defined(SINGLE_THREADED) */
     return 0;
 }
 
@@ -403,17 +537,21 @@ int wc_DrbgState_MutexFree(void)
 {
 #ifndef SINGLE_THREADED
 #ifndef WOLFSSL_MUTEX_INITIALIZER
-    if (drbgStateMutex_inited) {
+    if (drbgStateMutex_inited == WC_DRBG_MUTEX_INITED) {
         int ret = wc_FreeMutex(&drbgStateMutex);
-        drbgStateMutex_inited = 0;
-        return ret;
+        if (ret != 0) {
+            /* flag left unchanged because mutex was not freed */
+            return ret;
+        }
+        drbgStateMutex_inited = WC_DRBG_MUTEX_UNINITED;
     }
-#endif
-#endif
+
+#endif /* !defined(WOLFSSL_MUTEX_INITIALIZER) */
+#endif /* !defined(SINGLE_THREADED) */
     return 0;
 }
 
-static int LockDrbgState(void)
+static WARN_UNUSED_RESULT int LockDrbgState(void)
 {
 #ifndef SINGLE_THREADED
     return wc_LockMutex(&drbgStateMutex);
@@ -431,11 +569,101 @@ static int UnlockDrbgState(void)
 #endif
 }
 
-static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
-                                  int devId);
+#endif /* !HAVE_SELFTEST && (!HAVE_FIPS || FIPS v7+) */
+
+#ifdef WC_RNG_LOCK_ATFORK
+/* The lock and its fork handlers live in wc_port.c, outside the FIPS module
+ * boundary.  Only the DRBG's reaction to a fork belongs in here. */
+static int RngAutoLockInit(WC_RNG* rng)
+{
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* A full mutex instance is locked by its caller for the whole call, so
+     * the automatic lock leaves that instance alone, as it does without the
+     * fork handlers.  Such an instance is not fork covered either. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+        return 0;
+#endif
+    return wc_ForkLock_New(&rng->autoLock, rng->heap);
+}
+
+/* Safe on a zeroed WC_RNG that never got a lock. */
+static void RngAutoLockFree(WC_RNG* rng)
+{
+    wc_ForkLock_Free(&rng->autoLock);
+}
+
+/* The child's stale DRBG state is dealt with by rng_pid_change_check() on
+ * the generate path, which the fork handlers require. */
+static int RngAutoLockEnter(WC_RNG* rng)
+{
+    return wc_ForkLock_Enter(rng->autoLock);
+}
+
+static void RngAutoLockExit(WC_RNG* rng)
+{
+    wc_ForkLock_Exit(rng->autoLock);
+}
+#elif defined(WC_RNG_HAVE_AUTO_LOCK)
+/* Without fork handlers the lock lives in the WC_RNG itself: no heap. */
+static int RngAutoLockInit(WC_RNG* rng)
+{
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* A full mutex instance is locked by its caller, which holds rng->mutex
+     * for the whole call, so the automatic lock leaves that instance alone. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+        return 0;
+#endif
+    if (wc_InitMutex(&rng->mutex) != 0)
+        return BAD_MUTEX_E;
+    rng->autoLockInited = 1;
+    return 0;
+}
+
+/* Safe on a zeroed WC_RNG that never got a lock. */
+static void RngAutoLockFree(WC_RNG* rng)
+{
+    if (rng->autoLockInited) {
+        (void)wc_FreeMutex(&rng->mutex);
+        rng->autoLockInited = 0;
+    }
+}
+
+/* Cancellation stays off while the lock is held: a reseed reads a device,
+ * which is a cancellation point.  wc_port.c owns the platform side. */
+static int RngAutoLockEnter(WC_RNG* rng)
+{
+    int old;
+    if (!rng->autoLockInited)
+        return 0;
+    old = wc_CancelDisable();
+    if (wc_LockMutex(&rng->mutex) != 0) {
+        wc_CancelRestore(old);
+        return BAD_MUTEX_E;
+    }
+    rng->autoLockCancel = old;
+    return 0;
+}
+
+static void RngAutoLockExit(WC_RNG* rng)
+{
+    int old;
+    if (!rng->autoLockInited)
+        return;
+    old = rng->autoLockCancel;   /* read before the unlock hands the slot on */
+    (void)wc_UnLockMutex(&rng->mutex);
+    wc_CancelRestore(old);
+}
+#else
+#define RngAutoLockEnter(rng) 0
+#define RngAutoLockExit(rng)  WC_DO_NOTHING
+#endif /* WC_RNG_HAVE_AUTO_LOCK */
+
+static WARN_UNUSED_RESULT int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed,
+                                  void* heap, int devId);
 
 #ifdef WOLFSSL_DRBG_SHA512
-static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
+static WARN_UNUSED_RESULT int wc_RNG_HealthTest_SHA512_ex_internal(
+                                  DRBG_SHA512_internal* drbg,
                                   int reseed, const byte* nonce, word32 nonceSz,
                                   const byte* perso, word32 persoSz,
                                   const byte* seedA, word32 seedASz,
@@ -455,16 +683,20 @@ static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
 
 /* Hash Derivation Function */
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
+static WARN_UNUSED_RESULT int Hash_df(DRBG_internal* drbg, byte* out,
+                                                  word32 outSz, byte type,
                                                   const byte* inA, word32 inASz,
                                                   const byte* inB, word32 inBSz,
                                                   const byte* inC, word32 inCSz)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
     byte ctr;
     word32 i;
     word32 len;
-    word32 bits = (outSz * 8); /* reverse byte order */
+    word32 bits = (outSz * 8);
+#ifdef WOLFSSL_WIDE_BYTE
+    byte bitsBuf[4]; /* the 32-bit length as four big-endian octets */
+#endif
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     wc_Sha256* sha = &drbg->sha256;
 #else
@@ -489,7 +721,17 @@ static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
         return DRBG_FAILURE;
 #endif
 
-#ifdef LITTLE_ENDIAN_ORDER
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* poison so a missed ForceZero on any path is caught by the check */
+    XMEMSET(digest, 0xff, WC_SHA256_DIGEST_SIZE);
+    wc_MemZero_Add("Hash_df digest", digest, WC_SHA256_DIGEST_SIZE);
+#endif
+
+#ifdef WOLFSSL_WIDE_BYTE
+    /* A word32 cannot be aliased as an octet stream where a C byte is wider
+     * than 8 bits; emit the length as four big-endian octets (shared helper). */
+    BytesFromWordsBE32(bitsBuf, &bits, 4);
+#elif defined(LITTLE_ENDIAN_ORDER)
     bits = ByteReverseWord32(bits);
 #endif
     len = (outSz / OUTPUT_BLOCK_LEN)
@@ -509,7 +751,11 @@ static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
         ret = wc_Sha256Update(sha, &ctr, sizeof(ctr));
         if (ret == 0) {
             ctr++;
+#ifdef WOLFSSL_WIDE_BYTE
+            ret = wc_Sha256Update(sha, bitsBuf, sizeof(bitsBuf));
+#else
             ret = wc_Sha256Update(sha, (byte*)&bits, sizeof(bits));
+#endif
         }
 
         if (ret == 0) {
@@ -530,7 +776,10 @@ static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
         if (ret == 0)
             ret = wc_Sha256Final(sha, digest);
 
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+        if (ret != 0)
+            (void)wc_Sha256Reset(sha);
+#else
         wc_Sha256Free(sha);
 #endif
         if (ret == 0) {
@@ -543,9 +792,18 @@ static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
                 XMEMCPY(out, digest, outSz);
             }
         }
+        else {
+            break;
+        }
     }
 
     ForceZero(digest, WC_SHA256_DIGEST_SIZE);
+    /* Explicit check only where the buffer is NOT XFREEd (XFREE auto-checks):
+     * the stack build and the small-stack-cache build (drbg member). */
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(digest, WC_SHA256_DIGEST_SIZE);
+#endif
 
 #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
     XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
@@ -553,120 +811,623 @@ static int Hash_df(DRBG_internal* drbg, byte* out, word32 outSz, byte type,
 
 #ifdef WC_VERBOSE_RNG
     if (ret != 0)
-        WOLFSSL_DEBUG_PRINTF("ERROR: %s failed with err = %d", __FUNCTION__,
+        WOLFSSL_DEBUG_PRINTF("ERROR: %s failed with err = %d", __func__,
                              ret);
 #endif
 
     return (ret == 0) ? DRBG_SUCCESS : DRBG_FAILURE;
 }
 
-/* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash_DRBG_Reseed(DRBG_internal* drbg, const byte* seed, word32 seedSz,
-                            const byte* additional, word32 additionalSz)
+/* Returns: DRBG_SUCCESS or DRBG_FAILURE.  No state mutation on failure. */
+static WARN_UNUSED_RESULT int Hash256_DRBG_Reseed(DRBG_internal* drbg,
+                               const byte* seed,
+                               word32 seedSz, const byte* additional,
+                               word32 additionalSz)
 {
     int ret;
-    WC_DECLARE_VAR(newV, byte, DRBG_SEED_LEN, 0);
+    WC_DECLARE_VAR(newV_C, byte, DRBG_SEED_LEN * 2, 0);
+    byte *newV, *newC;
 
     if (drbg == NULL) {
         return DRBG_FAILURE;
     }
 
 #ifdef WOLFSSL_SMALL_STACK_CACHE
-    newV = drbg->seed_scratch;
+    newV_C = drbg->seed_scratch;
 #else
-    WC_ALLOC_VAR_EX(newV, byte, DRBG_SEED_LEN, drbg->heap,
-        DYNAMIC_TYPE_TMP_BUFFER, return MEMORY_E);
+    WC_ALLOC_VAR_EX(newV_C, byte, DRBG_SEED_LEN * 2, drbg->heap,
+        DYNAMIC_TYPE_TMP_BUFFER, return DRBG_FAILURE);
 #endif
-    XMEMSET(newV, 0, DRBG_SEED_LEN);
+    XMEMSET(newV_C, 0, DRBG_SEED_LEN * 2);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("Hash256_DRBG_Reseed newV_C", newV_C, DRBG_SEED_LEN * 2);
+#endif
+
+    newV = newV_C;
+    newC = newV + DRBG_SEED_LEN;
 
     ret = Hash_df(drbg, newV, DRBG_SEED_LEN, drbgReseed,
                 drbg->V, sizeof(drbg->V), seed, seedSz,
                 additional, additionalSz);
     if (ret == DRBG_SUCCESS) {
-        XMEMCPY(drbg->V, newV, sizeof(drbg->V));
-
-        ret = Hash_df(drbg, drbg->C, sizeof(drbg->C), drbgInitC, drbg->V,
-                                    sizeof(drbg->V), NULL, 0, NULL, 0);
+        ret = Hash_df(drbg, newC, DRBG_SEED_LEN, drbgInitC, newV,
+                                    DRBG_SEED_LEN, NULL, 0, NULL, 0);
     }
     if (ret == DRBG_SUCCESS) {
+        XMEMCPY(drbg->V, newV, DRBG_SEED_LEN);
+        XMEMCPY(drbg->C, newC, DRBG_SEED_LEN);
         drbg->reseedCtr = 1;
     }
 
-    ForceZero(newV, DRBG_SEED_LEN);
-
-#ifndef WOLFSSL_SMALL_STACK_CACHE
-    WC_FREE_VAR_EX(newV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+    ForceZero(newV_C, DRBG_SEED_LEN * 2);
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(newV_C, DRBG_SEED_LEN * 2);
 #endif
 
-    #ifdef WC_VERBOSE_RNG
-    if (ret != 0)
-        WOLFSSL_DEBUG_PRINTF("ERROR: Hash_DRBG_Reseed failed with err %d.",
-                             ret);
-    #endif
+#ifndef WOLFSSL_SMALL_STACK_CACHE
+    WC_FREE_VAR_EX(newV_C, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
 
     return ret;
 }
 
-#endif /* !NO_SHA256 - close before wc_RNG_DRBG_Reseed (dual-DRBG-aware)
-        *              and array_add_one (shared utility) which both must
-        *              remain available to SHA-512-only builds */
+#endif /* !NO_SHA256 */
 
-/* Returns: DRBG_SUCCESS and DRBG_FAILURE or BAD_FUNC_ARG on fail */
-int wc_RNG_DRBG_Reseed(WC_RNG* rng, const byte* seed, word32 seedSz)
+#ifdef WC_RNG_HAVE_NEXT_SEED
+/* Purge the credited next-seed aperture.  A plain store would race an in-flight
+ * producer: the producer's publish must lose against a purge, never the
+ * reverse, or material generated before a state-invalidation event could
+ * surface READY after it -- exactly the resurrection the provenance guarantee
+ * forbids.  A producer mid-fill (PRODUCING) owns the buffer, so the purge only
+ * repaints the sentinel (PRODUCING -> PURGED); the producer's failed
+ * publish-CAS observes the repaint and reopens the aperture EMPTY (see
+ * NextSeedProducerRelease()) -- the sentinel alone suppresses the pre-event
+ * material; abandoned seed-aperture buffers are zeroized as explained below.
+ * All other states purge directly to EMPTY.  (The uncredited stir aperture
+ * keeps its plain-store purge: stirs carry no claims, so resurrection there is
+ * benign by the three-no-ops doctrine.)
+ *
+ * Zeroization doctrine for purges: abandonment here is event-driven (fork,
+ * VM clone/resume, credited reseed), and the event that abandons bytes in
+ * this lineage is the same event that created a sibling lineage that may
+ * consume its identical copy of them.  Abandoned-here can be consumed-there,
+ * so purged material is treated as CSP and wiped -- under ownership only:
+ * READY or parked-fill words are claimed _CONSUMING first (the same CAS a
+ * consumer uses; producers claim only non-negative words, so the claim
+ * cannot collide), then wiped, then reopened EMPTY.  A _CONSUMING holder's
+ * material is left to that consumer's own burn-before-release, and a
+ * _PRODUCING holder's to its unwind (see NextSeedProducerRelease()).
+ * Contrast the health-test burn arm, which stays sentinel-only: RCT/APT
+ * are deterministic on the bytes, so every sibling rejects the same
+ * material identically and no lineage can have consumed it.
+ */
+static WARN_UNUSED_RESULT int NextSeedPurge(wolfSSL_Atomic_Int *lenp,
+                                            byte *seed_buf,
+                                            word32 seed_buf_sz)
 {
-    if (rng == NULL || seed == NULL) {
+    int ret;
+    WC_ATOMIC_INT_ARG cur_len, want_len;
+
+    WC_CAS_WITH_RETRY_BEGIN_INIT_CUR(lenp, cur_len, ret) {
+        if (cur_len == WC_DRBG_NEXT_SEED_PURGED)
+            return ALREADY_E; /* already handed off to a producer's unwind. */
+        if ((cur_len == WC_DRBG_NEXT_SEED_READY) || (cur_len > 0)) {
+            /* Published or parked bytes with no owner: claim, wipe as
+             * owner, reopen. */
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Int_CompareExchange,
+                                          lenp, cur_len,
+                                          WC_DRBG_NEXT_SEED_CONSUMING, ret);
+            ForceZero(seed_buf, seed_buf_sz);
+            WOLFSSL_ATOMIC_STORE(*lenp, WC_DRBG_NEXT_SEED_EMPTY);
+        }
+        else {
+            want_len = (cur_len == WC_DRBG_NEXT_SEED_PRODUCING) ?
+                WC_DRBG_NEXT_SEED_PURGED : WC_DRBG_NEXT_SEED_EMPTY;
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Int_CompareExchange,
+                                          lenp, cur_len, want_len, ret);
+        }
+    } WC_CAS_WITH_RETRY_END;
+
+    /* percolate the CAS result -- if the loop was aborted by user logic, the
+     * caller needs to know that the purge failed. */
+    return ret;
+}
+
+/* Release a producer claim (PRODUCING) on the credited aperture,
+ * installing val (a fill offset, the full length, READY, or EMPTY).
+ * Returns 0 on release, else BUSY_E: the release CAS can fail for
+ * exactly one reason -- a concurrent NextSeedPurge() repainted the
+ * claim PURGED (producers cannot claim a PRODUCING word, consumers
+ * only exchange from READY, and the purge is the sole writer against
+ * a claim).  The producer's material then predates the invalidation
+ * event and must not surface: the aperture reopens EMPTY, which is
+ * the whole suppression -- an EMPTY aperture is never consumed, and
+ * the next fill overwrites from offset zero.  The bytes themselves are
+ * wiped before the reopen, while this producer still owns the buffer:
+ * the purge that repainted the claim marks an event that created a
+ * sibling lineage, and the sibling's copy of a completed fill may be
+ * consumed there (see the doctrine at NextSeedPurge()). */
+static int NextSeedProducerRelease(wolfSSL_Atomic_Int *lenp,
+                                   byte *seed_buf, word32 seed_buf_sz,
+                                   WC_ATOMIC_INT_ARG val)
+{
+    WC_ATOMIC_INT_ARG expected = WC_DRBG_NEXT_SEED_PRODUCING;
+    if (wolfSSL_Atomic_Int_CompareExchange(lenp, &expected, val))
+        return 0;
+    ForceZero(seed_buf, seed_buf_sz);
+    WOLFSSL_ATOMIC_STORE(*lenp, WC_DRBG_NEXT_SEED_EMPTY);
+    return BUSY_E;
+}
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+/* in_bracketed_consume: nonzero when the caller feeds this reseed from its own
+ * _CONSUMING claim on the credited aperture (wc_RNG_DRBG_NextSeedNow_Nonce()).
+ * The invalidated-entry purges below must then exempt that aperture: purging
+ * it would steal the caller's claim and defeat its release CAS, converting
+ * the caller's own recovery into a false epoch violation.  An external
+ * (event) purge still repaints the claim, which is exactly what the
+ * caller's release CAS exists to detect. */
+static WARN_UNUSED_RESULT int Hash_DRBG_Reseed(WC_RNG* rng, const byte* seed,
+                            word32 seedSz,
+                            const byte* additional, word32 additionalSz,
+                            int in_bracketed_consume)
+{
+    int ret;
+#ifdef WC_RNG_HAVE_LOCK
+    WC_RNG_lock_arg_t cur_lock;
+#endif
+
+    if (rng == NULL)
         return BAD_FUNC_ARG;
+
+#ifdef WC_RNG_HAVE_LOCK
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+#endif
+
+#ifdef WC_RNG_HAVE_LOCK
+    /* Never allow an undersized seed to clear an invalidated state. */
+    if ((cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) &&
+        (seedSz < WC_DRBG_SEED_SZ))
+    {
+        /* Short-circuit return in case the _RECOVERING mutex below would have
+         * failed. */
+        return NEEDS_RECOVERY_E;
     }
+
+    /* Iff _ENTROPY_INVALIDATED, assert the _ENTROPY_RECOVERING bit now -- if we
+     * are re-invalidated in the meantime, it will have been cleared by the
+     * invalidation at exit time, signaling that we are still invalidated. */
+
+    WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, ret) {
+        if (! (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)) {
+            /* Not invalidated -- no recovery mutex needed.  Explicit
+             * success: BEGIN initializes ret to a failure code. */
+            ret = 0;
+            break;
+        }
+        if (cur_lock & WC_RNG_LOCK_ENTROPY_RECOVERING) {
+            /* Must short-circuit return here, so that we don't improperly clear
+             * the _RECOVERING bit. */
+            return BUSY_E;
+        }
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->lock, cur_lock,
+                                      cur_lock | WC_RNG_LOCK_ENTROPY_RECOVERING,
+                                      ret);
+        /* We now have the _RECOVERING mutex -- record that fact. */
+        cur_lock |= WC_RNG_LOCK_ENTROPY_RECOVERING;
+    } WC_CAS_WITH_RETRY_END;
+    if (ret != 0) {
+        /* Aborted acquire (a port's retry clause): the lock word is
+         * untouched and no state has moved -- bail before the purges,
+         * which must not run unserialized against a concurrent
+         * recovery. */
+        return ret;
+    }
+#endif /* WC_RNG_HAVE_LOCK */
+
+#ifdef WC_RNG_HAVE_POOL
+    /* Purge the pool when recovering from invalidation, or if reseeding without
+     * locks (i.e. without an internal mechanism for tracking invalidation).
+     *
+     * The reseed counter tracks generates since the last reseed, and every
+     * pooled byte is itself a generate that incremented it. So the pool's
+     * contents are within the budget the counter enforces -- indeed they were
+     * authorized by the same accounting that later demanded the
+     * reseed. Discarding them treats output as retroactively over-budget when
+     * it was under-budget when produced.
+     */
+    #ifdef WC_RNG_HAVE_LOCK
+    if (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)
+    #endif
+    {
+        ret = PoolPurge(rng);
+        if ((ret != 0) &&
+            (ret != WC_NO_ERR_TRACE(ALREADY_E)))
+        {
+            goto out;
+        }
+    }
+#endif /* WC_RNG_HAVE_POOL */
 
 #ifndef NO_SHA256
     if (rng->drbgType == WC_DRBG_SHA256) {
-        if (rng->drbg == NULL) {
+        DRBG_internal* drbg = (DRBG_internal *)rng->drbg;
+
+        if (drbg == NULL) {
         #if defined(HAVE_INTEL_RDSEED) || defined(HAVE_INTEL_RDRAND)
             if (IS_INTEL_RDRAND(intel_flags)) {
                 /* using RDRAND not DRBG, so return success */
-                return 0;
+                ret = 0;
+                goto out;
             }
         #endif
-            return BAD_FUNC_ARG;
+            ret = BAD_FUNC_ARG;
+            goto out;
         }
-        return Hash_DRBG_Reseed((DRBG_internal *)rng->drbg, seed, seedSz,
-                                NULL, 0);
+
+#if defined(WC_RNG_HAVE_LOCK) && defined(WC_RNG_HAVE_NEXT_SEED)
+        if ((cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) &&
+            (! in_bracketed_consume))
+        {
+            ret = NextSeedPurge(&drbg->nextSeedLen, drbg->nextSeed,
+                                (word32)sizeof(drbg->nextSeed));
+            if ((ret != 0) &&
+                (ret != WC_NO_ERR_TRACE(ALREADY_E)))
+            {
+                goto out;
+            }
+            /* the uncredited stir aperture is purged too, for provenance
+             * uniformity; best-effort (an in-flight depositor may
+             * resurrect a partial fill -- benign, stirs carry no
+             * divergence burden), and never zeroized (racy, and
+             * interleaved entropy of compatible provenance is harmless).
+             */
+            WOLFSSL_ATOMIC_STORE(rng->nextStirLen,
+                                 WC_DRBG_NEXT_SEED_EMPTY);
+        }
+#else
+        (void)in_bracketed_consume;
+#endif
+
+        ret = Hash256_DRBG_Reseed(drbg, seed, seedSz, additional, additionalSz);
+#ifdef WC_RNG_DEBUG_STATS
+        if (ret == 0) {
+            ++rng->_stats_reseeds;
+        }
+#endif
+        goto out;
     }
 #endif
+
 #ifdef WOLFSSL_DRBG_SHA512
     if (rng->drbgType == WC_DRBG_SHA512) {
-        if (rng->drbg512 == NULL) {
+        DRBG_SHA512_internal* drbg512 =
+            (DRBG_SHA512_internal *)rng->drbg512;
+
+        if (drbg512 == NULL) {
         #if defined(HAVE_INTEL_RDSEED) || defined(HAVE_INTEL_RDRAND)
             if (IS_INTEL_RDRAND(intel_flags)) {
                 /* using RDRAND not DRBG, so return success */
-                return 0;
+                ret = 0;
+                goto out;
             }
         #endif
-            return BAD_FUNC_ARG;
+            ret = BAD_FUNC_ARG;
+            goto out;
         }
-        return Hash512_DRBG_Reseed((DRBG_SHA512_internal *)rng->drbg512,
-                                   seed, seedSz, NULL, 0);
+
+#if defined(WC_RNG_HAVE_LOCK) && defined(WC_RNG_HAVE_NEXT_SEED)
+        if ((cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) &&
+            (! in_bracketed_consume))
+        {
+            ret = NextSeedPurge(&drbg512->nextSeedLen, drbg512->nextSeed,
+                                (word32)sizeof(drbg512->nextSeed));
+            if ((ret != 0) &&
+                (ret != WC_NO_ERR_TRACE(ALREADY_E)))
+            {
+                goto out;
+            }
+            /* see the SHA-256 arm re best-effort and no-zeroize. */
+            WOLFSSL_ATOMIC_STORE(rng->nextStirLen,
+                                 WC_DRBG_NEXT_SEED_EMPTY);
+        }
+#endif
+
+        ret = Hash512_DRBG_Reseed(drbg512, seed, seedSz,
+                                  additional, additionalSz);
+#ifdef WC_RNG_DEBUG_STATS
+        if (ret == 0) {
+            ++rng->_stats_reseeds;
+        }
+#endif
+        goto out;
     }
 #endif
 
     /* No DRBG type matched; if using RDRAND, that's OK */
-#if defined(HAVE_INTEL_RDSEED) || defined(HAVE_INTEL_RDRAND)
+    #if defined(HAVE_INTEL_RDSEED) || defined(HAVE_INTEL_RDRAND)
     if (IS_INTEL_RDRAND(intel_flags)) {
-        return 0;
+        /* using RDRAND not DRBG, so return success */
+        ret = 0;
+        goto out;
+    }
+    #endif
+
+    ret = WRONG_TYPE_OBJECT_E;
+
+    out:
+
+#ifdef WC_RNG_HAVE_LOCK
+    /* The _RECOVERING bit functions as a mutex -- if it's set here, *we*
+     * set it, and must clear it.
+     *
+     * If we were invalidated on entry, and reseed succeeded, and provided we
+     * weren't re-invalidated in the meantime, clear the _INVALIDATED bit
+     * alongside the _RECOVERING bit.
+     *
+     * Otherwise, just clear the _RECOVERING bit (releasing the recovery mutex),
+     * and return with the success or failure code from above.
+     */
+    if ((ret == 0) && (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)) {
+        WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, ret) {
+            if (! (cur_lock & WC_RNG_LOCK_ENTROPY_RECOVERING)) {
+                ret = NEEDS_RECOVERY_E;
+                break;
+            }
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(
+                wolfSSL_Atomic_Uint_CompareExchange, &rng->lock, cur_lock,
+                cur_lock & ~(WC_RNG_LOCK_ENTROPY_INVALIDATED |
+                             WC_RNG_LOCK_ENTROPY_RECOVERING),
+                ret);
+        } WC_CAS_WITH_RETRY_END;
+        if ((ret != 0) && (ret != WC_NO_ERR_TRACE(NEEDS_RECOVERY_E))) {
+            /* Aborted clear (a port's retry clause) strands _RECOVERING with no
+             * in-band path back: every future recovery would refuse BUSY_E.
+             * Condemn -- in kernel, DRBG_FAILED has an automated exit (the
+             * entropy daemon's recovery pass), and the owner can always reinit.
+             * A wedged mutex bit would have no visible indication that reinit
+             * is required.
+             */
+            rng->status = DRBG_FAILED;
+        }
+    }
+    else if (cur_lock & WC_RNG_LOCK_ENTROPY_RECOVERING) {
+        /* ret carries the reseed's status here and must survive, so the
+         * release gets its own result variable. */
+        int release_ret;
+        WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, release_ret) {
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(
+                wolfSSL_Atomic_Uint_CompareExchange, &rng->lock, cur_lock,
+                cur_lock & ~WC_RNG_LOCK_ENTROPY_RECOVERING, release_ret);
+        } WC_CAS_WITH_RETRY_END;
+        if (release_ret != 0) {
+            /* Same stranded-_RECOVERING condemnation as the clear arm
+             * above; the reseed's own status still wins the return. */
+            rng->status = DRBG_FAILED;
+            if (ret == 0)
+                ret = release_ret;
+        }
+    }
+#endif /* WC_RNG_HAVE_LOCK */
+
+    return ret;
+}
+
+int wc_RNG_DRBG_Reseed_Nonce(WC_RNG* rng, const byte* seed, word32 seedSz,
+                             const byte *nonce, word32 nonceSz)
+{
+    int ret;
+
+    if (rng == NULL || seed == NULL) {
+        return BAD_FUNC_ARG;
+    }
+
+    /* Hash_df() skips a NULL input regardless of its stated length, so
+     * without this the caller's additional input would be dropped and
+     * success reported.  Matches _InitRng() and ReseedRBGC(). */
+    if ((nonce == NULL) && (nonceSz > 0))
+        return BAD_FUNC_ARG;
+
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
+    /* These checks read state a generate writes under the lock, so the lock
+     * comes first.  The internal reseed paths already hold it. */
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+
+    /* A condemned instance does not accept a credited reseed: DRBG_FAILED's
+     * designed exit is wc_FreeRng()/wc_InitRng() (or the daemon's recovery
+     * pass), not in-place resurrection that would reset the counter, purge
+     * the pool, and clear quarantine on unvetted authority. */
+    if (rng->status != DRBG_OK) {
+        ret = RNG_FAILURE_E;
+        goto out;
+    }
+
+#ifdef WC_RNG_HAVE_LOCK
+    /* Never allow an undersized seed to clear an invalidated state, and if
+     * invalidated, always assume potentially primary seed data -- test it with
+     * wc_RNG_TestSeed(). */
+    if (WOLFSSL_ATOMIC_LOAD(rng->lock) & WC_RNG_LOCK_ENTROPY_INVALIDATED) {
+        if (seedSz < WC_DRBG_SEED_SZ) {
+            ret = NEEDS_RECOVERY_E;
+            goto out;
+        }
+        ret = wc_RNG_TestSeed(seed, seedSz);
+        if (ret != 0)
+            goto out;
+    }
+#endif /* WC_RNG_HAVE_LOCK */
+
+    ret = Hash_DRBG_Reseed(rng, seed, seedSz, nonce, nonceSz,
+                           0 /* in_bracketed_consume */);
+#ifdef WC_RNG_HAVE_RBGC
+    if (ret == 0) {
+        /* User-supplied entropy is of unknown provenance.  In RBGC builds,
+         * represent that fact using WC_RNG_RBGC_USER_SEED_STRATUM, preventing confusion with RNGs seeded by the ESV . */
+        rng->RBGCStratum = WC_RNG_RBGC_USER_SEED_STRATUM;
+    }
+#endif
+
+    out:
+
+    RngAutoLockExit(rng);
+    return ret;
+}
+
+int wc_RNG_DRBG_Reseed(WC_RNG* rng, const byte* seed, word32 seedSz) {
+    return wc_RNG_DRBG_Reseed_Nonce(rng, seed, seedSz, NULL, 0);
+}
+
+#ifdef WC_RNG_HAVE_RBGC
+
+int wc_RNG_DRBG_GetRBGCStratum(const WC_RNG* rng)
+{
+    if (rng)
+        return rng->RBGCStratum;
+    else
+        return BAD_FUNC_ARG;
+}
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+int wc_RNG_DRBG_GetNextSeedRBGCStratum(const WC_RNG* rng)
+{
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+    /* Race-free via the NextSeed aperture protocol.  If called with rng locked,
+     * and ->nextSeedLen == WC_DRBG_NEXT_SEED_READY, then competing producers
+     * and consumers are all excluded, unambiguously marking
+     * ->nextSeedRBGCStratum as strictly reliable and stable.  nextSeedLen
+     * functions as the synchronizer -- the producer writes
+     * ->nextSeedRBGCStratum before publishing WC_DRBG_NEXT_SEED_READY to
+     * nextSeedLen with release semantics.
+     */
+
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        if (WOLFSSL_ATOMIC_LOAD(((const DRBG_internal*)rng->drbg)->nextSeedLen)
+            != WC_DRBG_NEXT_SEED_READY)
+        {
+            return NOT_READY_E;
+        }
+        else
+            return ((const DRBG_internal *)rng->drbg)->nextSeedRBGCStratum;
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        if (WOLFSSL_ATOMIC_LOAD(((const DRBG_SHA512_internal*)rng->drbg512)->nextSeedLen)
+            != WC_DRBG_NEXT_SEED_READY)
+        {
+            return NOT_READY_E;
+        }
+        else
+            return ((const DRBG_SHA512_internal *)rng->drbg512)->nextSeedRBGCStratum;
     }
 #endif
 
     return BAD_FUNC_ARG;
 }
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+#endif /* WC_RNG_HAVE_RBGC */
+
+/* Read-only accessor for the DRBG reseed counter.  When no DRBG is
+ * instantiated (see wc_RNG_DRBG_Present()) there is no counter; *reseedCtr
+ * is set to 0 -- never due for reseed -- and 0 is returned. */
+int wc_RNG_DRBG_GetReseedCtr(const WC_RNG* rng,
+                             wc_drbg_reseed_ctr_t* reseedCtr)
+{
+    if ((rng == NULL) || (reseedCtr == NULL))
+        return BAD_FUNC_ARG;
+    if (! wc_RNG_DRBG_Present(rng))
+        return WRONG_TYPE_OBJECT_E;
+    if (rng->status != DRBG_OK)
+        return BAD_STATE_E;
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        *reseedCtr = ((const DRBG_internal *)rng->drbg)->reseedCtr;
+        return 0;
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        *reseedCtr = (wc_drbg_reseed_ctr_t)
+            ((const DRBG_SHA512_internal *)rng->drbg512)->reseedCtr;
+        return 0;
+    }
+#endif
+    return BAD_FUNC_ARG;
+}
+
+#if defined(WC_RESEED_INTERVAL) && !defined(WORD64_AVAILABLE)
+    wc_static_assert((WC_RESEED_INTERVAL) <= 0xFFFFFFFFUL);
+#endif
+
+/* Mark rng due for reseed: the next generate operation reseeds from the
+ * module's built-in or registered seed source before producing output (see also
+ * wc_RNG_DRBG_Reseed_Now()).  This can only shorten the current seed's
+ * remaining lifetime, never extend it.  When no DRBG is instantiated (RDRAND et
+ * al.) commanded reseed is not supported and the call returns
+ * WRONG_TYPE_OBJECT_E. */
+/* Every public entry below locks the instance, with a _local core for the
+ * generate path, which already holds the lock.
+ *
+ * Why they lock at all: they mutate the same DRBG state a generate does.
+ * Unlocked, a second thread reads and writes the reseed counter and the hash
+ * context mid-update, which ThreadSanitizer reports as a data race: 48 of them
+ * before this change, none after.  Nothing crashes and the output still looks
+ * random, which is what makes it easy to ship by mistake.
+ */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_ScheduleReseed_local(WC_RNG* rng)
+{
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        ((DRBG_internal *)rng->drbg)->reseedCtr =
+            (wc_drbg_reseed_ctr_t)WC_RESEED_INTERVAL;
+        return 0;
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        ((DRBG_SHA512_internal *)rng->drbg512)->reseedCtr =
+            (word64)WC_RESEED_INTERVAL;
+        return 0;
+    }
+#endif
+    return WRONG_TYPE_OBJECT_E;
+}
+
+int wc_RNG_DRBG_ScheduleReseed(WC_RNG* rng)
+{
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+    ret = wc_RNG_DRBG_ScheduleReseed_local(rng);
+    RngAutoLockExit(rng);
+    return ret;
+}
 
 /* Generic byte-array helper -- shared by both SHA-256 and SHA-512 DRBG
  * cores. Lives outside the NO_SHA256 guard so SHA-512-only builds
- * still link. */
+ * still build. */
 static WC_INLINE void array_add_one(byte* data, word32 dataSz)
 {
     int i;
     for (i = (int)dataSz - 1; i >= 0; i--) {
-        data[i]++;
+        data[i] = WC_OCTET(data[i] + 1);
         if (data[i] != 0) break;
     }
 }
@@ -674,14 +1435,16 @@ static WC_INLINE void array_add_one(byte* data, word32 dataSz)
 #ifndef NO_SHA256 /* re-open SHA-256 Hash_DRBG core */
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
+static WARN_UNUSED_RESULT int Hash_gen(DRBG_internal* drbg, byte* out,
+                                       word32 outSz, const byte* V)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
     word32 i;
     word32 len;
 #if defined(WOLFSSL_SMALL_STACK_CACHE)
     wc_Sha256* sha = &drbg->sha256;
-    byte* data = drbg->seed_scratch;
+    byte* data = drbg->seed_scratch; /* Note, top half of seed_scratch is used
+                                      * by Hash_DRBG_Generate(). */
     byte* digest = drbg->digest_scratch;
 #elif defined(WOLFSSL_SMALL_STACK)
     wc_Sha256 sha[1];
@@ -708,9 +1471,11 @@ static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
     }
 #endif
 
-    /* Special case: outSz is 0 and out is NULL. wc_Generate a block to save for
-     * the continuous test. */
-
+    /* Special case: outSz is 0 and out is NULL (Hash_DRBG_StirGenerate()): run
+     * a single Hashgen iteration with the block discarded, so the caller gets
+     * Generate's V-advance side effects without emitting output.  This
+     * preserves standard SP 800-90A sequencing, while presenting call semantics
+     * that are convenient for the stir. */
     if (outSz == 0) {
         outSz = 1;
     }
@@ -718,6 +1483,9 @@ static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
     len = (outSz / OUTPUT_BLOCK_LEN) + ((outSz % OUTPUT_BLOCK_LEN) ? 1 : 0);
 
     XMEMCPY(data, V, DRBG_SEED_LEN);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("Hash_gen data", data, DRBG_SEED_LEN);
+#endif
     for (i = 0; i < len; i++) {
 #ifndef WOLFSSL_SMALL_STACK_CACHE
     #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
@@ -730,7 +1498,10 @@ static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
             ret = wc_Sha256Update(sha, data, DRBG_SEED_LEN);
         if (ret == 0)
             ret = wc_Sha256Final(sha, digest);
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+        if (ret != 0)
+            (void)wc_Sha256Reset(sha);
+#else
         wc_Sha256Free(sha);
 #endif
 
@@ -754,6 +1525,10 @@ static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
         }
     }
     ForceZero(data, DRBG_SEED_LEN);
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(data, DRBG_SEED_LEN);
+#endif
 
 #ifndef WOLFSSL_SMALL_STACK_CACHE
     WC_FREE_VAR_EX(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
@@ -761,7 +1536,7 @@ static int Hash_gen(DRBG_internal* drbg, byte* out, word32 outSz, const byte* V)
 #endif
 
     #ifdef WC_VERBOSE_RNG
-    if ((ret != DRBG_SUCCESS) && (ret != DRBG_FAILURE)) {
+    if ((ret != DRBG_SUCCESS) && (ret != WC_NO_ERR_TRACE(DRBG_FAILURE))) {
         /* Note, if we're just going to return DRBG_FAILURE to the caller, then
          * there's no point printing it out here because (1) the lower-level
          * code that was remapped to DRBG_FAILURE already got printed before the
@@ -789,14 +1564,14 @@ static WC_INLINE void array_add(byte* d, word32 dLen, const byte* s, word32 sLen
         dIdx = (int)dLen - 1;
         for (sIdx = (int)sLen - 1; sIdx >= 0; sIdx--) {
             carry = (word16)(carry + d[dIdx] + s[sIdx]);
-            d[dIdx] = (byte)carry;
+            d[dIdx] = WC_OCTET(carry);
             carry >>= 8;
             dIdx--;
         }
 
         for (; dIdx >= 0; dIdx--) {
             carry = (word16)(carry + d[dIdx]);
-            d[dIdx] = (byte)carry;
+            d[dIdx] = WC_OCTET(carry);
             carry >>= 8;
         }
     }
@@ -804,8 +1579,10 @@ static WC_INLINE void array_add(byte* d, word32 dLen, const byte* s, word32 sLen
 
 #ifndef NO_SHA256 /* re-open SHA-256 Hash_DRBG core */
 
-/* Returns: DRBG_SUCCESS, DRBG_NEED_RESEED, or DRBG_FAILURE */
-static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
+/* Returns: DRBG_SUCCESS, DRBG_NEED_RESEED, or DRBG_FAILURE.  DRBG state is
+ * always consistent upon return, whether success or failure. */
+static WARN_UNUSED_RESULT int Hash_DRBG_Generate(DRBG_internal* drbg,
+                              byte* out, word32 outSz,
                               const byte* additional, word32 additionalSz)
 {
     int ret;
@@ -820,6 +1597,11 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
 #else
     word32 reseedCtr;
 #endif
+#ifdef WOLFSSL_WIDE_BYTE
+    byte ctrBuf[8]; /* reseed counter as big-endian octets */
+#endif
+    byte *thisV = NULL;
+    WC_DECLARE_VAR(shadowV, byte, DRBG_SEED_LEN, 0);
 
     if (drbg == NULL) {
         return DRBG_FAILURE;
@@ -845,6 +1627,15 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
         byte digest[WC_SHA256_DIGEST_SIZE];
     #endif
 
+    #ifdef WOLFSSL_CHECK_MEM_ZERO
+        /* baseline 0 (not 0xff): a pre-write early exit on this path checks
+         * digest, so it must read zero.  Registered across the whole generate;
+         * every exit below force-zeros+checks (or XFREEs) it. */
+        XMEMSET(digest, 0, WC_SHA256_DIGEST_SIZE);
+        wc_MemZero_Add("Hash_DRBG_Generate digest", digest,
+            WC_SHA256_DIGEST_SIZE);
+    #endif
+
         type = drbgGenerateH;
         reseedCtr = drbg->reseedCtr;
 
@@ -853,18 +1644,36 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
         if (additional != NULL && additionalSz > 0) {
             byte addType = drbgGenerateW;
 #ifndef WOLFSSL_SMALL_STACK_CACHE
+            ret = 0;
+            WC_ALLOC_VAR_EX(shadowV, byte, DRBG_SEED_LEN, drbg->heap,
+                            DYNAMIC_TYPE_TMP_BUFFER, ret = MEMORY_E);
+            if (ret == 0) {
+                thisV = shadowV;
         #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
-            ret = wc_InitSha256_ex(sha, drbg->heap, drbg->devId);
+                ret = wc_InitSha256_ex(sha, drbg->heap, drbg->devId);
         #else
-            ret = wc_InitSha256(sha);
+                ret = wc_InitSha256(sha);
         #endif
+            }
+
             if (ret != 0) {
+                WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+                /* digest holds only the 0 baseline here (never written) */
+            #if (!defined(WOLFSSL_SMALL_STACK) || \
+                 defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+                defined(WOLFSSL_CHECK_MEM_ZERO)
+                wc_MemZero_Check(digest, WC_SHA256_DIGEST_SIZE);
+            #endif
             #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
                 XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
             #endif
                 return DRBG_FAILURE;
             }
 #else
+            (void)shadowV;
+            /* use the upper half of drbg->seed_scratch -- the lower half is
+             * used by Hash_gen() for its "data" work buffer. */
+            thisV = drbg->seed_scratch + DRBG_SEED_LEN;
             ret = 0;
 #endif
             if (ret == 0)
@@ -875,23 +1684,36 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
                 ret = wc_Sha256Update(sha, additional, additionalSz);
             if (ret == 0)
                 ret = wc_Sha256Final(sha, digest);
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+            if (ret != 0)
+                (void)wc_Sha256Reset(sha);
+#else
             wc_Sha256Free(sha);
 #endif
             if (ret == 0) {
-                array_add(drbg->V, sizeof(drbg->V), digest,
+                XMEMCPY(thisV, drbg->V, DRBG_SEED_LEN);
+                array_add(thisV, DRBG_SEED_LEN, digest,
                           WC_SHA256_DIGEST_SIZE);
             }
             else {
+                WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
                 ForceZero(digest, WC_SHA256_DIGEST_SIZE);
+            #if (!defined(WOLFSSL_SMALL_STACK) || \
+                 defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+                defined(WOLFSSL_CHECK_MEM_ZERO)
+                wc_MemZero_Check(digest, WC_SHA256_DIGEST_SIZE);
+            #endif
             #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
                 XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
             #endif
                 return DRBG_FAILURE;
             }
         }
+        else {
+            thisV = drbg->V;
+        }
 
-        ret = Hash_gen(drbg, out, outSz, drbg->V);
+        ret = Hash_gen(drbg, out, outSz, thisV);
         if (ret == DRBG_SUCCESS) {
 #ifndef WOLFSSL_SMALL_STACK_CACHE
         #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
@@ -903,17 +1725,34 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
 #endif
                 ret = wc_Sha256Update(sha, &type, sizeof(type));
             if (ret == 0)
-                ret = wc_Sha256Update(sha, drbg->V, sizeof(drbg->V));
+                ret = wc_Sha256Update(sha, thisV, DRBG_SEED_LEN);
             if (ret == 0)
                 ret = wc_Sha256Final(sha, digest);
 
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+            if (ret != 0)
+                (void)wc_Sha256Reset(sha);
+#else
             wc_Sha256Free(sha);
 #endif
 
             if (ret == 0) {
+                /* No failure possible from here -- commit thisV if needed. */
+                if (thisV != drbg->V)
+                    XMEMCPY(drbg->V, thisV, DRBG_SEED_LEN);
                 array_add(drbg->V, sizeof(drbg->V), digest, WC_SHA256_DIGEST_SIZE);
                 array_add(drbg->V, sizeof(drbg->V), drbg->C, sizeof(drbg->C));
+#ifdef WOLFSSL_WIDE_BYTE
+                /* A word cannot be aliased as an octet stream where a C byte is
+                 * wider than 8 bits; add the counter as big-endian octets. */
+            #ifdef WORD64_AVAILABLE
+                BytesFromWordsBE64(ctrBuf, &reseedCtr, 8);
+                array_add(drbg->V, sizeof(drbg->V), ctrBuf, 8);
+            #else
+                BytesFromWordsBE32(ctrBuf, &reseedCtr, 4);
+                array_add(drbg->V, sizeof(drbg->V), ctrBuf, 4);
+            #endif
+#else
             #ifdef LITTLE_ENDIAN_ORDER
                 #ifdef WORD64_AVAILABLE
                 reseedCtr = ByteReverseWord64(reseedCtr);
@@ -923,29 +1762,49 @@ static int Hash_DRBG_Generate(DRBG_internal* drbg, byte* out, word32 outSz,
             #endif
                 array_add(drbg->V, sizeof(drbg->V),
                                           (byte*)&reseedCtr, sizeof(reseedCtr));
+#endif
                 ret = DRBG_SUCCESS;
+                drbg->reseedCtr++;
             }
-            drbg->reseedCtr++;
+            /* else no state mutation, hence no reseed counter increment. */
         }
         ForceZero(digest, WC_SHA256_DIGEST_SIZE);
+    #if (!defined(WOLFSSL_SMALL_STACK) || \
+         defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+        defined(WOLFSSL_CHECK_MEM_ZERO)
+        wc_MemZero_Check(digest, WC_SHA256_DIGEST_SIZE);
+    #endif
     #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
         XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
     #endif
     }
 
     #ifdef WC_VERBOSE_RNG
-    if ((ret != DRBG_SUCCESS) && (ret != DRBG_FAILURE)) {
+    if ((ret != DRBG_SUCCESS) && (ret != WC_NO_ERR_TRACE(DRBG_FAILURE))) {
         /* see note above regarding log spam reduction */
         WOLFSSL_DEBUG_PRINTF("ERROR: Hash_DRBG_Generate failed with err %d.",
                              ret);
     }
     #endif
 
-    return (ret == 0) ? DRBG_SUCCESS : DRBG_FAILURE;
+    if ((thisV != drbg->V) && (thisV != NULL))
+        ForceZero(thisV, DRBG_SEED_LEN);
+    WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+
+    if (ret == 0)
+        return DRBG_SUCCESS;
+    else {
+        /* wipe the stranded output, which would otherwise be repeated
+         * on a subsequent successful call.
+         */
+        ForceZero(out, outSz);
+        return DRBG_FAILURE;
+    }
 }
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash_DRBG_Init(DRBG_internal* drbg, const byte* seed, word32 seedSz,
+static WARN_UNUSED_RESULT int Hash_DRBG_Init(DRBG_internal* drbg,
+                                             const byte* seed, word32 seedSz,
                                              const byte* nonce, word32 nonceSz,
                                              const byte* perso, word32 persoSz)
 {
@@ -968,14 +1827,18 @@ static int Hash_DRBG_Init(DRBG_internal* drbg, const byte* seed, word32 seedSz,
 }
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash_DRBG_Instantiate(DRBG_internal* drbg, const byte* seed,
-                                 word32 seedSz, const byte* nonce,
-                                 word32 nonceSz, const byte* perso,
-                                 word32 persoSz, void* heap, int devId)
+static WARN_UNUSED_RESULT int Hash_DRBG_Instantiate(DRBG_internal* drbg,
+                                 const byte* seed, word32 seedSz,
+                                 const byte* nonce, word32 nonceSz,
+                                 const byte* perso, word32 persoSz,
+                                 void* heap, int devId)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
 
     XMEMSET(drbg, 0, sizeof(DRBG_internal));
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    wolfSSL_Atomic_Int_Init(&drbg->nextSeedLen, WC_DRBG_NEXT_SEED_EMPTY);
+#endif
     drbg->heap = heap;
 #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
     drbg->devId = devId;
@@ -1023,14 +1886,14 @@ static int Hash_DRBG_Uninstantiate(DRBG_internal* drbg)
 
 /* ====================================================================== */
 /* SHA-512 Hash_DRBG (SP 800-90A Rev 1, Table 2)                          */
-/*                                                                         */
-/* Internal state (V, C): seedlen = 888 bits = 111 bytes each              */
-/* Output block length:   512 bits = 64 bytes (WC_SHA512_DIGEST_SIZE)      */
-/* Security strength:     256 bits                                         */
-/*                                                                         */
-/* NOTE: The raw entropy seed gathered at instantiation / reseed is        */
+/*                                                                        */
+/* Internal state (V, C): seedlen = 888 bits = 111 bytes each             */
+/* Output block length:   512 bits = 64 bytes (WC_SHA512_DIGEST_SIZE)     */
+/* Security strength:     256 bits                                        */
+/*                                                                        */
+/* NOTE: The raw entropy seed gathered at instantiation / reseed is       */
 /* WC_DRBG_SEED_SZ (1024 bits in FIPS builds), NOT seedlen.  We overseed  */
-/* to tolerate weak entropy sources.  Hash_df then compresses the seed     */
+/* to tolerate weak entropy sources.  Hash_df then compresses the seed    */
 /* material down to the 888-bit V and derives C from V.  See random.h.    */
 /* ====================================================================== */
 #ifdef WOLFSSL_DRBG_SHA512
@@ -1039,17 +1902,21 @@ static int Hash_DRBG_Uninstantiate(DRBG_internal* drbg)
 
 /* Hash Derivation Function using SHA-512 */
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
+static WARN_UNUSED_RESULT int Hash512_df(DRBG_SHA512_internal* drbg, byte* out,
+                                         word32 outSz,
                       byte type,
                       const byte* inA, word32 inASz,
                       const byte* inB, word32 inBSz,
                       const byte* inC, word32 inCSz)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
     byte ctr;
     word32 i;
     word32 len;
     word32 bits = (outSz * 8);
+#ifdef WOLFSSL_WIDE_BYTE
+    byte bitsBuf[4]; /* the 32-bit length as four big-endian octets */
+#endif
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     wc_Sha512* sha = &drbg->sha512;
 #else
@@ -1082,7 +1949,15 @@ static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
         return DRBG_FAILURE;
 #endif
 
-#ifdef LITTLE_ENDIAN_ORDER
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* poison so a missed ForceZero on any path is caught by the check */
+    XMEMSET(digest, 0xff, WC_SHA512_DIGEST_SIZE);
+    wc_MemZero_Add("Hash512_df digest", digest, WC_SHA512_DIGEST_SIZE);
+#endif
+
+#ifdef WOLFSSL_WIDE_BYTE
+    BytesFromWordsBE32(bitsBuf, &bits, 4);   /* see Hash_df */
+#elif defined(LITTLE_ENDIAN_ORDER)
     bits = ByteReverseWord32(bits);
 #endif
     len = (outSz / OUTPUT_BLOCK_LEN_SHA512)
@@ -1102,7 +1977,11 @@ static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
         ret = wc_Sha512Update(sha, &ctr, sizeof(ctr));
         if (ret == 0) {
             ctr++;
+#ifdef WOLFSSL_WIDE_BYTE
+            ret = wc_Sha512Update(sha, bitsBuf, sizeof(bitsBuf));
+#else
             ret = wc_Sha512Update(sha, (byte*)&bits, sizeof(bits));
+#endif
         }
 
         if (ret == 0) {
@@ -1122,8 +2001,10 @@ static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
         }
         if (ret == 0)
             ret = wc_Sha512Final(sha, digest);
-
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+        if (ret != 0)
+            (void)wc_Sha512Reset(sha);
+#else
         wc_Sha512Free(sha);
 #endif
         if (ret == 0) {
@@ -1136,9 +2017,18 @@ static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
                 XMEMCPY(out, digest, outSz);
             }
         }
+        else {
+            break;
+        }
     }
 
     ForceZero(digest, WC_SHA512_DIGEST_SIZE);
+    /* Explicit check only where the buffer is NOT XFREEd (XFREE auto-checks):
+     * the stack build and the small-stack-cache build (drbg member). */
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(digest, WC_SHA512_DIGEST_SIZE);
+#endif
 
 #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
     XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
@@ -1146,66 +2036,80 @@ static int Hash512_df(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
 
 #ifdef WC_VERBOSE_RNG
     if (ret != 0)
-        WOLFSSL_DEBUG_PRINTF("ERROR: %s failed with err = %d", __FUNCTION__,
+        WOLFSSL_DEBUG_PRINTF("ERROR: %s failed with err = %d", __func__,
                              ret);
 #endif
 
     return (ret == 0) ? DRBG_SUCCESS : DRBG_FAILURE;
 }
 
-/* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash512_DRBG_Reseed(DRBG_SHA512_internal* drbg, const byte* seed,
-                               word32 seedSz,
+/* Returns: DRBG_SUCCESS or DRBG_FAILURE.  No state mutation on failure. */
+static WARN_UNUSED_RESULT int Hash512_DRBG_Reseed(DRBG_SHA512_internal* drbg,
+                               const byte* seed, word32 seedSz,
                                const byte* additional, word32 additionalSz)
 {
     int ret;
-    WC_DECLARE_VAR(newV, byte, DRBG_SHA512_SEED_LEN, 0);
+    WC_DECLARE_VAR(newV_C, byte, DRBG_SHA512_SEED_LEN * 2, 0);
+    byte *newV, *newC;
 
     if (drbg == NULL) {
         return DRBG_FAILURE;
     }
 
 #ifdef WOLFSSL_SMALL_STACK_CACHE
-    newV = drbg->seed_scratch;
+    newV_C = drbg->seed_scratch;
 #else
-    WC_ALLOC_VAR_EX(newV, byte, DRBG_SHA512_SEED_LEN, drbg->heap,
-        DYNAMIC_TYPE_TMP_BUFFER, return MEMORY_E);
+    WC_ALLOC_VAR_EX(newV_C, byte, DRBG_SHA512_SEED_LEN * 2, drbg->heap,
+        DYNAMIC_TYPE_TMP_BUFFER, return DRBG_FAILURE);
 #endif
-    XMEMSET(newV, 0, DRBG_SHA512_SEED_LEN);
+    XMEMSET(newV_C, 0, DRBG_SHA512_SEED_LEN * 2);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("Hash512_DRBG_Reseed newV_C", newV_C,
+                   DRBG_SHA512_SEED_LEN * 2);
+#endif
+
+    newV = newV_C;
+    newC = newV + DRBG_SHA512_SEED_LEN;
 
     ret = Hash512_df(drbg, newV, DRBG_SHA512_SEED_LEN, drbgReseed,
                 drbg->V, sizeof(drbg->V), seed, seedSz,
                 additional, additionalSz);
     if (ret == DRBG_SUCCESS) {
-        XMEMCPY(drbg->V, newV, sizeof(drbg->V));
-
-        ret = Hash512_df(drbg, drbg->C, sizeof(drbg->C), drbgInitC, drbg->V,
-                                    sizeof(drbg->V), NULL, 0,
+        ret = Hash512_df(drbg, newC, DRBG_SHA512_SEED_LEN, drbgInitC, newV,
+                                    DRBG_SHA512_SEED_LEN, NULL, 0,
                                     NULL, 0);
     }
     if (ret == DRBG_SUCCESS) {
+        XMEMCPY(drbg->V, newV, DRBG_SHA512_SEED_LEN);
+        XMEMCPY(drbg->C, newC, DRBG_SHA512_SEED_LEN);
         drbg->reseedCtr = 1;
     }
 
-    ForceZero(newV, DRBG_SHA512_SEED_LEN);
+    ForceZero(newV_C, DRBG_SHA512_SEED_LEN * 2);
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(newV_C, DRBG_SHA512_SEED_LEN * 2);
+#endif
 
 #ifndef WOLFSSL_SMALL_STACK_CACHE
-    WC_FREE_VAR_EX(newV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+    WC_FREE_VAR_EX(newV_C, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
 #endif
 
     return ret;
 }
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
-                       const byte* V)
+static WARN_UNUSED_RESULT int Hash512_gen(DRBG_SHA512_internal* drbg,
+                                          byte* out, word32 outSz,
+                                          const byte* V)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
     word32 i;
     word32 len;
 #if defined(WOLFSSL_SMALL_STACK_CACHE)
     wc_Sha512* sha = &drbg->sha512;
-    byte* data = drbg->seed_scratch;
+    byte* data = drbg->seed_scratch; /* Note, top half of seed_scratch is used
+                                      * by Hash_DRBG_Generate(). */
     byte* digest = drbg->digest_scratch;
 #elif defined(WOLFSSL_SMALL_STACK)
     wc_Sha512 sha[1];
@@ -1233,8 +2137,11 @@ static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
     }
 #endif
 
-    /* Special case: outSz is 0 and out is NULL. Generate a block to save for
-     * the continuous test. */
+    /* Special case: outSz is 0 and out is NULL (Hash_DRBG_StirGenerate()): run
+     * a single Hashgen iteration with the block discarded, so the caller gets
+     * Generate's V-advance side effects without emitting output.  This
+     * preserves standard SP 800-90A sequencing, while presenting call semantics
+     * that are convenient for the stir. */
     if (outSz == 0) {
         outSz = 1;
     }
@@ -1243,6 +2150,9 @@ static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
         + ((outSz % OUTPUT_BLOCK_LEN_SHA512) ? 1 : 0);
 
     XMEMCPY(data, V, DRBG_SHA512_SEED_LEN);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("Hash512_gen data", data, DRBG_SHA512_SEED_LEN);
+#endif
     for (i = 0; i < len; i++) {
 #ifndef WOLFSSL_SMALL_STACK_CACHE
     #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
@@ -1255,7 +2165,10 @@ static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
             ret = wc_Sha512Update(sha, data, DRBG_SHA512_SEED_LEN);
         if (ret == 0)
             ret = wc_Sha512Final(sha, digest);
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+        if (ret != 0)
+            (void)wc_Sha512Reset(sha);
+#else
         wc_Sha512Free(sha);
 #endif
 
@@ -1278,6 +2191,10 @@ static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
         }
     }
     ForceZero(data, DRBG_SHA512_SEED_LEN);
+#if (!defined(WOLFSSL_SMALL_STACK) || defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+    defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(data, DRBG_SHA512_SEED_LEN);
+#endif
 
 #ifndef WOLFSSL_SMALL_STACK_CACHE
     WC_FREE_VAR_EX(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
@@ -1287,9 +2204,10 @@ static int Hash512_gen(DRBG_SHA512_internal* drbg, byte* out, word32 outSz,
     return (ret == 0) ? DRBG_SUCCESS : DRBG_FAILURE;
 }
 
-/* Returns: DRBG_SUCCESS, DRBG_NEED_RESEED, or DRBG_FAILURE */
-static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
-                                 word32 outSz,
+/* Returns: DRBG_SUCCESS, DRBG_NEED_RESEED, or DRBG_FAILURE.  DRBG state is
+ * always consistent upon return, whether success or failure. */
+static WARN_UNUSED_RESULT int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg,
+                                 byte* out, word32 outSz,
                                  const byte* additional, word32 additionalSz)
 {
     int ret;
@@ -1300,6 +2218,11 @@ static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
 #endif
     byte type;
     word64 reseedCtr;
+#ifdef WOLFSSL_WIDE_BYTE
+    byte ctrBuf[8]; /* reseed counter as big-endian octets */
+#endif
+    byte *thisV = NULL;
+    WC_DECLARE_VAR(shadowV, byte, DRBG_SHA512_SEED_LEN, 0);
 
     if (drbg == NULL) {
         return DRBG_FAILURE;
@@ -1320,6 +2243,14 @@ static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
         byte digest[WC_SHA512_DIGEST_SIZE];
     #endif
 
+    #ifdef WOLFSSL_CHECK_MEM_ZERO
+        /* baseline 0; registered across the whole generate, force-zeroed and
+         * checked at the single exit below (all paths funnel there). */
+        XMEMSET(digest, 0, WC_SHA512_DIGEST_SIZE);
+        wc_MemZero_Add("Hash512_DRBG_Generate digest", digest,
+            WC_SHA512_DIGEST_SIZE);
+    #endif
+
         type = drbgGenerateH;
         reseedCtr = drbg->reseedCtr;
 
@@ -1330,13 +2261,39 @@ static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
         if (additional != NULL && additionalSz > 0) {
             byte addType = drbgGenerateW; /* 0x02 */
 #ifndef WOLFSSL_SMALL_STACK_CACHE
+            ret = 0;
+            WC_ALLOC_VAR_EX(shadowV, byte, DRBG_SHA512_SEED_LEN, drbg->heap,
+                            DYNAMIC_TYPE_TMP_BUFFER, ret = MEMORY_E);
+            if (ret == 0) {
+                thisV = shadowV;
         #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
-            ret = wc_InitSha512_ex(sha, drbg->heap, drbg->devId);
+                ret = wc_InitSha512_ex(sha, drbg->heap, drbg->devId);
         #else
-            ret = wc_InitSha512(sha);
+                ret = wc_InitSha512(sha);
         #endif
-            if (ret == 0)
+            }
+
+            if (ret != 0) {
+                WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+                /* digest holds only the 0 baseline here (never written) */
+            #if (!defined(WOLFSSL_SMALL_STACK) || \
+                 defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+                defined(WOLFSSL_CHECK_MEM_ZERO)
+                wc_MemZero_Check(digest, WC_SHA512_DIGEST_SIZE);
+            #endif
+            #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
+                XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
+            #endif
+                return DRBG_FAILURE;
+            }
+#else
+            (void)shadowV;
+            /* use the upper half of drbg->seed_scratch -- the lower half is
+             * used by Hash512_gen() for its "data" work buffer. */
+            thisV = drbg->seed_scratch + DRBG_SHA512_SEED_LEN;
+            ret = 0;
 #endif
+            if (ret == 0)
                 ret = wc_Sha512Update(sha, &addType, sizeof(addType));
             if (ret == 0)
                 ret = wc_Sha512Update(sha, drbg->V, sizeof(drbg->V));
@@ -1344,16 +2301,37 @@ static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
                 ret = wc_Sha512Update(sha, additional, additionalSz);
             if (ret == 0)
                 ret = wc_Sha512Final(sha, digest);
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+            if (ret != 0)
+                (void)wc_Sha512Reset(sha);
+#else
             wc_Sha512Free(sha);
 #endif
-            if (ret == 0)
-                array_add(drbg->V, sizeof(drbg->V), digest,
+            if (ret == 0) {
+                XMEMCPY(thisV, drbg->V, DRBG_SHA512_SEED_LEN);
+                array_add(thisV, DRBG_SHA512_SEED_LEN, digest,
                           WC_SHA512_DIGEST_SIZE);
+            }
+            else {
+                WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+                ForceZero(digest, WC_SHA512_DIGEST_SIZE);
+            #if (!defined(WOLFSSL_SMALL_STACK) || \
+                 defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+                defined(WOLFSSL_CHECK_MEM_ZERO)
+                wc_MemZero_Check(digest, WC_SHA512_DIGEST_SIZE);
+            #endif
+            #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
+                XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
+            #endif
+                return DRBG_FAILURE;
+            }
+        }
+        else {
+            thisV = drbg->V;
         }
 
         if (ret == 0)
-            ret = Hash512_gen(drbg, out, outSz, drbg->V);
+            ret = Hash512_gen(drbg, out, outSz, thisV);
         if (ret == DRBG_SUCCESS) {
 #ifndef WOLFSSL_SMALL_STACK_CACHE
         #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
@@ -1365,39 +2343,69 @@ static int Hash512_DRBG_Generate(DRBG_SHA512_internal* drbg, byte* out,
 #endif
                 ret = wc_Sha512Update(sha, &type, sizeof(type));
             if (ret == 0)
-                ret = wc_Sha512Update(sha, drbg->V, sizeof(drbg->V));
+                ret = wc_Sha512Update(sha, thisV, DRBG_SHA512_SEED_LEN);
             if (ret == 0)
                 ret = wc_Sha512Final(sha, digest);
-
-#ifndef WOLFSSL_SMALL_STACK_CACHE
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+            if (ret != 0)
+                (void)wc_Sha512Reset(sha);
+#else
             wc_Sha512Free(sha);
 #endif
 
             if (ret == 0) {
+                /* No failure possible from here -- commit thisV if needed. */
+                if (thisV != drbg->V)
+                    XMEMCPY(drbg->V, thisV, DRBG_SHA512_SEED_LEN);
                 array_add(drbg->V, sizeof(drbg->V), digest,
                           WC_SHA512_DIGEST_SIZE);
                 array_add(drbg->V, sizeof(drbg->V), drbg->C, sizeof(drbg->C));
+#ifdef WOLFSSL_WIDE_BYTE
+                /* See Hash_DRBG_Generate. */
+                BytesFromWordsBE64(ctrBuf, &reseedCtr, 8);
+                array_add(drbg->V, sizeof(drbg->V), ctrBuf, 8);
+#else
             #ifdef LITTLE_ENDIAN_ORDER
                 reseedCtr = ByteReverseWord64(reseedCtr);
             #endif
                 array_add(drbg->V, sizeof(drbg->V),
                                           (byte*)&reseedCtr, sizeof(reseedCtr));
+#endif
                 ret = DRBG_SUCCESS;
+                drbg->reseedCtr++;
             }
-            drbg->reseedCtr++;
+            /* else no state mutation, hence no reseed counter increment. */
         }
         ForceZero(digest, WC_SHA512_DIGEST_SIZE);
+    #if (!defined(WOLFSSL_SMALL_STACK) || \
+         defined(WOLFSSL_SMALL_STACK_CACHE)) && \
+        defined(WOLFSSL_CHECK_MEM_ZERO)
+        wc_MemZero_Check(digest, WC_SHA512_DIGEST_SIZE);
+    #endif
     #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
         XFREE(digest, drbg->heap, DYNAMIC_TYPE_DIGEST);
     #endif
     }
 
-    return (ret == 0) ? DRBG_SUCCESS : DRBG_FAILURE;
+    if ((thisV != drbg->V) && (thisV != NULL))
+        ForceZero(thisV, DRBG_SHA512_SEED_LEN);
+    WC_FREE_VAR_EX(shadowV, drbg->heap, DYNAMIC_TYPE_TMP_BUFFER);
+
+    if (ret == 0)
+        return DRBG_SUCCESS;
+    else {
+        /* wipe the stranded output, which would otherwise be repeated
+         * on a subsequent successful call.
+         */
+        ForceZero(out, outSz);
+        return DRBG_FAILURE;
+    }
 }
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash512_DRBG_Init(DRBG_SHA512_internal* drbg, const byte* seed,
-                             word32 seedSz, const byte* nonce, word32 nonceSz,
+static WARN_UNUSED_RESULT int Hash512_DRBG_Init(DRBG_SHA512_internal* drbg,
+                             const byte* seed, word32 seedSz,
+                             const byte* nonce, word32 nonceSz,
                              const byte* perso, word32 persoSz)
 {
     if (seed == NULL)
@@ -1419,15 +2427,19 @@ static int Hash512_DRBG_Init(DRBG_SHA512_internal* drbg, const byte* seed,
 }
 
 /* Returns: DRBG_SUCCESS or DRBG_FAILURE */
-static int Hash512_DRBG_Instantiate(DRBG_SHA512_internal* drbg,
+static WARN_UNUSED_RESULT int Hash512_DRBG_Instantiate(
+                                    DRBG_SHA512_internal* drbg,
                                     const byte* seed, word32 seedSz,
                                     const byte* nonce, word32 nonceSz,
                                     const byte* perso, word32 persoSz,
                                     void* heap, int devId)
 {
-    int ret = DRBG_FAILURE;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
 
     XMEMSET(drbg, 0, sizeof(DRBG_SHA512_internal));
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    wolfSSL_Atomic_Int_Init(&drbg->nextSeedLen, WC_DRBG_NEXT_SEED_EMPTY);
+#endif
     drbg->heap = heap;
 #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
     drbg->devId = devId;
@@ -1473,6 +2485,113 @@ static int Hash512_DRBG_Uninstantiate(DRBG_SHA512_internal* drbg)
 
 #endif /* WOLFSSL_DRBG_SHA512 */
 
+/* Uncredited stirring, per SP 800-90A 10.1.1.4 generate with additional_input
+ * (step 2: V += Hash(0x02 || V || additional_input)).  The generate is
+ * zero-length: Hash_gen()'s (and Hash512_gen()'s) outSz==0 mode banks the
+ * generated block for the continuous-test hook (its consumer is
+ * configuration-dependent; no comparison state lives in this file), and
+ * out is never dereferenced.  The reseed counter is incremented as for any
+ * generate, and quarantine/stratum are untouched, so the no-claims doctrine
+ * holds as a theorem of the standard rather than a property of a custom
+ * transition.  Refused with NOT_READY_E when the instance is quarantined or due
+ * for a credited reseed: a generate must not run past the reseed interval. */
+
+static WARN_UNUSED_RESULT int Hash_DRBG_StirGenerate(WC_RNG* rng,
+                                                     const byte* add,
+                                                     word32 addSz)
+{
+    wc_drbg_reseed_ctr_t ctr = 0;
+    int ret;
+
+#ifdef WC_RNG_HAVE_LOCK
+    /* The lock word is the atomic source of truth for quarantine: the
+     * invalidator's counter saturation can be lost to a racing
+     * lease-holder's plain reseedCtr++, but the latch cannot.  Checked
+     * before the counter for exactly that reason. */
+    if (WOLFSSL_ATOMIC_LOAD(rng->lock) & WC_RNG_LOCK_ENTROPY_INVALIDATED)
+        return NOT_READY_E;
+#endif
+    ret = wc_RNG_DRBG_GetReseedCtr(rng, &ctr);
+    if (ret != 0)
+        return ret;
+    if (ctr >= WC_RESEED_INTERVAL)
+        return NOT_READY_E;
+
+    ret = RNG_FAILURE_E;
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        ret = Hash_DRBG_Generate((DRBG_internal *)rng->drbg, NULL, 0,
+                                 add, addSz);
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        ret = Hash512_DRBG_Generate((DRBG_SHA512_internal *)rng->drbg512,
+                                    NULL, 0, add, addSz);
+    }
+#endif
+#ifdef WC_RNG_DEBUG_STATS
+    if (ret == 0)
+        ++rng->_stats_stirs; /* counts uncredited stir-generates. */
+#endif
+
+    if (ret == DRBG_NEED_RESEED)
+        return NOT_READY_E;
+    else if (ret > 0)
+        return RNG_FAILURE_E;
+    else
+        return ret;
+}
+
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_Stir_Nonce_local(WC_RNG* rng,
+                                        const byte* seed, word32 seedSz,
+                                        const byte *nonce, word32 nonceSz)
+{
+    if (rng == NULL || seed == NULL)
+        return BAD_FUNC_ARG;
+    if ((nonce == NULL) && (nonceSz != 0))
+        return BAD_FUNC_ARG;
+
+    if (rng->status != WC_DRBG_OK)
+        return RNG_FAILURE_E;
+
+    {
+        int lock_ret = rng_lock_required_check(rng);
+        if (lock_ret != 0)
+            return lock_ret;
+    }
+
+    {
+        int ret = Hash_DRBG_StirGenerate(rng, seed, seedSz);
+        if ((ret == 0) && (nonce != NULL) && (nonceSz > 0)) {
+            /* Second chunk as its own specified generate: additional
+             * input is per-call, and chunking beats concatenation
+             * scratch. */
+            ret = Hash_DRBG_StirGenerate(rng, nonce, nonceSz);
+        }
+        return ret;
+    }
+}
+
+int wc_RNG_DRBG_Stir_Nonce(WC_RNG* rng, const byte* seed, word32 seedSz,
+                           const byte *nonce, word32 nonceSz)
+{
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+    ret = wc_RNG_DRBG_Stir_Nonce_local(rng, seed, seedSz, nonce, nonceSz);
+    RngAutoLockExit(rng);
+    return ret;
+}
+
+int wc_RNG_DRBG_Stir(WC_RNG* rng, const byte* seed, word32 seedSz)
+{
+    return wc_RNG_DRBG_Stir_Nonce(rng, seed, seedSz, NULL, 0);
+}
 
 /* FIPS 140-3 IG 10.3.A / SP800-90B Health Tests for Seed Data
  *
@@ -1578,9 +2697,11 @@ int wc_RNG_TestSeed(const byte* seed, word32 seedSz)
     #endif
         XMEMSET(byteCounts, 0, MAX_ENTROPY_BITS * sizeof(word16));
 
-        /* Initialize counts for first window */
+        /* Indices are WC_OCTET-masked: byteCounts has 256 entries, but a
+         * byte cell can exceed 255 where CHAR_BIT != 8, so an unmasked seed
+         * value would index out of bounds. */
         for (i = 0; i < windowSize; i++) {
-            byteCounts[seed[i]]++;
+            byteCounts[WC_OCTET(seed[i])]++;
         }
 
         /* Check first window - scan all 256 counts */
@@ -1591,15 +2712,16 @@ int wc_RNG_TestSeed(const byte* seed, word32 seedSz)
         /* Slide window through remaining seed data */
         while ((windowStart + windowSize) < seedSz) {
             /* Remove byte leaving the window */
-            byteCounts[seed[windowStart]]--;
+            byteCounts[WC_OCTET(seed[windowStart])]--;
             windowStart++;
 
             /* Add byte entering the window */
             newIdx = windowStart + windowSize - 1;
-            byteCounts[seed[newIdx]]++;
+            byteCounts[WC_OCTET(seed[newIdx])]++;
 
             /* Accumulate failure flag for new byte's count */
-            aptFailed |= (byteCounts[seed[newIdx]] >= WC_RNG_SEED_APT_CUTOFF);
+            aptFailed |= (byteCounts[WC_OCTET(seed[newIdx])] >=
+                          WC_RNG_SEED_APT_CUTOFF);
         }
 
     #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
@@ -1667,7 +2789,6 @@ int wc_Sha256Drbg_Disable(void) { return NOT_COMPILED_IN; }
 int wc_Sha256Drbg_Enable(void) { return 0; }
 int wc_Sha256Drbg_IsDisabled(void) { return 1; } /* always disabled */
 #endif /* !NO_SHA256 */
-#endif /* !HAVE_SELFTEST && (!HAVE_FIPS || FIPS v7+) */
 
 #ifdef WOLFSSL_DRBG_SHA512
 int wc_Sha512Drbg_Disable(void)
@@ -1706,13 +2827,36 @@ int wc_Sha512Drbg_IsDisabled(void)
     return val;
 }
 #endif /* WOLFSSL_DRBG_SHA512 */
-
+#endif /* !HAVE_SELFTEST && (!HAVE_FIPS || FIPS v7+) */
+#else
+    /* no Hash DRBG, so no lock for the backends to hold */
+    #define RngAutoLockEnter(rng) 0
+    #define RngAutoLockExit(rng)  WC_DO_NOTHING
 #endif /* HAVE_HASHDRBG */
 /* End NIST DRBG Code */
 
-
-static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
-                    void* heap, int devId)
+/* Semantics of "flags":
+ *
+ * Security attributes are fixed at instantiation and caller-declared -- the
+ * constructor never reads the target object.  _LOCK_REQUIRED sets the sticky
+ * WC_RNG_LOCK_REQUIRED latch bit at birth, so there is no reachable state in
+ * which the instance serves without its lock policy.  _LOCK_INITIALLY sets
+ * WC_RNG_LOCK_HELD at birth: the caller is the lease holder from the first
+ * instruction -- the flag for constructing into a held lease (a lease-holding
+ * reinitialization keeps the instance invariantly locked across the reinit), to
+ * be released by wc_RNG_lock_put() as usual.  _USE_FULL_MUTEX layers a blocking
+ * wolfSSL_Mutex outermost around wc_RNG_lock_get() and wc_RNG_lock_put*() --
+ * for user-mode sharing of one instance among threads, where spinning on the
+ * CAS would be wrong; contending getters sleep in wc_LockMutex().  The inner
+ * latch (and every other wc_RNG_lock_*() operation) is unchanged.
+ * NOT_COMPILED_IN unless WC_RNG_HAVE_LOCK_FULL_MUTEX; composes with
+ * _LOCK_INITIALLY (born held at both layers).  wc_FreeRng() releases (if the
+ * latch is held) and frees the mutex.
+ */
+static WARN_UNUSED_RESULT int _InitRng(WC_RNG* rng,
+                    const byte* nonce, word32 nonceSz,
+                    const byte *perso, word32 persoSz,
+                    void* heap, int devId, WC_RNG* seedRng, word32 flags)
 {
     int ret = 0;
 #if defined(HAVE_HASHDRBG) && !defined(CUSTOM_RAND_GENERATE_BLOCK)
@@ -1722,6 +2866,7 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
     word32 seedSz = SEED_SZ + SEED_BLOCK_SZ;
 #endif
     WC_DECLARE_VAR(seed, byte, MAX_SEED_SZ, rng->heap);
+    int drbg_instantiated = 0;
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     int drbg_scratch_instantiated = 0;
 #endif
@@ -1729,13 +2874,82 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 
     (void)nonce;
     (void)nonceSz;
+    (void)perso;
+    (void)persoSz;
+    /* seedRng is consumed only in the seed-acquisition arm; cast for
+     * configurations that compile that arm out. */
+    (void)seedRng;
 
     if (rng == NULL)
         return BAD_FUNC_ARG;
     if (nonce == NULL && nonceSz != 0)
         return BAD_FUNC_ARG;
+    if (perso == NULL && persoSz != 0)
+        return BAD_FUNC_ARG;
 
-    XMEMSET(rng, 0, sizeof(*rng));
+    /* Checked before the build tests below, so a contradictory request is
+     * refused the same way everywhere rather than depending on the build. */
+    if ((flags & WC_RNG_INIT_FLAG_USE_AUTO_LOCK) &&
+        (flags & (WC_RNG_INIT_FLAG_NO_AUTO_LOCK |
+                  WC_RNG_INIT_FLAG_USE_FULL_MUTEX)))
+    {
+        return BAD_FUNC_ARG;
+    }
+#ifndef WC_RNG_HAVE_NEXT_SEED
+    if (flags & WC_RNG_INIT_FLAG_RECOVER_AND_PROMOTE_FROM_NEXT_SEED)
+        return NOT_COMPILED_IN;
+#endif
+#ifndef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    if (flags & WC_RNG_INIT_FLAG_USE_FULL_MUTEX)
+        return NOT_COMPILED_IN;
+#endif
+#ifndef WC_RNG_HAVE_AUTO_LOCK
+    /* Refuse rather than return an instance the caller believes is locked.
+     * Turning it off where there is none to turn off stays a no-op. */
+    if (flags & WC_RNG_INIT_FLAG_USE_AUTO_LOCK)
+        return NOT_COMPILED_IN;
+#endif
+
+#ifdef WC_RNG_HAVE_LOCK
+    if (flags & (WC_RNG_INIT_FLAG_LOCK_REQUIRED |
+                 WC_RNG_INIT_FLAG_LOCK_INITIALLY))
+    {
+        word32 initial_flags =
+            ((flags & WC_RNG_INIT_FLAG_LOCK_REQUIRED) ?
+             WC_RNG_LOCK_REQUIRED : 0) |
+            ((flags & WC_RNG_INIT_FLAG_LOCK_INITIALLY) ?
+             WC_RNG_LOCK_HELD : 0);
+        XMEMSET(rng, 0, WC_OFFSETOF(WC_RNG, lock));
+        XMEMSET((byte *)rng + WC_OFFSETOF(WC_RNG, lock) + sizeof(rng->lock), 0,
+                sizeof(*rng) -
+                (WC_OFFSETOF(WC_RNG, lock) + sizeof(rng->lock)));
+        #ifdef WC_RNG_DEBUG_STATS
+        if (flags & WC_RNG_INIT_FLAG_LOCK_INITIALLY)
+            rng->_stats_locks_taken = 1;
+        #endif
+#ifdef WOLFSSL_NO_ATOMICS
+        rng->lock = initial_flags;
+#else
+        wolfSSL_Atomic_Uint_Init(&rng->lock, initial_flags);
+#endif
+    }
+    else
+#endif /* WC_RNG_HAVE_LOCK */
+    {
+        XMEMSET(rng, 0, sizeof(*rng));
+    }
+
+#ifdef WC_RNG_HAVE_RBGC
+    if (seedRng == NULL)
+        rng->RBGCStratum = 0;
+    else {
+        if (seedRng->RBGCStratum >= WC_MAX_SINT_OF(int))
+            return SEQ_OVERFLOW_E;
+        else if (seedRng->RBGCStratum == WC_RNG_RBGC_USER_SEED_STRATUM - 1)
+            return SEQ_OVERFLOW_E;
+        rng->RBGCStratum = seedRng->RBGCStratum + 1;
+    }
+#endif
 
 #ifdef WOLFSSL_HEAP_TEST
     rng->heap = (void*)WOLFSSL_HEAP_TEST;
@@ -1762,20 +2976,20 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
     #ifdef WOLFSSL_SMALL_STACK_CACHE
     rng->drbg_scratch = NULL;
     #endif
-#endif
+#endif /* !NO_SHA256 */
 #ifdef WOLFSSL_DRBG_SHA512
     rng->drbg512 = NULL;
     #ifdef WOLFSSL_SMALL_STACK_CACHE
     rng->drbg512_scratch = NULL;
     rng->health_check_scratch_512 = NULL;
     #endif
-#endif
+#endif /* WOLFSSL_DRBG_SHA512 */
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     rng->newSeed_buf = NULL;
-#ifndef NO_SHA256
+    #ifndef NO_SHA256
     rng->health_check_scratch = NULL;
-#endif
-#endif
+    #endif /* !NO_SHA256 */
+#endif /* WOLFSSL_SMALL_STACK_CACHE */
     rng->status = DRBG_NOT_INIT;
 
     /* Select DRBG type: prefer SHA-512 unless disabled or not compiled.
@@ -1784,16 +2998,16 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
     ret = LockDrbgState();
     if (ret != 0)
         return ret;
-#ifdef WOLFSSL_DRBG_SHA512
+    #ifdef WOLFSSL_DRBG_SHA512
     if (!sha512DrbgDisabled)
         rng->drbgType = WC_DRBG_SHA512;
     else
-#endif
-#ifndef NO_SHA256
+    #endif /* WOLFSSL_DRBG_SHA512 */
+    #ifndef NO_SHA256
     if (!sha256DrbgDisabled)
         rng->drbgType = WC_DRBG_SHA256;
     else
-#endif
+    #endif /* !NO_SHA256 */
     {
         UnlockDrbgState();
         return BAD_STATE_E; /* no DRBG available */
@@ -1801,8 +3015,8 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
     UnlockDrbgState();
 #else
     rng->drbgType = WC_DRBG_SHA256;
-#endif
-#endif
+#endif /* !HAVE_SELFTEST && (!HAVE_FIPS || FIPS v7+) */
+#endif /* HAVE_HASHDRBG */
 
 #if defined(HAVE_INTEL_RDSEED) || defined(HAVE_INTEL_RDRAND) || \
     defined(HAVE_AMD_RDSEED)
@@ -1823,11 +3037,16 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 #endif
 
 #ifdef HAVE_INTEL_RDRAND
-    /* if CPU supports RDRAND, use it directly and by-pass DRBG init */
+    /* if CPU supports RDRAND, use it directly and bypass DRBG init */
     if (IS_INTEL_RDRAND(intel_flags)) {
     #ifdef HAVE_HASHDRBG
         rng->status = DRBG_OK;
     #endif
+#ifdef WC_RNG_HAVE_RBGC
+        /* undo stratum increment */
+        if (seedRng != NULL)
+            rng->RBGCStratum = 0;
+#endif
         return 0;
     }
 #endif
@@ -1850,6 +3069,11 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 #ifdef CUSTOM_RAND_GENERATE_BLOCK
     ret = 0; /* success */
 #else
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    wolfSSL_Atomic_Int_Init(&rng->nextStirLen,
+                            WC_DRBG_NEXT_SEED_EMPTY);
+#endif
 
  /* not CUSTOM_RAND_GENERATE_BLOCK follows */
 #ifdef HAVE_HASHDRBG
@@ -1977,13 +3201,13 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
         #if defined(DEBUG_WOLFSSL)
             WOLFSSL_MSG_EX("wc_RNG_HealthTestLocal failed err = %d", ret);
         #endif
-            ret = DRBG_CONT_FAILURE;
         }
     }
 
     #ifdef WOLFSSL_SMALL_STACK
     if (ret == 0) {
-        WC_ALLOC_VAR_EX(seed, byte, MAX_SEED_SZ, rng->heap, DYNAMIC_TYPE_SEED, WC_DO_NOTHING);
+        WC_ALLOC_VAR_EX(seed, byte, MAX_SEED_SZ, rng->heap, DYNAMIC_TYPE_SEED,
+                        WC_DO_NOTHING);
         if (seed == NULL) {
             ret = MEMORY_E;
             rng->status = DRBG_FAILED;
@@ -1997,6 +3221,16 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 #endif
     }
     else {
+        if (seedRng != NULL) {
+            /* RBGC spawn: draw the seed material from the parent DRBG's
+             * generate function in place of the module's seed source -- the SP
+             * 800-90C RBG chain construction.  The root DRBG is implicitly
+             * healthy, so the seed Health test is omitted; all subsequent
+             * handling (seed byte accounting, instantiate, failure disposition)
+             * is then identical to the primary seed path. */
+            ret = wc_RNG_GenerateBlock(seedRng, seed, seedSz);
+        }
+        else {
 #ifdef WC_RNG_SEED_CB
             if (seedCb == NULL) {
                 ret = DRBG_NO_SEED_CB;
@@ -2015,107 +3249,84 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 #else
             ret = wc_GenerateSeed(&rng->seed, seed, seedSz);
 #endif /* WC_RNG_SEED_CB */
-            if (ret != 0) {
-    #if defined(DEBUG_WOLFSSL)
-                WOLFSSL_MSG_EX("Seed generation failed... %d", ret);
-    #elif defined(WC_VERBOSE_RNG)
-                WOLFSSL_DEBUG_PRINTF(
-                    "ERROR: wc_GenerateSeed() in _InitRng() failed with err %d",
-                    ret);
-    #endif
-                ret = DRBG_FAILURE;
-                rng->status = DRBG_FAILED;
-            }
+        }
 
-            if (ret == 0)
-                ret = wc_RNG_TestSeed(seed, seedSz);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+        /* seed now holds entropy; register across DRBG instantiation */
+        wc_MemZero_Add("_InitRng seed", seed, seedSz);
+#endif
+
+        if (ret != 0) {
     #if defined(DEBUG_WOLFSSL)
+            WOLFSSL_MSG_EX("Seed generation failed... %d", ret);
+    #elif defined(WC_VERBOSE_RNG)
+            WOLFSSL_DEBUG_PRINTF(
+                "ERROR: seed acquisition in _InitRng() failed with err %d",
+                ret);
+    #endif
+            ret = DRBG_FAILURE;
+            rng->status = DRBG_FAILED;
+        }
+
+        /* Health-check the primary seed -- RBGC seed is implicitly healthy. */
+
+        if ((ret == 0) && (seedRng == NULL)) {
+            ret = wc_RNG_TestSeed(seed, seedSz);
+            #if defined(DEBUG_WOLFSSL)
             if (ret != 0) {
                 WOLFSSL_MSG_EX("wc_RNG_TestSeed failed... %d", ret);
             }
-    #elif defined(WC_VERBOSE_RNG)
+            #elif defined(WC_VERBOSE_RNG)
             if (ret != DRBG_SUCCESS) {
                 WOLFSSL_DEBUG_PRINTF(
                     "ERROR: wc_RNG_TestSeed() in _InitRng() returned err %d.",
                     ret);
             }
-    #endif
+            #endif
+        }
 
-            if (ret == DRBG_SUCCESS) {
+        /* Instantiate the DRBG */
+
+        if (ret == DRBG_SUCCESS) {
 #ifndef NO_SHA256
-                if (rng->drbgType == WC_DRBG_SHA256)
-                    ret = Hash_DRBG_Instantiate((DRBG_internal *)rng->drbg,
+            if (rng->drbgType == WC_DRBG_SHA256)
+                ret = Hash_DRBG_Instantiate((DRBG_internal *)rng->drbg,
                 #if defined(HAVE_FIPS) || !defined(WOLFSSL_RNG_USE_FULL_SEED)
-                                seed + SEED_BLOCK_SZ, seedSz - SEED_BLOCK_SZ,
+                            seed + SEED_BLOCK_SZ, seedSz - SEED_BLOCK_SZ,
                 #else
-                                seed, seedSz,
+                            seed, seedSz,
                 #endif
-                                nonce, nonceSz, NULL, 0, rng->heap, devId);
+                            nonce, nonceSz, perso, persoSz, rng->heap, devId);
 #endif
 #ifdef WOLFSSL_DRBG_SHA512
-                if (rng->drbgType == WC_DRBG_SHA512)
-                    ret = Hash512_DRBG_Instantiate(
-                                (DRBG_SHA512_internal *)rng->drbg512,
+            if (rng->drbgType == WC_DRBG_SHA512)
+                ret = Hash512_DRBG_Instantiate(
+                    (DRBG_SHA512_internal *)rng->drbg512,
                 #if defined(HAVE_FIPS) || !defined(WOLFSSL_RNG_USE_FULL_SEED)
-                                seed + SEED_BLOCK_SZ, seedSz - SEED_BLOCK_SZ,
+                    seed + SEED_BLOCK_SZ, seedSz - SEED_BLOCK_SZ,
                 #else
-                                seed, seedSz,
+                    seed, seedSz,
                 #endif
-                                nonce, nonceSz, NULL, 0, rng->heap, devId);
+                    nonce, nonceSz, perso, persoSz, rng->heap, devId);
 #endif
-            }
+            if (ret == 0)
+                drbg_instantiated = 1;
+        }
     } /* ret == 0 */
+
+    /* Unconditionally burn the seed data. */
 
     #ifdef WOLFSSL_SMALL_STACK
     if (seed)
     #endif
     {
         ForceZero(seed, seedSz);
+    #if !defined(WOLFSSL_SMALL_STACK) && defined(WOLFSSL_CHECK_MEM_ZERO)
+        /* heap build's WC_FREE_VAR_EX/XFREE auto-checks; stack build needs it */
+        wc_MemZero_Check(seed, seedSz);
+    #endif
     }
     WC_FREE_VAR_EX(seed, rng->heap, DYNAMIC_TYPE_SEED);
-
-    if (ret != DRBG_SUCCESS) {
-    #ifndef NO_SHA256
-        if (rng->drbgType == WC_DRBG_SHA256) {
-        #if !defined(WOLFSSL_NO_MALLOC) || defined(WOLFSSL_STATIC_MEMORY)
-            XFREE(rng->drbg, rng->heap, DYNAMIC_TYPE_RNG);
-        #endif
-            rng->drbg = NULL;
-        #ifdef WOLFSSL_SMALL_STACK_CACHE
-            XFREE(rng->health_check_scratch, rng->heap,
-                   DYNAMIC_TYPE_TMP_BUFFER);
-            rng->health_check_scratch = NULL;
-            if (drbg_scratch_instantiated)
-                (void)Hash_DRBG_Uninstantiate(
-                    (DRBG_internal *)rng->drbg_scratch);
-            XFREE(rng->drbg_scratch, rng->heap, DYNAMIC_TYPE_RNG);
-            rng->drbg_scratch = NULL;
-        #endif
-        }
-    #endif /* !NO_SHA256 */
-    #ifdef WOLFSSL_DRBG_SHA512
-        if (rng->drbgType == WC_DRBG_SHA512) {
-        #if !defined(WOLFSSL_NO_MALLOC) || defined(WOLFSSL_STATIC_MEMORY)
-            XFREE(rng->drbg512, rng->heap, DYNAMIC_TYPE_RNG);
-        #endif
-            rng->drbg512 = NULL;
-        #ifdef WOLFSSL_SMALL_STACK_CACHE
-            XFREE(rng->health_check_scratch_512, rng->heap,
-                   DYNAMIC_TYPE_TMP_BUFFER);
-            rng->health_check_scratch_512 = NULL;
-            if (drbg_scratch_instantiated)
-                (void)Hash512_DRBG_Uninstantiate(rng->drbg512_scratch);
-            XFREE(rng->drbg512_scratch, rng->heap, DYNAMIC_TYPE_RNG);
-            rng->drbg512_scratch = NULL;
-        #endif
-        }
-    #endif
-    #ifdef WOLFSSL_SMALL_STACK_CACHE
-        XFREE(rng->newSeed_buf, rng->heap, DYNAMIC_TYPE_SEED);
-        rng->newSeed_buf = NULL;
-    #endif
-    }
-    /* else wc_RNG_HealthTestLocal was successful */
 
     if (ret == DRBG_SUCCESS) {
 #ifdef WOLFSSL_CHECK_MEM_ZERO
@@ -2131,11 +3342,11 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
         rng->status = DRBG_OK;
         ret = 0;
     }
-    else if (ret == DRBG_CONT_FAILURE) {
+    else if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE)) {
         rng->status = DRBG_CONT_FAILED;
         ret = DRBG_CONT_FIPS_E;
     }
-    else if (ret == DRBG_FAILURE) {
+    else if (ret == WC_NO_ERR_TRACE(DRBG_FAILURE)) {
         rng->status = DRBG_FAILED;
         ret = RNG_FAILURE_E;
     }
@@ -2145,6 +3356,98 @@ static int _InitRng(WC_RNG* rng, byte* nonce, word32 nonceSz,
 #endif /* HAVE_HASHDRBG */
 #endif /* CUSTOM_RAND_GENERATE_BLOCK */
 
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    if ((ret == 0) &&
+        (flags & WC_RNG_INIT_FLAG_RECOVER_AND_PROMOTE_FROM_NEXT_SEED))
+    {
+        rng->flags |= WC_RNG_FLAG_RECOVER_AND_PROMOTE_FROM_NEXT_SEED;
+    }
+#endif
+    if ((ret == 0) && (flags & WC_RNG_INIT_FLAG_USE_FULL_MUTEX)) {
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+        /* deliberately the last init step: no failure path can strand an
+         * initialized mutex. */
+        ret = wc_InitMutex(&rng->mutex);
+        if (ret == 0) {
+            rng->flags |= WC_RNG_FLAG_FULL_MUTEX;
+            if (flags & WC_RNG_INIT_FLAG_LOCK_INITIALLY) {
+                /* born held at both layers: the constructor's caller holds
+                 * the whole latch, mutex included. */
+                ret = wc_LockMutex(&rng->mutex);
+            }
+        }
+#endif
+    }
+
+    if (ret != 0) {
+    #ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+        if (rng->flags & WC_RNG_FLAG_FULL_MUTEX) {
+            /* covers wc_LockMutex() failure after successful
+             * wc_InitMutex() (WC_RNG_INIT_FLAG_LOCK_INITIALLY). */
+            (void)wc_FreeMutex(&rng->mutex);
+            rng->flags &= ~WC_RNG_FLAG_FULL_MUTEX;
+        }
+    #endif
+    #if defined(HAVE_HASHDRBG) && !defined(CUSTOM_RAND_GENERATE_BLOCK)
+    #ifndef NO_SHA256
+        if (rng->drbgType == WC_DRBG_SHA256) {
+            if (drbg_instantiated) {
+                (void)Hash_DRBG_Uninstantiate(
+                    (DRBG_internal *)rng->drbg);
+            }
+            #if !defined(WOLFSSL_NO_MALLOC) || defined(WOLFSSL_STATIC_MEMORY)
+            XFREE(rng->drbg, rng->heap, DYNAMIC_TYPE_RNG);
+            #endif
+            rng->drbg = NULL;
+            #ifdef WOLFSSL_SMALL_STACK_CACHE
+            XFREE(rng->health_check_scratch, rng->heap,
+                   DYNAMIC_TYPE_TMP_BUFFER);
+            rng->health_check_scratch = NULL;
+            if (drbg_scratch_instantiated)
+                (void)Hash_DRBG_Uninstantiate(
+                    (DRBG_internal *)rng->drbg_scratch);
+            XFREE(rng->drbg_scratch, rng->heap, DYNAMIC_TYPE_RNG);
+            rng->drbg_scratch = NULL;
+            #endif /* WOLFSSL_SMALL_STACK_CACHE */
+        }
+    #endif /* !NO_SHA256 */
+    #ifdef WOLFSSL_DRBG_SHA512
+        if (rng->drbgType == WC_DRBG_SHA512) {
+            if (drbg_instantiated) {
+                (void)Hash512_DRBG_Uninstantiate(
+                    (DRBG_SHA512_internal *)rng->drbg512);
+            }
+            #if !defined(WOLFSSL_NO_MALLOC) || defined(WOLFSSL_STATIC_MEMORY)
+            XFREE(rng->drbg512, rng->heap, DYNAMIC_TYPE_RNG);
+            #endif
+            rng->drbg512 = NULL;
+            #ifdef WOLFSSL_SMALL_STACK_CACHE
+            XFREE(rng->health_check_scratch_512, rng->heap,
+                   DYNAMIC_TYPE_TMP_BUFFER);
+            rng->health_check_scratch_512 = NULL;
+            if (drbg_scratch_instantiated)
+                (void)Hash512_DRBG_Uninstantiate(rng->drbg512_scratch);
+            XFREE(rng->drbg512_scratch, rng->heap, DYNAMIC_TYPE_RNG);
+            rng->drbg512_scratch = NULL;
+            #endif /* WOLFSSL_SMALL_STACK_CACHE */
+        }
+    #endif /* WOLFSSL_DRBG_SHA512 */
+    #ifdef WOLFSSL_SMALL_STACK_CACHE
+        XFREE(rng->newSeed_buf, rng->heap, DYNAMIC_TYPE_SEED);
+        rng->newSeed_buf = NULL;
+    #endif
+    #endif /* HAVE_HASHDRBG && !CUSTOM_RAND_GENERATE_BLOCK */
+    }
+
+#ifdef WC_RNG_HAVE_AUTO_LOCK
+    if ((ret == 0) && !(flags & WC_RNG_INIT_FLAG_NO_AUTO_LOCK) &&
+        (WC_RNG_AUTO_LOCK_DEFAULT ||
+         (flags & WC_RNG_INIT_FLAG_USE_AUTO_LOCK))) {
+        ret = RngAutoLockInit(rng);
+        if (ret != 0)
+            (void)wc_FreeRng(rng);
+    }
+#endif
     return ret;
 }
 
@@ -2184,7 +3487,8 @@ int wc_rng_new_ex(WC_RNG **rng, byte* nonce, word32 nonceSz,
         return MEMORY_E;
     }
 
-    ret = _InitRng(*rng, nonce, nonceSz, heap, devId);
+    ret = _InitRng(*rng, nonce, nonceSz, NULL, 0, heap, devId, NULL,
+                   WC_RNG_INIT_FLAG_NONE);
     if (ret != 0) {
         XFREE(*rng, heap, DYNAMIC_TYPE_RNG);
         *rng = NULL;
@@ -2210,37 +3514,1259 @@ void wc_rng_free(WC_RNG* rng)
 WOLFSSL_ABI
 int wc_InitRng(WC_RNG* rng)
 {
-    return _InitRng(rng, NULL, 0, NULL, INVALID_DEVID);
+    return _InitRng(rng, NULL, 0, NULL, 0, NULL, INVALID_DEVID, NULL,
+                    WC_RNG_INIT_FLAG_NONE);
 }
 
 
 int wc_InitRng_ex(WC_RNG* rng, void* heap, int devId)
 {
-    return _InitRng(rng, NULL, 0, heap, devId);
+    return _InitRng(rng, NULL, 0, NULL, 0, heap, devId, NULL,
+                    WC_RNG_INIT_FLAG_NONE);
 }
 
 
-int wc_InitRngNonce(WC_RNG* rng, byte* nonce, word32 nonceSz)
+int wc_InitRngNonce(WC_RNG* rng, const byte* nonce, word32 nonceSz)
 {
-    return _InitRng(rng, nonce, nonceSz, NULL, INVALID_DEVID);
+    return _InitRng(rng, nonce, nonceSz, NULL, 0, NULL, INVALID_DEVID, NULL,
+                    WC_RNG_INIT_FLAG_NONE);
 }
 
 
-int wc_InitRngNonce_ex(WC_RNG* rng, byte* nonce, word32 nonceSz,
+int wc_InitRngNonce_ex(WC_RNG* rng, const byte* nonce, word32 nonceSz,
                        void* heap, int devId)
 {
-    return _InitRng(rng, nonce, nonceSz, heap, devId);
+    return _InitRng(rng, nonce, nonceSz, NULL, 0, heap, devId, NULL,
+                    WC_RNG_INIT_FLAG_NONE);
+}
+
+int wc_InitRng_ex2(WC_RNG* rng, void* heap, int devId, word32 flags)
+{
+    return _InitRng(rng, NULL, 0, NULL, 0, heap, devId, NULL, flags);
+}
+
+int wc_InitRngNonce_ex2(WC_RNG* rng, const byte* nonce, word32 nonceSz,
+                        const byte *perso, word32 persoSz,
+                        void* heap, int devId, word32 flags)
+{
+    return _InitRng(rng, nonce, nonceSz, perso, persoSz,
+                    heap, devId, NULL, flags);
+}
+
+#if defined(HAVE_GETPID) && !defined(WOLFSSL_NO_GETPID)
+
+#if defined(HAVE_HASHDRBG) && !defined(CUSTOM_RAND_GENERATE_BLOCK)
+static WARN_UNUSED_RESULT int PollAndReSeed(WC_RNG* rng, const byte* additional,
+                         word32 additionalSz);
+#endif
+
+/* rng_pid_change_check() is used by wc_RNG_Pool_Extract(),
+ * wc_RNG_DRBG_NextSeedNow_Nonce(), and wc_RNG_GenerateBlock(), to assure that
+ * the RNG is freshly seeded after a fork(), to avoid seeding or generating from
+ * duplicated internal state.
+ */
+static WARN_UNUSED_RESULT WC_MAYBE_UNUSED int rng_pid_change_check(WC_RNG* rng) {
+    int ret = 0;
+    int my_pid = getpid();
+
+    if (rng->pid == my_pid)
+        return 0;
+
+    rng->pid = my_pid;
+
+#if defined(HAVE_HASHDRBG) && !defined(CUSTOM_RAND_GENERATE_BLOCK)
+    ret = PollAndReSeed(rng, NULL, 0);
+    if (ret != DRBG_SUCCESS) {
+        rng->status = DRBG_FAILED;
+        ret = RNG_FAILURE_E;
+    }
+#endif
+
+#ifdef WC_RNG_HAVE_POOL
+    {
+        int ret2 = PoolPurge(rng);
+        if ((ret == 0) &&
+            (ret2 != 0) &&
+            (ret2 != WC_NO_ERR_TRACE(ALREADY_E)))
+        {
+            ret = ret2;
+        }
+    }
+#endif
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    WOLFSSL_ATOMIC_STORE(rng->nextStirLen,
+                         WC_DRBG_NEXT_SEED_EMPTY);
+    #ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        int ret2 = NextSeedPurge(&((DRBG_internal *)rng->drbg)->nextSeedLen,
+            ((DRBG_internal *)rng->drbg)->nextSeed,
+            (word32)sizeof(((DRBG_internal *)rng->drbg)->nextSeed));
+        if ((ret == 0) &&
+            (ret2 != 0) &&
+            (ret2 != WC_NO_ERR_TRACE(ALREADY_E)))
+        {
+            ret = ret2;
+        }
+    }
+    #endif
+    #ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        int ret2 =
+            NextSeedPurge(&((DRBG_SHA512_internal *)rng->drbg512)->nextSeedLen,
+            ((DRBG_SHA512_internal *)rng->drbg512)->nextSeed,
+            (word32)sizeof(((DRBG_SHA512_internal *)rng->drbg512)->nextSeed));
+        if ((ret == 0) &&
+            (ret2 != 0) &&
+            (ret2 != WC_NO_ERR_TRACE(ALREADY_E)))
+        {
+            ret = ret2;
+        }
+    }
+    #endif
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+    return ret;
+}
+#endif /* HAVE_GETPID && !WOLFSSL_NO_GETPID */
+
+#ifdef WC_RNG_HAVE_LOCK
+
+/* Note, in CAS updates here, the stored value derives only from expected and
+ * the caller's arguments, never from a prior load.  This assures no race with
+ * unlocked changes to any bits.
+ */
+
+int wc_RNG_lock_get(WC_RNG* rng, WC_RNG_lock_arg_t extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* outermost blocking layer, when constructed with _USE_FULL_MUTEX:
+     * contending getters sleep here rather than seeing BUSY_E. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX) {
+        if (wc_LockMutex(&rng->mutex) != 0) {
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_locks_refused; /* racy */
+            #endif
+            return BAD_MUTEX_E;
+        }
+    }
+#endif
+
+    /* extra_bits is allowed to assert WC_RNG_LOCK_REQUIRED, which is in the
+     * reserved section. */
+    extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+        WC_RNG_LOCK_REQUIRED;
+
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+
+    if (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) {
+#ifdef WC_RNG_HAVE_NEXT_SEED
+        WC_ATOMIC_INT_ARG NextSeedCurrent;
+        if ((rng->flags & WC_RNG_FLAG_RECOVER_AND_PROMOTE_FROM_NEXT_SEED) &&
+            (wc_RNG_DRBG_NextSeedCurrent(rng, &NextSeedCurrent) == 0) &&
+            (NextSeedCurrent == WC_DRBG_NEXT_SEED_READY))
+        {
+            /* cheap inline recovery available. */
+        }
+        else
+#endif
+        {
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_locks_refused; /* racy */
+            #endif
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+            if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+                (void)wc_UnLockMutex(&rng->mutex);
+#endif
+            return NEEDS_RECOVERY_E;
+        }
+    }
+
+    if ((! (cur_lock & WC_RNG_LOCK_HELD)) &&
+        (wolfSSL_Atomic_Uint_CompareExchange(
+            &rng->lock, &cur_lock,
+            cur_lock | WC_RNG_LOCK_HELD | extra_bits)))
+    {
+        #ifdef WC_RNG_DEBUG_STATS
+        ++rng->_stats_locks_taken;
+        #endif
+
+        /* If we arrived here via _RECOVER_AND_PROMOTE_FROM_NEXT_SEED with a
+         * pending NextSeed, there is a finite though minuscule chance that a
+         * second invalidation left the RNG without a banked seed to consume.
+         * In that case, the holder's generate falls through to the regular
+         * inline forced-reseed machinery.  This is the same outcome as an
+         * invalidation landing immediately after a successful acquire.
+         */
+
+        return 0;
+    }
+
+    #ifdef WC_RNG_DEBUG_STATS
+    ++rng->_stats_locks_refused;
+    #endif
+
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* CAS failure with the mutex held means a non-mutex claimant holds
+     * the latch (mixed-discipline use); back out the mutex. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+        (void)wc_UnLockMutex(&rng->mutex);
+#endif
+
+    if (cur_lock & WC_RNG_LOCK_HELD)
+        return BUSY_E;
+    else if (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)
+        return NEEDS_RECOVERY_E;
+    else /* not reachable */
+        return UNEXPECTED_STATE_E;
+}
+
+int wc_RNG_lock_get_conditional(WC_RNG* rng,
+                                WC_RNG_lock_arg_t expected_extra_bits,
+                                WC_RNG_lock_arg_t want_extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock, expected;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* outermost blocking layer, when constructed with _USE_FULL_MUTEX:
+     * contending getters sleep here rather than seeing BUSY_E. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX) {
+        if (wc_LockMutex(&rng->mutex) != 0) {
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_locks_refused; /* racy */
+            #endif
+            return BAD_MUTEX_E;
+        }
+    }
+#endif
+
+    /* *_extra_bits are allowed to assert WC_RNG_LOCK_REQUIRED, which is in the
+     * reserved section.  Additionally, expected_extra_bits is allowed to
+     * include WC_RNG_LOCK_ENTROPY_INVALIDATED, for purposes of recovery. */
+    expected_extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+        WC_RNG_LOCK_REQUIRED | WC_RNG_LOCK_ENTROPY_INVALIDATED;
+    want_extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+        WC_RNG_LOCK_REQUIRED;
+
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+
+    if ((cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) &&
+        (! (expected_extra_bits & WC_RNG_LOCK_ENTROPY_INVALIDATED)))
+    {
+        #ifdef WC_RNG_DEBUG_STATS
+        ++rng->_stats_locks_refused; /* racy */
+        #endif
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+        if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+            (void)wc_UnLockMutex(&rng->mutex);
+#endif
+        return NEEDS_RECOVERY_E;
+    }
+
+    expected = (cur_lock & (((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) &
+                            ~(WC_RNG_LOCK_HELD |
+                              WC_RNG_LOCK_ENTROPY_INVALIDATED))) |
+        expected_extra_bits;
+
+    if ((! (cur_lock & WC_RNG_LOCK_HELD)) &&
+        (wolfSSL_Atomic_Uint_CompareExchange(
+            &rng->lock, &expected,
+            expected | WC_RNG_LOCK_HELD | want_extra_bits)))
+    {
+        #ifdef WC_RNG_DEBUG_STATS
+        ++rng->_stats_locks_taken;
+        #endif
+        return 0;
+    }
+
+    #ifdef WC_RNG_DEBUG_STATS
+    ++rng->_stats_locks_refused; /* racy */
+    #endif
+
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    /* CAS failure with the mutex held means a non-mutex claimant holds
+     * the latch (mixed-discipline use); back out the mutex. */
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+        (void)wc_UnLockMutex(&rng->mutex);
+#endif
+
+    if ((cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED) !=
+        (expected & WC_RNG_LOCK_ENTROPY_INVALIDATED))
+    {
+        return NEEDS_RECOVERY_E;
+    }
+    else if (expected & WC_RNG_LOCK_HELD)
+        return BUSY_E;
+    else
+        return UNEXPECTED_STATE_E;
+}
+
+int wc_RNG_lock_put(WC_RNG* rng, WC_RNG_lock_arg_t extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock, new_lock;
+    int cas_ret;
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+    if (! (cur_lock & WC_RNG_LOCK_HELD))
+        return OBJECT_NOT_LOCKED_E;
+
+    #ifdef WC_RNG_DEBUG_STATS
+    ++rng->_stats_locks_released;
+    #endif
+
+    WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, cas_ret) {
+        new_lock = cur_lock & (((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) &
+                               ~WC_RNG_LOCK_HELD);
+        /* extra_bits is allowed to assert WC_RNG_LOCK_REQUIRED, which is in the
+         * reserved section. */
+        extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+            WC_RNG_LOCK_REQUIRED;
+        new_lock |= extra_bits;
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->lock, cur_lock, new_lock, cas_ret);
+    } WC_CAS_WITH_RETRY_END;
+
+    if (cas_ret != 0) {
+        /* Aborted release (a port's retry clause): the latch is still ours
+         * and new_lock was never installed.  Keep ownership consistent --
+         * mutex included -- and percolate so the caller can retry the
+         * put. */
+        return cas_ret;
+    }
+
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+        (void)wc_UnLockMutex(&rng->mutex);
+#endif
+
+    if (new_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)
+        return NEEDS_RECOVERY_E;
+    else
+        return 0;
+}
+
+int wc_RNG_lock_put_conditional(WC_RNG* rng,
+                                WC_RNG_lock_arg_t expected_extra_bits,
+                                WC_RNG_lock_arg_t want_extra_bits)
+{
+    int cas_ret;
+    WC_CAS_WITH_RETRY_EXTRA_DECLS;
+    WC_RNG_lock_arg_t cur_lock, expected, new_lock;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+    if (! (cur_lock & WC_RNG_LOCK_HELD))
+        return OBJECT_NOT_LOCKED_E;
+
+    #ifdef WC_RNG_DEBUG_STATS
+    ++rng->_stats_locks_released;
+    #endif
+
+    /* Note this CAS loop doesn't use WC_CAS_WITH_RETRY_*() (non-conformant code
+     * pattern), so the WC_CAS_WITH_RETRY_* hook macros are invoked directly. */
+    for (;;) {
+        new_lock = cur_lock & (((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) &
+                               ~WC_RNG_LOCK_HELD);
+        /* want_extra_bits is allowed to assert WC_RNG_LOCK_REQUIRED, which is
+         * in the reserved section. */
+        want_extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+            WC_RNG_LOCK_REQUIRED;
+        new_lock |= want_extra_bits;
+
+        expected = WC_RNG_LOCK_HELD | expected_extra_bits |
+            (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED);
+
+        new_lock |= (expected_extra_bits & WC_RNG_LOCK_REQUIRED) |
+            (cur_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED);
+
+        /* release preserves the sticky bit if the caller reports it held */
+        if (wolfSSL_Atomic_Uint_CompareExchange(
+                &rng->lock, &expected,
+                new_lock))
+        {
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+            if (rng->flags & WC_RNG_FLAG_FULL_MUTEX)
+                (void)wc_UnLockMutex(&rng->mutex);
+#endif
+            if (new_lock & WC_RNG_LOCK_ENTROPY_INVALIDATED)
+                return NEEDS_RECOVERY_E;
+            else
+                return 0;
+        }
+        if ((expected & ((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U)) !=
+            (expected_extra_bits & ((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U)))
+        {
+            break;
+        }
+
+        cur_lock = expected;
+
+        cas_ret = WC_CAS_WITH_RETRY_FOREVER_CLAUSE;
+        if (cas_ret != 0)
+            return cas_ret;
+        WC_CAS_WITH_RETRY_ITER_CLAUSE(&rng->lock, cur_lock, new_lock, cas_ret);
+    }
+
+    /* conditional release failed: the caller is still the holder, at both
+     * layers -- the mutex stays held. */
+
+    #ifdef WC_RNG_DEBUG_STATS
+    --rng->_stats_locks_released;
+    #endif
+
+    return UNEXPECTED_STATE_E;
+}
+
+int wc_RNG_lock_read(WC_RNG* rng, WC_RNG_lock_arg_t* state)
+{
+    if ((rng == NULL) || (state == NULL))
+        return BAD_FUNC_ARG;
+    *state = WOLFSSL_ATOMIC_LOAD(rng->lock);
+    return 0;
+}
+
+int wc_RNG_lock_set_extra(WC_RNG* rng, WC_RNG_lock_arg_t extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock, new_lock;
+    int cas_ret;
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+
+    WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, cas_ret) {
+        new_lock = cur_lock & ((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U);
+        /* extra_bits is allowed to assert WC_RNG_LOCK_REQUIRED, which is in the
+         * reserved section. */
+        extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+            WC_RNG_LOCK_REQUIRED;
+        new_lock |= extra_bits;
+
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->lock, cur_lock, new_lock, cas_ret);
+    } WC_CAS_WITH_RETRY_END;
+    /* 0 unless a port's retry clause aborted; the lock word is then
+     * untouched, so percolation is the whole handling. */
+    return cas_ret;
+}
+
+int wc_RNG_lock_add_extra(WC_RNG* rng, WC_RNG_lock_arg_t extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock;
+    int cas_ret;
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+
+    /* extra_bits is allowed to assert WC_RNG_LOCK_REQUIRED, which is in the
+     * reserved section. */
+    extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U) |
+        WC_RNG_LOCK_REQUIRED;
+
+    WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, cas_ret) {
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->lock, cur_lock,
+                                      cur_lock | extra_bits, cas_ret);
+    } WC_CAS_WITH_RETRY_END;
+    /* see wc_RNG_lock_set_extra() re nonzero cas_ret. */
+    return cas_ret;
+}
+
+int wc_RNG_lock_clear_extra(WC_RNG* rng, WC_RNG_lock_arg_t extra_bits)
+{
+    WC_RNG_lock_arg_t cur_lock;
+    int cas_ret;
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    if (extra_bits & WC_RNG_LOCK_REQUIRED) {
+        /* WC_RNG_LOCK_REQUIRED is sticky by contract */
+        return BAD_FUNC_ARG;
+    }
+    cur_lock = WOLFSSL_ATOMIC_LOAD(rng->lock);
+
+    extra_bits &= ~((1U << WC_RNG_LOCK_EXTRA_SHIFT) - 1U);
+
+    WC_CAS_WITH_RETRY_BEGIN(&rng->lock, cur_lock, cas_ret) {
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->lock, cur_lock,
+                                      cur_lock & ~extra_bits, cas_ret);
+    } WC_CAS_WITH_RETRY_END;
+    /* see wc_RNG_lock_set_extra() re nonzero cas_ret. */
+    return cas_ret;
 }
 
 #ifdef HAVE_HASHDRBG
-static int PollAndReSeed(WC_RNG* rng)
+WOLFSSL_API int wc_RNG_invalidate_entropy(WC_RNG* rng) {
+    WC_RNG_lock_arg_t cur_lock;
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+    /* If no lock is held, either the RNG is in use without a lock, in which
+     * case the reseedCtr is the only way to force invalidation semantics on the
+     * user, or it is not in use at all and scheduling a reseed is harmless.
+     *
+     * If a lock is held, the holder will learn of the invalidation at unlock
+     * time, and will implement its own mitigation strategy.  We do not force it
+     * into a synchronous reseed.
+     *
+     * In either case, the state purges here are best effort.  With
+     * WC_RNG_HAVE_LOCK, these purges are repeated, strictly serialized against
+     * concurrent recovery attempts, in Hash_DRBG_Reseed() (the sole recovery
+     * path from _ENTROPY_INVALIDATED).
+     */
+    ret = wc_RNG_DRBG_ScheduleReseed(rng);
+    if (ret == WC_NO_ERR_TRACE(WRONG_TYPE_OBJECT_E)) {
+        /* No DRBG (direct-RDRAND et al.): nothing to schedule, and nothing
+         * whose staleness the latch would mark -- not a condemnable
+         * failure.  Any applicable auxiliary-state purges below still
+         * run. */
+        ret = 0;
+    }
+
+#ifdef WC_RNG_HAVE_POOL
+    {
+        int ret2 = PoolPurge(rng);
+        if ((ret2 != 0) && (ret == 0))
+            ret = ret2;
+    }
+#endif
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    WOLFSSL_ATOMIC_STORE(rng->nextStirLen,
+                         WC_DRBG_NEXT_SEED_EMPTY);
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        int ret2 = NextSeedPurge(&((DRBG_internal *)rng->drbg)->nextSeedLen,
+            ((DRBG_internal *)rng->drbg)->nextSeed,
+            (word32)sizeof(((DRBG_internal *)rng->drbg)->nextSeed));
+        if ((ret2 != 0) &&
+            (ret2 != WC_NO_ERR_TRACE(ALREADY_E)) &&
+            (ret == 0))
+        {
+            ret = ret2;
+        }
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        int ret2 =
+            NextSeedPurge(&((DRBG_SHA512_internal *)rng->drbg512)->nextSeedLen,
+            ((DRBG_SHA512_internal *)rng->drbg512)->nextSeed,
+            (word32)sizeof(((DRBG_SHA512_internal *)rng->drbg512)->nextSeed));
+        if ((ret2 != 0) &&
+            (ret2 != WC_NO_ERR_TRACE(ALREADY_E)) &&
+            (ret == 0))
+        {
+            ret = ret2;
+        }
+    }
+#endif
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+    /* Assert _ENTROPY_INVALIDATED last: latch-after-purge makes the latch a
+     * provenance marker.  Any consumer that observes the latch observes
+     * post-purge apertures, so a READY it then claims necessarily postdates
+     * this event; a consumer that raced ahead of the latch loses its claim
+     * to the purge above and is refused at its release CAS (see
+     * wc_RNG_DRBG_NextSeedNow_Nonce()); and an event landing mid-reseed
+     * strips _ENTROPY_RECOVERING here, so the recovery's exit CAS refuses
+     * the clear.  No interleaving recovers from pre-event material. */
+
+    {
+        int cas_ret;
+        WC_CAS_WITH_RETRY_BEGIN_INIT_CUR(&rng->lock, cur_lock, cas_ret) {
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(
+                wolfSSL_Atomic_Uint_CompareExchange, &rng->lock, cur_lock,
+                (cur_lock & ~WC_RNG_LOCK_ENTROPY_RECOVERING) |
+                WC_RNG_LOCK_ENTROPY_INVALIDATED,
+                cas_ret);
+        } WC_CAS_WITH_RETRY_END;
+        if ((cas_ret != 0) && (ret == 0))
+            ret = cas_ret;
+    }
+
+    /* Postcondition: latch or condemn.  Zero return means _INVALIDATED is
+     * asserted; any nonzero return leaves the latch down (it is asserted last,
+     * above), so the instance is quarantined by counter saturation alone -- and
+     * the reseedCtr is subject to lost-update races.  DRBG_FAILED is the
+     * remaining stop no interleaving can lift: sticky until a full recovery.
+     *
+     * This is the one leaseless outsider write of DRBG_FAILED; the race against
+     * a lease-holder is benign both ways (a completing reseed's OK overwrite
+     * means the state was genuinely re-derived from post-event material; a
+     * FAILED overwrite of OK costs one spurious reinit, never unsound output).
+     * In the kernel build, bank instances are retired and recovered by the
+     * entropy daemon's out-of-service pass; a leaf's owner sees hard
+     * RNG_FAILURE_E and reinitializes.
+     */
+    if (ret != 0)
+        rng->status = DRBG_FAILED;
+
+    return ret;
+}
+
+#endif /* HAVE_HASHDRBG */
+#endif /* WC_RNG_HAVE_LOCK */
+
+#ifdef WC_RNG_HAVE_FREE_HOOK
+/* This routine is used for mitigation of RNG cloning events, particularly by
+ * hypervisors. */
+WOLFSSL_API int wc_RNG_register_free_hook(WC_RNG* rng,
+                                          wc_RNG_free_hook_cb_t free_hook,
+                                          void *arg)
 {
-    int ret   = DRBG_NEED_RESEED;
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    rng->free_hook = free_hook;
+    rng->free_hook_arg = arg;
+    return 0;
+}
+#endif /* WC_RNG_HAVE_FREE_HOOK */
+
+#ifdef WC_RNG_HAVE_POOL
+
+    /* In-boundary asynchronous DRBG output pool (wc_RNG_Pool_*()): a circular
+     * buffer of pre-generated output, held and zeroized under the module's CSP
+     * discipline and consumed destructively (each delivered or discarded byte
+     * is burned).
+     *
+     * Writer state coherence is enforced with a CAS; reader exclusivity is
+     * enforced by the umbrella WC_RNG.lock, or absent that, by caller contract.
+     *
+     * The reader is lock-free -- two plain loads of {head, epoch} bracketing
+     * the copy, then a plain store of {tail, epoch} exclusively written by the
+     * reader.  The writer CASes its publication, carrying the epoch it read; a
+     * purge during its generate results in an epoch mismatch, whereupon BUSY_E
+     * is returned to the caller.
+     *
+     * _Alloc() sizes the ring (2..32767 bytes), with positions running in [0,
+     * 2*size) and packing into 16 bits.  _Collect() tops up the pool from rng's
+     * own DRBG; _Collect2() tops dest's ring up from an independent src
+     * instance, generating directly into the free span and publishing with a
+     * single CAS -- callable WITHOUT any lease on dest (contending writers
+     * return BUSY_E on CAS failure; the final write of every published byte is
+     * certified DRBG output).  _Extract() (lease-holder only) delivers up to *n
+     * bytes destructively, burning each byte on the way out, and fails closed
+     * on an out-of-service DRBG; *n = 0 on empty, for fall-through to a direct
+     * generate.  _Current() reports the published count (racy snapshot).  No
+     * special free API: the ring lives until wc_FreeRng(), eliminating
+     * deallocation races by construction.
+     *
+     * Two words track FIFO state:
+     *
+     *   poolHead = {head, epoch}   written by the writer (publish, CAS) and by
+     *                               PoolPurge() (epoch bump, CAS)
+     *   poolTail = {tail, epoch}   written by the reader alone, plain store
+     *
+     * Position and epoch share one word, so the pairs are always mutually
+     * consistent -- there is no torn snapshot to reason about.
+     *
+     * head and tail are free-running positions in [0, 2*poolSize), advanced by
+     * conditional subtraction -- no division, and no modulus constraint on
+     * poolSize.  The writer publishes only into free space, so head can never
+     * pass tail + poolSize and the two can never lap.
+     *
+     * wc_RNG_lock_put{,_conditional}() return NEEDS_RECOVERY_E to the reader if
+     * an invalidation occurred after lock but before release (contingent on
+     * WC_RNG_HAVE_LOCK).  State coherence for the lock-free writers and purgers
+     * hinges on the CAS and epoch counter protocol in PoolPurge() and
+     * wc_RNG_Pool_Collect2().
+     *
+     * The reader never writes poolHead and never CASes anything, leveraging
+     * exclusivity enforced by WC_RNG.lock or arranged by caller contract.  It
+     * brackets its copy with leading and trailing loads of poolHead and
+     * compares the epoch: a purge that landed anywhere in between is caught,
+     * providing for early, pre-unlock failure upon invalidation.  The epoch is
+     * 16 bits, so defeating this early failure requires exactly k * 65536
+     * purges (k a positive integer) inside one copy-and-burn of at most
+     * poolSize bytes (implausible).
+     *
+     * PoolPurge() bumps epoch and touches nothing else.  It does not reset the
+     * counters: leaving them monotonic keeps the reader's burn span [tail,
+     * tail+m) and the writer's generate span [head, head+m') disjoint across
+     * the event, so a purge can never cause one to erase the other's bytes.
+     * Stale pre-purge material is discarded by the reader instead, which
+     * resynchronizes tail to head on any epoch change -- whether it observed
+     * the purge mid-serve or merely arrives afterwards.
+     *
+     * The writer still CASes, and its publication carries the epoch it read.  A
+     * purge during its generate makes that CAS fail, and it abandons rather
+     * than publishing material that predates the event.  This protocol is
+     * airtight in the same sense as the credited next-seed aperture
+     * (NextSeedPurge()): no invalidation can go unobserved by either side.
+     *
+     * If multiple writers simultaneously write to the pool, their inputs are
+     * unpredictably but benignly interspersed, with one of the writers
+     * successfully finalizing its write with a CAS, while the rest fail their
+     * CAS and return BUSY_E.  Because all writers are tested for provenance
+     * compatible with that of the destination RNG (particularly, by the stratum
+     * test in wc_RNG_Pool_Collect2()), this interspersal is intrinsically
+     * benign.  It can be trivially avoided by single-writer caller contract;
+     * the fundamental benefit of this arrangement is the avoidance of an
+     * initial frivolous CAS at entry to _Collect2().
+     */
+
+#define WC_RNG_POOL_POS(w)   ((word32)((word32)(w) & 0xFFFFU))
+#define WC_RNG_POOL_EPOCH(w) ((word32)(((word32)(w) >> 16) & 0xFFFFU))
+#define WC_RNG_POOL_PACK(pos, epoch)                                     \
+    ((WC_ATOMIC_UINT_ARG)((((word32)(pos)) & 0xFFFFU) |                  \
+                          ((((word32)(epoch)) & 0xFFFFU) << 16)))
+
+wc_static_assert(sizeof(WC_ATOMIC_UINT_ARG) >= 4);
+
+/* position -> ring index.  Positions run in [0, 2*poolSize). */
+static WC_INLINE word32 PoolAt(word32 pos, word32 poolSize)
+{
+    return (pos >= poolSize) ? (pos - poolSize) : pos;
+}
+
+/* advance a position, wrapping at 2*poolSize. */
+static WC_INLINE word32 PoolAdvance(word32 pos, word32 by, word32 poolSize)
+{
+    word32 lim = poolSize * 2U;
+    pos += by;
+    return (pos >= lim) ? (pos - lim) : pos;
+}
+
+static WC_INLINE word32 PoolUsed(word32 head, word32 tail, word32 poolSize)
+{
+    /* Note, the modular subtraction is unambiguous because the only publisher
+     * (wc_RNG_Pool_Collect2()) carefully bounds itself to the free span, so
+     * head never passes tail + poolSize. */
+    return (head >= tail) ? (head - tail) : (head + (poolSize * 2U) - tail);
+}
+
+/* Wipe the retired span [tail, head): pooled bytes are finished DRBG output
+ * at rest, and a retiring event (invalidation, fork, credited reseed) has a
+ * sibling lineage that may serve its identical copy -- CSP by the doctrine
+ * at NextSeedPurge().  Race-free by ownership: the single reader is the
+ * only mover of tail, and writers write only past head. */
+static WC_INLINE void PoolWipeRetired(WC_RNG *rng, word32 tail, word32 head)
+{
+    word32 used = PoolUsed(head, tail, (word32)rng->poolSize);
+    word32 t = (tail >= (word32)rng->poolSize) ?
+        (tail - (word32)rng->poolSize) : tail;
+    word32 seg = (word32)rng->poolSize - t;
+    if (seg > used)
+        seg = used;
+    if (seg > 0)
+        ForceZero(rng->pool + t, seg);
+    if (used > seg)
+        ForceZero(rng->pool, used - seg);
+}
+
+/* Retire pooled output: any event after which pre-event bytes must not be
+ * served -- state invalidation, fork, a credited reseed recovering from
+ * invalidation, the reader's
+ * fail-closed path.  Bumping epoch is the whole operation; see above for why
+ * the counters are deliberately left alone. */
+static WARN_UNUSED_RESULT int PoolPurge(WC_RNG* rng)
+{
+    WC_ATOMIC_UINT_ARG cur, want;
+    int ret;
+
+    WC_CAS_WITH_RETRY_BEGIN_INIT_CUR(&rng->poolHead, cur, ret) {
+        want = WC_RNG_POOL_PACK(WC_RNG_POOL_POS(cur),
+                                WC_RNG_POOL_EPOCH(cur) + 1U);
+        WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Uint_CompareExchange,
+                                      &rng->poolHead, cur, want, ret);
+    } WC_CAS_WITH_RETRY_END;
+
+    return ret;
+}
+
+int wc_RNG_Pool_Alloc(WC_RNG* rng, word32 size)
+{
+    if ((rng == NULL) || (size < 2) || (size > 32767U))
+        return BAD_FUNC_ARG; /* halves are word16; current in [0, size] */
+    if (rng->pool != NULL)
+        return ALREADY_E;
+
+    rng->pool = (byte*)XMALLOC(size, rng->heap, DYNAMIC_TYPE_RNG);
+    if (rng->pool == NULL)
+        return MEMORY_E;
+    rng->poolSize = (word16)size;
+    wolfSSL_Atomic_Uint_Init(&rng->poolHead, 0);
+    wolfSSL_Atomic_Uint_Init(&rng->poolTail, 0);
+
+    return 0;
+}
+
+int wc_RNG_Pool_Collect2(WC_RNG* rng_dest, WC_RNG* rng_src, word32 n)
+{
+    if ((rng_dest == NULL) || (rng_src == NULL))
+        return BAD_FUNC_ARG;
+    if (rng_dest->pool == NULL)
+        return BAD_STATE_E;
+
+#ifdef WC_RNG_HAVE_RBGC
+    /* Pool data is served directly as DRBG output, via wc_RNG_Pool_Extract().
+     * To preserve the destination's provenance guarantee (SP 800-90C
+     * sect. 7.3.1 item 16, no output to a predecessor), the generator stratum
+     * must not be deeper than the destination stratum.  Contrast with stir data
+     * (wc_RNG_DRBG_ReseedRBGC_local() uncredited path), which has and imparts
+     * no provenance. */
+    if (rng_src->RBGCStratum > rng_dest->RBGCStratum)
+        return BAD_FUNC_ARG;
+#endif
+
+    if (n == 0)
+        return 0;
+
+    /* Note, a second writer can read the same head, generate into the same
+     * span, then lose the publication CAS, having already overwritten part of
+     * the winner's published bytes.  This is benign -- every byte in the span
+     * is output of compatible provenance from one generate or the other, and
+     * the loser just returns BUSY_E, while no invalidation is lost either way.
+     *
+     * If interspersal of bytes from multiple producers is undesirable, the
+     * caller can simply arrange not to have multiple concurrent producxers --
+     * this is the arrangement in the wolfSSL kernel module, for example, which
+     * has a single daemon (wc_linuxkm_entropy_daemon()) that is the sole pool
+     * collector.
+     */
+    {
+        WC_ATOMIC_UINT_ARG snap;
+        word32 head, epoch, tail, free_sz, m, done = 0;
+        int ret;
+
+        WC_ATOMIC_UINT_ARG tw;
+
+        snap = WOLFSSL_ATOMIC_LOAD(rng_dest->poolHead);
+        head = WC_RNG_POOL_POS(snap);
+        epoch = WC_RNG_POOL_EPOCH(snap);
+        tw = WOLFSSL_ATOMIC_LOAD(rng_dest->poolTail);
+
+        if (WC_RNG_POOL_EPOCH(tw) != epoch) {
+            /* A purge landed and the reader has not yet acknowledged it.  Its
+             * resync discards everything published before the purge -- which
+             * would include anything we published now -- so there is no useful
+             * work here until a read happens.  Reporting NOT_READY_E rather
+             * than success also keeps a collector that polls fullness from
+             * spinning: wc_RNG_Pool_Current() reports empty across this
+             * window, while tail still describes the retired span, so a
+             * free-span computation from it would say full.  Those two
+             * disagree only here, and only until the reader resyncs. */
+            return NOT_READY_E;
+        }
+
+        tail = WC_RNG_POOL_POS(tw);
+
+        free_sz = (word32)rng_dest->poolSize
+                  - PoolUsed(head, tail, (word32)rng_dest->poolSize);
+        if (free_sz == 0)
+            return 0; /* full: success no-op */
+        m = (free_sz > n) ? n : free_sz;
+
+        /* generate directly into the unpublished span (up to two contiguous
+         * segments), then publish the whole of it with one CAS. */
+        while (done < m) {
+            word32 at =
+                PoolAt(PoolAdvance(head, done, (word32)rng_dest->poolSize),
+                       (word32)rng_dest->poolSize);
+            word32 chunk = (word32)rng_dest->poolSize - at;
+            if (chunk > m - done)
+                chunk = m - done;
+            ret = wc_RNG_GenerateBlock(rng_src, rng_dest->pool + at, chunk);
+            if (ret != 0) {
+                /* Abandon in place.  The written bytes lie beyond head and
+                 * are therefore unpublished -- benign in-boundary content
+                 * awaiting overwrite.  Not burned: the reader's burn span and
+                 * ours are disjoint, and zeroing here would be
+                 * indistinguishable from published zeros to the next writer. */
+                return ret;
+            }
+            done += chunk;
+        }
+
+        if (wolfSSL_Atomic_Uint_CompareExchange(
+                &rng_dest->poolHead, &snap,
+                WC_RNG_POOL_PACK(
+                    PoolAdvance(head, m, (word32)rng_dest->poolSize), epoch)))
+        {
+            return 0;
+        }
+        else {
+            /* Either we're competing with another writer, or the epoch changed
+             * (invalidation).  In either case, we return BUSY_E.
+             */
+            return BUSY_E;
+        }
+    }
+}
+
+int wc_RNG_Pool_Collect(WC_RNG* rng, word32 n)
+{
+    return wc_RNG_Pool_Collect2(rng, rng, n);
+}
+
+int wc_RNG_Pool_Extract(WC_RNG* rng, byte* out, word32* n)
+{
+    WC_ATOMIC_UINT_ARG w1, w2, tw;
+    word32 head, epoch, tail, avail, m, done = 0;
+
+    if ((rng == NULL) || (out == NULL) || (n == NULL))
+        return BAD_FUNC_ARG;
+    {
+        int lock_ret = rng_lock_required_check(rng);
+        if (lock_ret != 0)
+            return lock_ret;
+    }
+    if (rng->pool == NULL)
+        return BAD_STATE_E;
+
+#if defined(HAVE_GETPID) && !defined(WOLFSSL_NO_GETPID)
+    {
+        int ret = rng_pid_change_check(rng);
+        if (ret != 0)
+            return ret;
+    }
+#endif
+
+    /* Fail closed: no serving output on behalf of an out-of-service DRBG, and
+     * its pooled output is unusable material at rest.  A writer mid-fill sees
+     * the epoch move and abandons rather than publishing. */
+    if (wc_RNG_DRBG_Present(rng) && (rng->status != DRBG_OK)) {
+        int ret = PoolPurge(rng);
+        if (ret != 0)
+            return ret;
+        /* Reader-owned fail-closed wipe and resync of whatever was
+         * pending. */
+        tw = WOLFSSL_ATOMIC_LOAD(rng->poolTail);
+        w1 = WOLFSSL_ATOMIC_LOAD(rng->poolHead);
+        PoolWipeRetired(rng, WC_RNG_POOL_POS(tw), WC_RNG_POOL_POS(w1));
+        WOLFSSL_ATOMIC_STORE(rng->poolTail,
+                             WC_RNG_POOL_PACK(WC_RNG_POOL_POS(w1),
+                                              WC_RNG_POOL_EPOCH(w1)));
+        return RNG_FAILURE_E;
+    }
+
+    tw = WOLFSSL_ATOMIC_LOAD(rng->poolTail);
+    w1 = WOLFSSL_ATOMIC_LOAD(rng->poolHead);
+    head = WC_RNG_POOL_POS(w1);
+    epoch = WC_RNG_POOL_EPOCH(w1);
+
+    if (WC_RNG_POOL_EPOCH(tw) != epoch) {
+        /* A purge landed since our last visit.  Everything published before
+         * it is retired: resynchronize to head and report empty.  Anything
+         * the writer publishes after this point is post-event and stands. */
+        PoolWipeRetired(rng, WC_RNG_POOL_POS(tw), head);
+        WOLFSSL_ATOMIC_STORE(rng->poolTail, WC_RNG_POOL_PACK(head, epoch));
+#ifdef WC_RNG_DEBUG_STATS
+        rng->_stats_pool_bytes_missed += *n;
+#endif
+        return NOT_READY_E;
+    }
+
+    tail = WC_RNG_POOL_POS(tw);
+    avail = PoolUsed(head, tail, (word32)rng->poolSize);
+    if (avail == 0) {
+#ifdef WC_RNG_DEBUG_STATS
+        rng->_stats_pool_bytes_missed += *n;
+#endif
+        return NOT_READY_E;
+    }
+    m = (avail > *n) ? *n : avail;
+
+    while (done < m) {
+        word32 at = PoolAt(PoolAdvance(tail, done, (word32)rng->poolSize),
+                           (word32)rng->poolSize);
+        word32 chunk = (word32)rng->poolSize - at;
+        if (chunk > m - done)
+            chunk = m - done;
+        XMEMCPY(out + done, rng->pool + at, chunk);
+        /* burn on the way out the door, before the span is republished.
+         * [tail, tail+m) and the writer's [head, head+m') are disjoint by
+         * construction, so this can never erase published bytes. */
+        ForceZero(rng->pool + at, chunk);
+        done += chunk;
+    }
+
+    /* The linearization point.  Both loads read head and epoch as one word,
+     * so a purge anywhere in our window is caught here -- epoch moves and
+     * never moves back.  Our bytes then predate the event and must not be
+     * served, so discard the whole pre-event span rather than advancing. */
+    w2 = WOLFSSL_ATOMIC_LOAD(rng->poolHead);
+    if (WC_RNG_POOL_EPOCH(w2) != epoch) {
+        /* We own [tail, old head) exclusively; the purged span is wiped
+         * before it is skipped. */
+        PoolWipeRetired(rng, tail, head);
+        WOLFSSL_ATOMIC_STORE(rng->poolTail,
+                             WC_RNG_POOL_PACK(WC_RNG_POOL_POS(w2),
+                                              WC_RNG_POOL_EPOCH(w2)));
+#ifdef WC_RNG_DEBUG_STATS
+        rng->_stats_pool_bytes_missed += *n;
+#endif
+        return BUSY_E;
+    }
+
+    /* Sole writer of poolTail: a plain store, no CAS on the reader path. */
+    WOLFSSL_ATOMIC_STORE(rng->poolTail,
+                         WC_RNG_POOL_PACK(
+                             PoolAdvance(tail, m, (word32)rng->poolSize),
+                             epoch));
+
+#ifdef WC_RNG_DEBUG_STATS
+    rng->_stats_pool_bytes_produced += m;
+    rng->_stats_pool_bytes_missed += *n - m; /* shortfall on partial serve */
+#endif
+    *n = m;
+
+    return 0;
+}
+
+int wc_RNG_Pool_Current(WC_RNG* rng, word32* n)
+{
+    if ((rng == NULL) || (n == NULL))
+        return BAD_FUNC_ARG;
+    if (rng->pool != NULL) {
+        WC_ATOMIC_UINT_ARG w = WOLFSSL_ATOMIC_LOAD(rng->poolHead);
+        WC_ATOMIC_UINT_ARG tw = WOLFSSL_ATOMIC_LOAD(rng->poolTail);
+        /* a purge not yet observed by the reader retires everything
+         * published before it: report empty. */
+        *n = (WC_RNG_POOL_EPOCH(tw) != WC_RNG_POOL_EPOCH(w)) ? 0 :
+             PoolUsed(WC_RNG_POOL_POS(w), WC_RNG_POOL_POS(tw),
+                      (word32)rng->poolSize);
+    }
+    else {
+        *n = 0;
+    }
+    return 0;
+}
+#endif /* WC_RNG_HAVE_POOL */
+
+#ifdef WC_RNG_HAVE_RBGC
+
+/* Unified mechanics for the four wc_InitRng*RBGC() APIs: instantiate a child
+ * DRBG subordinate to parent in an SP 800-90C RBG chain, drawing its seed
+ * material from parent's generate function in place of the module's seed
+ * source; every other aspect of instantiation -- seed byte accounting, nonce
+ * handling, failure disposition -- is _InitRng()'s, identically to
+ * wc_InitRngNonce_ex() with the omission of health testing, which is
+ * superfluous when a healthy DRBG generates the seed data.
+ *
+ * SP 800-90C accounting: the child's claimable security strength is capped by
+ * the parent's, and the child has no formal prediction resistance.  The child's
+ * own reseeds default to the module's seed source (the reseed-interval
+ * backstop, wc_RNG_DRBG_Reseed_Now()); wc_RNG_DRBG_ReseedRBGC() reseeds it from
+ * a supplied root instead.  In configurations with no DRBG (RDRAND et al.), the
+ * child comes up as _InitRng() dictates for such configurations and the parent
+ * is not consulted.
+ *
+ * Exactly one of new_child_stack (caller-provided WC_RNG, uninitialized) and
+ * new_child_heap (callee-allocated from parent's heap, to be released with
+ * wc_rng_free()) must be non-NULL.  The caller must hold exclusive access
+ * to parent for the duration of the call, as for all WC_RNG operations; the
+ * spawn debits parent's reseed counter by one generate.
+ */
+static WARN_UNUSED_RESULT int SpawnRngRBGC(
+                        WC_RNG* new_child_stack, WC_RNG** new_child_heap,
+                        WC_RNG* parent, const byte* nonce, word32 nonceSz,
+                        const byte *perso, word32 persoSz,
+                        word32 flags)
+{
+    WC_RNG* child = new_child_stack;
+    int ret;
+
+    if (parent == NULL)
+        return BAD_FUNC_ARG;
+
+    if ((new_child_stack == NULL) == (new_child_heap == NULL))
+        return BAD_FUNC_ARG;
+
+    if (new_child_stack == parent)
+        return BAD_FUNC_ARG;
+
+    if ((nonce == NULL) && (nonceSz > 0))
+        return BAD_FUNC_ARG;
+
+    if (new_child_heap != NULL) {
+        *new_child_heap = (WC_RNG*)XMALLOC(sizeof(WC_RNG), parent->heap,
+        DYNAMIC_TYPE_RNG);
+        if (*new_child_heap == NULL)
+            return MEMORY_E;
+        child = *new_child_heap;
+    }
+
+    ret = _InitRng(child, nonce, nonceSz, perso, persoSz, parent->heap,
+    #if defined(WOLF_CRYPTO_CB)
+                   parent->devId,
+    #else
+                   INVALID_DEVID,
+    #endif
+                   parent, flags);
+
+    if (new_child_heap != NULL) {
+        if (ret != 0) {
+            XFREE(child, parent->heap, DYNAMIC_TYPE_RNG);
+            *new_child_heap = child = NULL;
+        }
+    }
+
+    return ret;
+}
+
+int wc_InitRngRBGC(WC_RNG* child, WC_RNG* parent, word32 flags)
+{
+    return SpawnRngRBGC(child, NULL, parent, NULL, 0, NULL, 0, flags);
+}
+
+int wc_InitRngNonceRBGC(WC_RNG* child, WC_RNG* parent, const byte* nonce,
+                        word32 nonceSz, const byte *perso, word32 persoSz,
+                        word32 flags)
+{
+    return SpawnRngRBGC(child, NULL, parent, nonce, nonceSz, perso, persoSz,
+                        flags);
+}
+
+#ifndef WC_NO_CONSTRUCTORS
+int wc_InitRngRBGC_New(WC_RNG** child, WC_RNG* parent, word32 flags)
+{
+    return SpawnRngRBGC(NULL, child, parent, NULL, 0, NULL, 0, flags);
+}
+
+int wc_InitRngNonceRBGC_New(WC_RNG** child, WC_RNG* parent, const byte* nonce,
+                            word32 nonceSz, const byte *perso, word32 persoSz,
+                            word32 flags)
+{
+    return SpawnRngRBGC(NULL, child, parent, nonce, nonceSz, perso, persoSz,
+                        flags);
+}
+#endif /* !WC_NO_CONSTRUCTORS */
+
+/* Immediately reseed rng from root's generate output -- the reseed counterpart
+ * of the wc_InitRng*RBGC() spawn.  The reseed counter is reset iff the reseed
+ * succeeds and credited.  The nonce, if any, rides the same reseed derivation
+ * as (uncredited) additional input.  The caller must hold exclusive access to
+ * BOTH rng and root.  On credited success, rng is (or remains) a chain RNG:
+ * its current seed period is chain-backed, so RBGCStratum is set, and it is not
+ * usable as a reseed root.
+ *
+ * By default, consistent with SP 800-90C 7.1.2.2, reseed by an RBGC root is
+ * allowed, provided its stratum is less than the child's stratum (no stratum
+ * downgrade allowed, no cycles possible); build-time option
+ * WC_RNG_NO_RBGC_RESEED restricts credited reseeds to primary-seeded roots.
+ *
+ * Uncredited reseeds by wc_RNG_DRBG_ReseedRBGC_local() are unconditionally
+ * permitted (these are just stirs).
+ */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_ReseedRBGC_local(
+                                        WC_RNG* rng, WC_RNG* root,
+                                        const byte* nonce, word32 nonceSz,
+                                        int credited)
+{
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+    byte *seed;
+#else
+    byte seed[SEED_SZ];
+#endif
+    int ret;
+
+    if ((rng == NULL) || (root == NULL) || (rng == root) ||
+        ((nonce == NULL) && (nonceSz > 0)))
+    {
+        return BAD_FUNC_ARG;
+    }
+
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
+    ret = rng_lock_required_check(root);
+    if (ret != 0)
+        return ret;
+
+    if (credited) {
+        if (root->RBGCStratum >= WC_MAX_SINT_OF(int))
+            return SEQ_OVERFLOW_E;
+        else if (root->RBGCStratum == WC_RNG_RBGC_USER_SEED_STRATUM - 1)
+            return SEQ_OVERFLOW_E;
+    }
+    /* else the RBGC strata are irrelevant -- stir data has no implication of
+     * provenance, and can legitimately be wall clock time or even strings of
+     * zeros. */
+
+#ifdef WOLFSSL_SMALL_STACK_CACHE
+    seed = rng->newSeed_buf;
+#endif
+
+    if (credited && (root->RBGCStratum > 0)
+#ifndef WC_RNG_NO_RBGC_RESEED
+        && (root->RBGCStratum >= rng->RBGCStratum)
+#else
+    /* Credited reseed from root only, by policy. */
+#endif
+        )
+    {
+        return BAD_FUNC_ARG;
+    }
+
+    if (rng->status != DRBG_OK)
+        return RNG_FAILURE_E;
+
+    if (! wc_RNG_DRBG_Present(rng)) {
+        return 0;
+    }
+
+    ret = wc_RNG_GenerateBlock(root, seed, SEED_SZ);
+    if (ret == 0) {
+        if (credited) {
+            ret = Hash_DRBG_Reseed(rng, seed, SEED_SZ, nonce, nonceSz,
+                                   0 /* in_bracketed_consume */);
+            if (ret == 0) {
+                rng->RBGCStratum = root->RBGCStratum + 1;
+    #ifdef WC_RNG_DEBUG_STATS
+                ++rng->_stats_RBGC_reseeds;
+    #endif
+            }
+        }
+        else {
+            ret = wc_RNG_DRBG_Stir_Nonce_local(rng, seed, SEED_SZ, nonce,
+                                                      nonceSz);
+        }
+    }
+    ForceZero(seed, SEED_SZ);
+
+    return ret;
+}
+
+int wc_RNG_DRBG_ReseedRBGC(WC_RNG* rng, WC_RNG* root, const byte* nonce,
+                           word32 nonceSz)
+{
+    return wc_RNG_DRBG_ReseedRBGC_local(rng, root, nonce, nonceSz, 1);
+}
+
+int wc_RNG_DRBG_StirRBGC(WC_RNG* rng, WC_RNG* root,
+                                      const byte* nonce, word32 nonceSz)
+{
+    return wc_RNG_DRBG_ReseedRBGC_local(rng, root, nonce, nonceSz, 0);
+}
+
+#endif /* WC_RNG_HAVE_RBGC */
+
+#if defined(HAVE_HASHDRBG) && !defined(CUSTOM_RAND_GENERATE_BLOCK)
+
+static WARN_UNUSED_RESULT int PollAndReSeed(WC_RNG* rng, const byte* additional,
+                         word32 additionalSz)
+{
+    int ret   = WC_NO_ERR_TRACE(DRBG_NEED_RESEED);
     int devId = INVALID_DEVID;
 #if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
     devId = rng->devId;
 #endif
-    if (wc_RNG_HealthTestLocal(rng, 1, rng->heap, devId) == 0) {
+    ret = wc_RNG_HealthTestLocal(rng, 1, rng->heap, devId);
+    if (ret == 0) {
     #if defined(WOLFSSL_SMALL_STACK_CACHE)
         byte* newSeed = rng->newSeed_buf;
         ret = DRBG_SUCCESS;
@@ -2264,24 +4790,31 @@ static int PollAndReSeed(WC_RNG* rng)
                     WOLFSSL_DEBUG_PRINTF("ERROR: seedCb() in PollAndReSeed() "
                                          "failed with err %d", ret);
     #endif
-                    ret = DRBG_FAILURE;
+                    if (ret > 0) /* app callback: keep negative codes */
+                        ret = DRBG_FAILURE;
                 }
             }
         #else
             ret = wc_GenerateSeed(&rng->seed, newSeed,
                               SEED_SZ + SEED_BLOCK_SZ);
             if (ret != 0) {
+    #ifdef WC_RNG_DEBUG_STATS
+                ++rng->_stats_seed_failures;
+    #endif
     #ifdef WC_VERBOSE_RNG
                 WOLFSSL_DEBUG_PRINTF(
                     "ERROR: wc_GenerateSeed() in PollAndReSeed() failed with "
                     "err %d", ret);
     #endif
-                ret = DRBG_FAILURE;
             }
         #endif
         }
         if (ret == DRBG_SUCCESS) {
             ret = wc_RNG_TestSeed(newSeed, SEED_SZ + SEED_BLOCK_SZ);
+    #ifdef WC_RNG_DEBUG_STATS
+            if (ret != DRBG_SUCCESS)
+                ++rng->_stats_seed_failures;
+    #endif
     #ifdef WC_VERBOSE_RNG
             if (ret != DRBG_SUCCESS)
                 WOLFSSL_DEBUG_PRINTF(
@@ -2290,18 +4823,14 @@ static int PollAndReSeed(WC_RNG* rng)
     #endif
         }
         if (ret == DRBG_SUCCESS) {
-#ifndef NO_SHA256
-            if (rng->drbgType == WC_DRBG_SHA256)
-                ret = Hash_DRBG_Reseed((DRBG_internal *)rng->drbg,
-                                       newSeed + SEED_BLOCK_SZ, SEED_SZ,
-                                       NULL, 0);
-#endif
-#ifdef WOLFSSL_DRBG_SHA512
-            if (rng->drbgType == WC_DRBG_SHA512)
-                ret = Hash512_DRBG_Reseed(
-                    (DRBG_SHA512_internal *)rng->drbg512,
-                    newSeed + SEED_BLOCK_SZ, SEED_SZ, NULL, 0);
-#endif
+            ret = Hash_DRBG_Reseed(rng, newSeed + SEED_BLOCK_SZ, SEED_SZ,
+                                   additional, additionalSz,
+                                   0 /* in_bracketed_consume */);
+
+        #ifdef WC_RNG_HAVE_RBGC
+            if (ret == 0)
+                rng->RBGCStratum = 0;
+        #endif
         }
     #if defined(WOLFSSL_SMALL_STACK) && !defined(WOLFSSL_SMALL_STACK_CACHE)
         if (newSeed != NULL) {
@@ -2309,20 +4838,914 @@ static int PollAndReSeed(WC_RNG* rng)
         }
         XFREE(newSeed, rng->heap, DYNAMIC_TYPE_SEED);
     #else
-        ForceZero(newSeed, sizeof(newSeed));
+        /* newSeed is a byte[] in the plain build but a byte* in the
+         * SMALL_STACK_CACHE build, so use the explicit buffer length (not
+         * sizeof) to zero the whole reseed entropy buffer in both cases. */
+    #ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Add("PollAndReSeed newSeed", newSeed,
+            SEED_SZ + SEED_BLOCK_SZ);
+    #endif
+        ForceZero(newSeed, SEED_SZ + SEED_BLOCK_SZ);
+    #ifdef WOLFSSL_CHECK_MEM_ZERO
+        wc_MemZero_Check(newSeed, SEED_SZ + SEED_BLOCK_SZ);
+    #endif
     #endif
     }
+    /* else pass back the failure code from wc_RNG_HealthTestLocal():
+     * DRBG_CONT_FAILURE from the KAT means ConstantCompare mismatch, i.e.  a
+     * machinery failure; infrastructure codes (MEMORY_E, or DRBG_FAILURE as the
+     * internal ops' catch-all) are distinct and retryable.
+     */
+
+    return ret;
+}
+
+/* Immediately reseed rng from the module's built-in or previously registered
+ * seed source, exactly as the WC_RESEED_INTERVAL backstop does during a
+ * generate operation: the gathered seed is health-tested and applied by the
+ * module's own reseed function, and the reseed counter is reset iff the
+ * reseed succeeds.  If nonceSz > 0, nonce is incorporated into the same
+ * reseed derivation as (uncredited) additional input, with the semantics of
+ * wc_RNG_DRBG_Stir(), in a single state transition.  On failure
+ * the reseed counter is not reset and rng->status reflects the failure
+ * exactly as a generate-time reseed failure would.  The caller must hold
+ * exclusive access to rng, as for all WC_RNG operations. */
+int wc_RNG_DRBG_Reseed_Now(WC_RNG* rng, const byte* nonce, word32 nonceSz)
+{
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    if ((nonce == NULL) && (nonceSz > 0))
+        return BAD_FUNC_ARG;
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
+    /* Not reached from the generate path, so it takes the lock here.  The
+     * checks below read state a generate writes under it, so they follow. */
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+
+    /* Mirror wc_RNG_GenerateBlock(): only an in-service DRBG may reseed. */
+    if (rng->status != DRBG_OK) {
+        ret = RNG_FAILURE_E;
+        goto out;
+    }
+
+    if (! wc_RNG_DRBG_Present(rng)) {
+        /* No DRBG instantiated -- nothing to reseed (RDRAND et al.). */
+        ret = 0;
+        goto out;
+    }
+
+    ret = PollAndReSeed(rng, nonce, nonceSz);
+
+    if (ret == DRBG_SUCCESS) {
+        ret = 0;
+    }
+    else if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE)) {
+        rng->status = DRBG_CONT_FAILED;
+        ret = DRBG_CONT_FIPS_E;
+    }
     else {
-        ret = DRBG_CONT_FAILURE;
+        wc_drbg_reseed_ctr_t ctr = WC_RESEED_INTERVAL;
+        (void)wc_RNG_DRBG_GetReseedCtr(rng, &ctr);
+        if (ctr >= WC_RESEED_INTERVAL) {
+            /* The instance is out of generate runway -- condemn now, matching
+             * wc_RNG_GenerateBlock()'s behavior for mandatory reseeds. */
+            rng->status = DRBG_FAILED;
+        }
+        if (ret > 0) {
+            /* Translate protocol-domain codes at the API boundary. */
+            ret = (ctr >= WC_RESEED_INTERVAL) ? RNG_FAILURE_E : NOT_READY_E;
+        }
+        /* else distinct wolfCrypt codes (ENTROPY_RT_E/APT_E, MEMORY_E, etc.)
+         * pass through verbatim -- source health is never masked. */
+    }
+
+    out:
+
+    RngAutoLockExit(rng);
+    return ret;
+}
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+
+    /* Banked-next-seed services.  _NextSeedGenerate() banks up to n more
+     * bytes from the module's seed source (clamped to the space remaining;
+     * ALREADY_E when the bank is ready or being consumed), health-testing
+     * and publishing the bank when it completes (NOT_READY_E when the health
+     * test could not run and the call should simply be retried); a
+     * scheduling daemon may call it without owning the instance.
+     * _NextSeedCurrent() reports the raw aperture value (racy snapshot).
+     * _NextSeedNow() claims a ready bank and performs a source-free
+     * credited reseed with it -- safe in atomic context -- or returns
+     * NOT_READY_E when no bank is ready; _NextSeedNow_Nonce() is the same
+     * with a nonce as uncredited additional input.  All report
+     * MISSING_RNG_E for an instance with no DRBG (RDRAND et al.).  The
+     * caller must own the instance for _NextSeedNow[_Nonce](). */
+
+/* Banked-next-seed protocol.
+ *
+ * Entropy is gathered incrementally, in-boundary, from the
+ * module's seed source by wc_RNG_DRBG_NextSeedGenerate(), and consumed
+ * (source-free, atomic-context-safe) by wc_RNG_DRBG_NextSeedNow().
+ * nextSeedLen is the hand-off aperture: values in [0, bank length)
+ * count banked bytes (filling); WC_DRBG_NEXT_SEED_READY marks a complete,
+ * health-tested bank; WC_DRBG_NEXT_SEED_CONSUMING marks exclusive ownership by a
+ * consumer.
+ *
+ * DRBG_internal.nextSeedLen (and the DRBG_SHA512_internal analog) is a
+ * wolfSSL_Atomic_Int with C-native atomic semantics (release stores, acquire
+ * loads, sequentially consistent RMWs):
+ *
+ * The single scheduling daemon (one writer per instance, by contract) advances
+ * the fill with the AddFetch in wc_RNG_DRBG_NextSeedGenerate() and publishes by
+ * storing _READY; a consumer claims with a CAS from _READY to _CONSUMING,
+ * consumes, zeroizes, and releases to _EMPTY.  Ownership-taking transitions are
+ * atomic RMWs and releases are atomic stores with release semantics, so the
+ * hand-off is ordered on all supported targets, and the daemon never touches
+ * any other DRBG state.  Gathering draws from the configured / installed
+ * entropy source directly, never from rng->seed, so the daemon also does not
+ * race an owner's own source reseed. */
+
+/* Locate the aperture members for rng's live DRBG.  Returns nonzero when no
+ * DRBG is instantiated (RDRAND et al.). */
+static WARN_UNUSED_RESULT WC_INLINE int NextSeedPtrs(WC_RNG* rng,
+                                  byte** seed, word32 *nextSeedSz,
+                                  wolfSSL_Atomic_Int** len,
+                                  int **nextSeedRBGCStratum)
+{
+#ifndef NO_SHA256
+    if ((rng->drbgType == WC_DRBG_SHA256) && (rng->drbg != NULL)) {
+        *seed = ((DRBG_internal*)rng->drbg)->nextSeed;
+        *nextSeedSz = (word32)sizeof(((DRBG_internal*)rng->drbg)->nextSeed);
+        *len  = &((DRBG_internal*)rng->drbg)->nextSeedLen;
+        if (nextSeedRBGCStratum) {
+        #ifdef WC_RNG_HAVE_RBGC
+            *nextSeedRBGCStratum =
+                &((DRBG_internal*)rng->drbg)->nextSeedRBGCStratum;
+        #else
+            *nextSeedRBGCStratum = NULL;
+        #endif
+        }
+        return 0;
+    }
+#endif
+#ifdef WOLFSSL_DRBG_SHA512
+    if ((rng->drbgType == WC_DRBG_SHA512) && (rng->drbg512 != NULL)) {
+        *seed = ((DRBG_SHA512_internal*)rng->drbg512)->nextSeed;
+        *nextSeedSz =
+            (word32)sizeof(((DRBG_SHA512_internal*)rng->drbg512)->nextSeed);
+        *len  = &((DRBG_SHA512_internal*)rng->drbg512)->nextSeedLen;
+        if (nextSeedRBGCStratum) {
+        #ifdef WC_RNG_HAVE_RBGC
+            *nextSeedRBGCStratum =
+                &((DRBG_SHA512_internal*)rng->drbg512)->nextSeedRBGCStratum;
+        #else
+            *nextSeedRBGCStratum = NULL;
+        #endif
+        }
+        return 0;
+    }
+#endif
+    return MISSING_RNG_E;
+}
+
+/* Bank up to n more bytes of seed material from a supplied root RNG into
+ * rng's next-seed bank.  Callable without owning the instance (the scheduling
+ * daemon's entry point); deliberately independent of rng->status so that
+ * banking can proceed for any instantiated DRBG.  n is clamped to the space
+ * remaining; a ready or consuming bank is signaled with ALREADY_E.  On
+ * completing the bank, the material is health-tested (wc_RNG_TestSeed()) and
+ * published; a failed test consumes the material (use-once) and returns the
+ * test's error, leaving an empty bank for the next cycle.  A gather failure
+ * leaves the partial bank intact for retry. */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_NextSeedGenerate_local(
+                                              WC_RNG* rng, WC_RNG* root,
+                                              word32 n)
+{
+    int claim_ret;
+    byte* seed = NULL;
+    wolfSSL_Atomic_Int* lenp = NULL;
+    int* nextSeedRBGCStratum_p = NULL;
+    WC_ATOMIC_INT_ARG cur;
+    word32 nextSeedSz = 0;
+    int ret;
+
+    if ((rng == NULL) || (n == 0) || (rng == root))
+        return BAD_FUNC_ARG;
+
+    /* Note, rng need not be locked -- that's the whole point of the
+     * banked-next-seed aperture protocol.  However, the two aperture lanes
+     * (WC_RNG.nextStir and DRBG_internal.nextSeed) earn that differently.  The
+     * stir lane is WC_RNG-resident: uncredited material carries no
+     * adjudication, so it survives DRBG teardown/reinit harmlessly, and
+     * depositors (wc_RNG_DRBG_NextStirStore()) are blind by design -- they
+     * never dereference rng->drbg.  This (credited) lane is DRBG-resident: a
+     * banked seed carries health-test and stratum adjudication that must die
+     * with the generation it was banked for, so it must not outlive rng->drbg
+     * -- and therefore fills here race wc_FreeRng().  In-bank,
+     * bank->inst_op_gate mutually excludes production
+     * (wc_rng_bank_next_seed_generate_local()) from instance free/reinit
+     * (wc_rng_bank_inst_reinit()); outside banks, the instance is caller-owned
+     * and the caller is the only party doing either. */
+
+    if (root) {
+        ret = rng_lock_required_check(root);
+        if (ret != 0)
+            return ret;
+#ifdef WC_RNG_HAVE_RBGC
+        if ((root->RBGCStratum > 0)
+    #ifndef WC_RNG_NO_RBGC_RESEED
+            && (root->RBGCStratum >= rng->RBGCStratum)
+    #else
+            /* Credited reseed from root only, by policy. */
+    #endif
+            )
+        {
+            return BAD_FUNC_ARG;
+        }
+        if (root->RBGCStratum >= WC_MAX_SINT_OF(int))
+            return SEQ_OVERFLOW_E;
+        else if (root->RBGCStratum == WC_RNG_RBGC_USER_SEED_STRATUM - 1)
+            return SEQ_OVERFLOW_E;
+#else
+        return NOT_COMPILED_IN;
+#endif
+    }
+
+    ret = NextSeedPtrs(rng, &seed, &nextSeedSz, &lenp,
+                       &nextSeedRBGCStratum_p);
+    if (ret != 0) {
+        /* No DRBG instantiated -- nothing to bank (RDRAND et al.). */
+        return ret;
+    }
+
+    cur = WOLFSSL_ATOMIC_LOAD(*lenp);
+    {
+        /* Producer claim: exactly one banker may fill or publish at a
+         * time.  Concurrent fills would be tolerable as BYTES (a torn
+         * mix is still entropy) but poisonous as CLAIMS: interleaved
+         * primary/RBGC production could publish material under the
+         * wrong stratum or health-test disposition.  The claim makes
+         * produce-side exclusivity a CAS, matching the consume side's
+         * READY -> CONSUMING claim.  This lane only: the uncredited
+         * accumulator above stays multi-writer by design. */
+        WC_CAS_WITH_RETRY_BEGIN(lenp, cur, claim_ret) {
+            if ((cur == WC_DRBG_NEXT_SEED_PRODUCING) ||
+                (cur == WC_DRBG_NEXT_SEED_PURGED))
+            {
+                /* A producer is in flight (or unwinding a purge):
+                 * retryable on a later banking cycle.  Traced: the
+                 * competing producer -- typically the entropy daemon
+                 * -- is the diagnosis a surprised caller needs. */
+                return BUSY_E;
+            }
+            if (cur < 0) {
+                /* Ready or consuming -- nothing to do. */
+                return WC_NO_ERR_TRACE(ALREADY_E); /* not an error */
+            }
+            WC_CAS_WITH_RETRY_LOOP_FOREVER(wolfSSL_Atomic_Int_CompareExchange,
+                                          lenp, cur,
+                                          WC_DRBG_NEXT_SEED_PRODUCING,
+                                          claim_ret);
+        } WC_CAS_WITH_RETRY_END;
+        if (claim_ret != 0) {
+            /* Aborted claim (a port's retry clause): nothing claimed,
+             * nothing moved.  Proceeding would fill and adjudicate an
+             * unclaimed aperture -- the torn-claims disease the
+             * producer mutex exists to prevent. */
+            return claim_ret;
+        }
+        if (cur == (WC_ATOMIC_INT_ARG)nextSeedSz) {
+            /* Complete but unpublished (interrupted between fill
+             * completion and publication): retry the health test and
+             * publication below. */
+            n = 0;
+        }
+        /* From here to release/publication the aperture word is
+         * PRODUCING; fill progress lives only in the local cur, and
+         * every exit passes through NextSeedProducerRelease(). */
+    }
+
+    if (n > 0) {
+#ifdef WC_RNG_HAVE_RBGC
+        if (root) {
+            /* If primary seed bytes were carried forward, reset now to avoid
+             * wc_RNG_TestSeed() at completion.  Local only: the word is
+             * held at PRODUCING. */
+            if ((cur > 0) && (*nextSeedRBGCStratum_p == 0))
+                cur = 0;
+
+            if (n > nextSeedSz - (word32)cur)
+                n = nextSeedSz - (word32)cur;
+
+            ret = wc_RNG_GenerateBlock(root, seed + cur, n);
+            if (ret != 0) {
+                /* Partial bank preserved -- retry on a later cycle.
+                 * (If a purge landed meanwhile, the release discards
+                 * instead; the draw failure is the more informative
+                 * code and wins over the release's BUSY_E.)
+                 *
+                 * Note, a failed release cannot brick the RNG and needs no
+                 * disposition at the several (void) sites below: its one cause
+                 * is a purge's _PURGED repaint (producers cannot claim a
+                 * PRODUCING word, consumers exchange only from READY, and the
+                 * purge is the sole other writer), and the BUSY arm is its own
+                 * compensation -- it wipes and reopens the aperture EMPTY
+                 * before returning.  Afterward the world is fully consistent:
+                 * aperture empty and healthy, rng->status untouched, recovery
+                 * proceeding through the event's normal channels.  BUSY_E is
+                 * information, not a condition awaiting action; the caller's
+                 * own error outranks it wherever one is in flight.  Cost of
+                 * swallowing it: at worst one silent refill from offset
+                 * zero.
+                 */
+                (void)NextSeedProducerRelease(lenp, seed, nextSeedSz, cur);
+                return ret;
+            }
+
+            /* If RBGC seed bytes were carried forward, make sure we're
+             * pessimistic about the RBGC stratum. */
+            if ((cur == 0) || (*nextSeedRBGCStratum_p < root->RBGCStratum + 1))
+                *nextSeedRBGCStratum_p = root->RBGCStratum + 1;
+        }
+        else
+#endif /* WC_RNG_HAVE_RBGC */
+        {
+            /* wc_GenerateSeed() must be called completely independent of rng,
+             * aside from the memory aperture itself.  For safety, we pass a
+             * dummy OS_Seed, which will be ignored by the wc_GenerateSeed()
+             * typically used in conjunction with WC_RNG_HAVE_NEXT_SEED.
+             */
+            struct OS_Seed os;
+
+            /* Named-member init: layout-proof against OS_Seed growing or
+             * reordering members under its several config axes. */
+            XMEMSET(&os, 0, sizeof(os));
+#ifndef USE_WINDOWS_API
+            os.fd = -1;
+#endif
+#ifdef WOLF_CRYPTO_CB
+            /* devId is config, not state: a callback-only seed source must
+             * serve the bank the same way it serves wc_InitRng(). */
+            os.devId = rng->seed.devId;
+#endif
+
+#ifdef WC_RNG_HAVE_RBGC
+            /* If RBGC seed bytes were carried forward, reset now to avoid
+             * intermixture and force wc_RNG_TestSeed() at completion.
+             * Local only: the word is held at PRODUCING. */
+            if ((cur > 0) && (*nextSeedRBGCStratum_p > 0))
+                cur = 0;
+#endif
+
+            if (n > nextSeedSz - (word32)cur)
+                n = nextSeedSz - (word32)cur;
+
+            ret = wc_GenerateSeed(&os, seed + cur, n);
+            if (ret != 0) {
+                /* Partial bank preserved -- retry on a later cycle.
+                 * (If a purge landed meanwhile, the release discards
+                 * instead; the seed-gather failure is the more
+                 * informative code and wins over the release's
+                 * BUSY_E.) */
+                (void)NextSeedProducerRelease(lenp, seed, nextSeedSz, cur);
+                return ret;
+            }
+
+#ifdef WC_RNG_HAVE_RBGC
+            *nextSeedRBGCStratum_p = 0;
+#endif
+        }
+
+        cur += (int)n;
+    }
+
+    if (cur < (WC_ATOMIC_INT_ARG)nextSeedSz) {
+        /* Partial credited fill this call: release the claim back to
+         * the fill offset for a later cycle to resume.  A purge
+         * meanwhile discards instead, and the release's BUSY_E
+         * percolates -- returning 0 would claim banked progress the
+         * purge just evaporated. */
+        return NextSeedProducerRelease(lenp, seed, nextSeedSz, cur);
+    }
+
+    if (cur == (WC_ATOMIC_INT_ARG)nextSeedSz) {
+#ifdef WC_RNG_HAVE_RBGC
+        /* If RBGC bytes were used for the reseed, then we can skip
+         * wc_RNG_TestSeed(). */
+        if (*nextSeedRBGCStratum_p > 0) {
+            ret = NextSeedProducerRelease(lenp, seed, nextSeedSz,
+                                          WC_DRBG_NEXT_SEED_READY);
+            if (ret != 0) {
+                /* Purged while producing (BUSY_E): nothing banked;
+                 * post-event material wanted.  Retryable. */
+                return ret;
+            }
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_nextseedsbanked;
+            #endif
+            return 0;
+        }
+#endif
+        /* Bank complete: health-test now, in advance of consumption, so
+         * that wc_RNG_DRBG_NextSeedNow() is pure computation. */
+        ret = wc_RNG_TestSeed(seed, nextSeedSz);
+        if (ret == 0) {
+            ret = NextSeedProducerRelease(lenp, seed, nextSeedSz,
+                                          WC_DRBG_NEXT_SEED_READY);
+            if (ret != 0) {
+                /* Purged while producing (BUSY_E): nothing banked;
+                 * post-event material wanted.  Retryable. */
+                return ret;
+            }
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_nextseedsbanked;
+            #endif
+            return 0;
+        }
+        else if (ret == WC_NO_ERR_TRACE(MEMORY_E)) {
+            /* wc_RNG_TestSeed() did nothing with the data -- not
+             * dispositive.  Release complete-but-unpublished for a
+             * later retry; a purge-discard's BUSY_E percolates (the
+             * retry cause is then the purge, not the test). */
+            ret = NextSeedProducerRelease(lenp, seed, nextSeedSz,
+                                          (WC_ATOMIC_INT_ARG)nextSeedSz);
+            if (ret != 0)
+                return ret;
+            return NOT_READY_E;
+        }
+        else if ((ret == WC_NO_ERR_TRACE(ENTROPY_RT_E)) ||
+                 (ret == WC_NO_ERR_TRACE(ENTROPY_APT_E)))
+        {
+            /* Use-once: a failed test consumes the material. */
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_seed_failures;
+            #endif
+            /* Use-once on a failed test is enforced by the sentinel
+             * alone: an EMPTY aperture is never consumed, and the next
+             * fill overwrites from offset zero.  The buffer is never
+             * zeroized (house rule for the seed apertures).  Burn and
+             * purge-discard converge on EMPTY; the release handles
+             * both, and the health-test failure is the more
+             * informative code and wins over the release's BUSY_E. */
+            /* Sentinel-only by doctrine: rejection here is deterministic
+             * on the bytes (RCT/APT), so every sibling lineage rejects the
+             * identical material -- no copy is ever consumed anywhere. */
+            (void)NextSeedProducerRelease(lenp, seed, nextSeedSz,
+                                          WC_DRBG_NEXT_SEED_EMPTY);
+
+            /* The health-test failure belongs to the depositor's seed
+             * collection, not to the destination RNG.  The depositor collects
+             * via wc_GenerateSeed(), banks into rng's aperture, and tests
+             * before publishing; on failure the aperture is reset to _EMPTY,
+             * so nothing untested is ever visible to rng.  rng is a passive
+             * destination here -- it did not consume the material, and its
+             * state, status and reseed schedule are untouched.  Do not mark it
+             * failed.
+             *
+             * PollAndReSeed() looks similar and is not: there, rng is reseeding
+             * itself from its own seed source, the tested material is on the
+             * path into its own state, and a failure indeed means that that
+             * instance's source has failed.  DRBG_FAILED is correct there and
+             * wrong here.  Per-instance attribution is meaningful, not
+             * arbitrary: seed sources are frequently core-local (RDSEED among
+             * them), so one instance's source can fail while its siblings' are
+             * healthy.
+             *
+             * Bigger picture: An RCT/APT failure is an entropy-source event (SP
+             * 800-90B 4.4), and wc_RNG_TestSeed's cutoffs carry a designed
+             * false-positive rate.  A terminal response from a thread that is
+             * not the instance's owner would effectively be a remote kill
+             * primitive on a tuned statistical alarm.
+             */
+
+            return ret;
+        }
+        else {
+            /* Buggy or brokey.  Release complete-but-unpublished; the
+             * material is untested but intact, and a later cycle
+             * re-adjudicates.  The primary error is the more
+             * informative code and wins over a purge-discard's
+             * BUSY_E. */
+            (void)NextSeedProducerRelease(lenp, seed, nextSeedSz,
+                                          (WC_ATOMIC_INT_ARG)nextSeedSz);
+            return ret;
+        }
+    }
+
+    return 0;
+}
+
+#ifdef WC_RNG_HAVE_RBGC
+int wc_RNG_DRBG_NextSeedGenerate_RBGC(WC_RNG* rng, WC_RNG *root, word32 n) {
+    if (root == NULL)
+        return BAD_FUNC_ARG;
+    return wc_RNG_DRBG_NextSeedGenerate_local(rng, root, n);
+}
+#endif
+
+int wc_RNG_DRBG_NextSeedGenerate(WC_RNG* rng, word32 n) {
+    return wc_RNG_DRBG_NextSeedGenerate_local(rng, NULL, n);
+}
+
+/* Report the raw aperture value: a racy snapshot by design.  Values in [0, bank
+ * length) count banked bytes; WC_DRBG_NEXT_SEED_READY and
+ * WC_DRBG_NEXT_SEED_CONSUMING indicate a ready or in-consumption bank,
+ * respectively.  With no DRBG instantiated, reports WC_DRBG_NEXT_SEED_EMPTY. */
+int wc_RNG_DRBG_NextSeedCurrent(WC_RNG* rng, WC_ATOMIC_INT_ARG* n)
+{
+    byte* seed;
+    wolfSSL_Atomic_Int* lenp;
+    word32 nextSeedSz;
+
+    if ((rng == NULL) || (n == NULL))
+        return BAD_FUNC_ARG;
+
+    if (NextSeedPtrs(rng, &seed, &nextSeedSz, &lenp, NULL) != 0) {
+        *n = WC_DRBG_NEXT_SEED_EMPTY;
+        return 0;
+    }
+
+    *n = *lenp;
+    return 0;
+}
+
+/* Consume a ready next-seed bank in an immediate credited reseed.  The caller
+ * must own the instance.  Source-free by construction -- the material was
+ * gathered from the module's seed source and health-tested at bank time -- so
+ * consumption is pure computation and safe in atomic context: the one credited
+ * primary reseed shape with that property.  Distinct protocol results:
+ * NOT_READY_E when no bank is ready (nothing consumed) or when an elective
+ * redemption failed after consuming the bank (use-once); MISSING_RNG_E when
+ * the instance has no DRBG (RDRAND et al.) -- both deliberately loud, so a
+ * direct caller must demonstrate it understands the instance it holds.  (The
+ * WC_RNG_BANK_FLAG_CONSUME_NEXT_SEED checkout arm is return-agnostic by
+ * construction and needs neither.)  Use-once: the bank is consumed by the
+ * attempt, success or failure.  Note that a banked reseed can never provide SP
+ * 800-90 prediction resistance (the material predates the request by
+ * construction); wc_RNG_DRBG_Reseed_Now() remains the live-gather shape. */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_NextSeedNow_Nonce_local(
+                                  WC_RNG* rng, const byte* nonce,
+                                  word32 nonceSz)
+{
+    byte* seed;
+    wolfSSL_Atomic_Int* lenp;
+    word32 nextSeedSz;
+    int *nextSeedRBGCStratum_p;
+    WC_ATOMIC_INT_ARG expected = WC_DRBG_NEXT_SEED_READY;
+    int ret;
+    int devId;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+    if ((nonce == NULL) && (nonceSz != 0))
+        return BAD_FUNC_ARG;
+
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
+    /* Mirror wc_RNG_GenerateBlock(): only an in-service DRBG may reseed. */
+    if (rng->status != DRBG_OK)
+        return RNG_FAILURE_E;
+
+#if defined(WOLFSSL_ASYNC_CRYPT) || defined(WOLF_CRYPTO_CB)
+    devId = rng->devId;
+#else
+    devId = INVALID_DEVID;
+#endif
+    ret = wc_RNG_HealthTestLocal(rng, 1, rng->heap, devId);
+    if (ret != 0) {
+        if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE)) {
+            rng->status = DRBG_CONT_FAILED;
+            return DRBG_CONT_FIPS_E;
+        }
+        if (ret > 0) /* protocol-domain catch-all: translate at the API */
+            ret = RNG_FAILURE_E;
+        return ret;
+    }
+
+    ret = NextSeedPtrs(rng, &seed, &nextSeedSz, &lenp, &nextSeedRBGCStratum_p);
+    if (ret != 0) {
+        /* No DRBG instantiated -- nothing to reseed (RDRAND et al.). */
+        return ret;
+    }
+
+    if (! wolfSSL_Atomic_Int_CompareExchange(lenp, &expected,
+                                             WC_DRBG_NEXT_SEED_CONSUMING))
+    {
+        /* No ready bank -- nothing consumed; reported distinctly. */
+        return NOT_READY_E;
+    }
+
+    /* Identical byte accounting to PollAndReSeed(): the SEED_BLOCK_SZ
+     * prefix was consumed by the bank-time health testing. */
+    ret = Hash_DRBG_Reseed(rng, seed + SEED_BLOCK_SZ, SEED_SZ, nonce, nonceSz,
+                           1 /* in_bracketed_consume */);
+
+    /* Use-once: consumed by the attempt, success or not.  The scrub must be
+     * visible before the aperture reopens. */
+    ForceZero(seed, WC_DRBG_NEXT_SEED_LEN);
+
+    /* Release by CAS -- one-shot, and its failure is information, not
+     * contention: only NextSeedPurge() writes over a _CONSUMING claim, so a
+     * failed release proves an invalidation event landed after this consume
+     * claimed the material, i.e. the seed just fed to the reseed was banked
+     * pre-event.  The reseed's own latch handling could not see that (an epoch
+     * crossing shows only at the aperture's claim word, never in the lock
+     * word), and if it entered invalidated and ran undisturbed it has already
+     * cleared the latch -- so compensate: re-latch, and re-saturate the counter
+     * (the stale credited reseed reset it, leaving the latch as sole
+     * enforcement; wc_RNG_DRBG_ScheduleReseed() restores the second layer --
+     * race-free here, under the exclusive lease).  Claims (stats, stratum
+     * adoption) are made only behind a successful release.  Do NOT re-run
+     * wc_RNG_invalidate_entropy() here: the event's purges already ran, and
+     * re-purging would discard post-event material the banker may have
+     * re-banked meanwhile. */
+    {
+        int cas_ret;
+        WC_ATOMIC_INT_ARG expected_out = WC_DRBG_NEXT_SEED_CONSUMING;
+        WC_CAS_WITH_RETRY_BEGIN(lenp, expected_out, cas_ret) {
+            WC_CAS_WITH_RETRY_LOOP_UNTIL(wolfSSL_Atomic_Int_CompareExchange,
+                                         lenp, expected_out,
+                                         WC_DRBG_NEXT_SEED_EMPTY, cas_ret,
+                                         NEEDS_RECOVERY_E);
+        } WC_CAS_WITH_RETRY_END;
+        if (cas_ret != 0) {
+    #ifdef WC_RNG_HAVE_LOCK
+            {
+                WC_RNG_lock_arg_t cur_lock;
+                int relatch_ret;
+                WC_CAS_WITH_RETRY_BEGIN_INIT_CUR(&rng->lock, cur_lock,
+                                                 relatch_ret) {
+                    WC_CAS_WITH_RETRY_LOOP_FOREVER(
+                        wolfSSL_Atomic_Uint_CompareExchange, &rng->lock,
+                        cur_lock,
+                        cur_lock | WC_RNG_LOCK_ENTROPY_INVALIDATED,
+                        relatch_ret);
+                } WC_CAS_WITH_RETRY_END;
+                if (relatch_ret != 0) {
+                    /* Aborted re-latch: latch down, counter scheduled.
+                     * Latch-or-condemn (see wc_RNG_invalidate_entropy()):
+                     * condemn. */
+                    rng->status = DRBG_FAILED;
+                }
+            }
+    #endif
+            {
+                int sched_ret = wc_RNG_DRBG_ScheduleReseed_local(rng);
+                if ((ret == DRBG_SUCCESS) && (sched_ret != 0))
+                    return sched_ret;
+            }
+            if (ret == DRBG_SUCCESS) {
+                /* The discarded recovery is the whole story. */
+                return cas_ret;
+            }
+            /* Else the reseed's own failure is the more informative code:
+             * fall through to the standard outcome mapping.
+             *
+             * Note that the ordering here matters: the
+             * wc_RNG_DRBG_ScheduleReseed() above has just saturated the reseed
+             * counter (unless it too failed, leaving the re-upped latch as sole
+             * enforcement); the failed reseed will fall through below and the
+             * DRBG will be condemned by the runway gate.  This is intentional:
+             * an invalidation-crossed failure is never elective, and the seed
+             * just consumed was banked pre-event, so the instance has no
+             * trustworthy runway for the gate's leniency to protect, and
+             * lenient NOT_READY_E here would misreport a quarantined instance
+             * as merely not-yet-ready. */
+        }
+        else {
+    #ifdef WC_RNG_DEBUG_STATS
+            if (ret == 0) {
+        #ifdef WC_RNG_HAVE_RBGC
+                if (*nextSeedRBGCStratum_p > 0)
+                    ++rng->_stats_nextseedsRBGC_redeemed;
+                else
+        #endif
+                    ++rng->_stats_nextseedsprimary_redeemed;
+            }
+    #endif
+    #ifdef WC_RNG_HAVE_RBGC
+            if (ret == 0) {
+                rng->RBGCStratum = *nextSeedRBGCStratum_p;
+                *nextSeedRBGCStratum_p = 0;
+            }
+    #endif
+        }
+    }
+
+    if (ret == DRBG_SUCCESS) {
+#if defined(HAVE_GETPID) && !defined(WOLFSSL_NO_GETPID)
+        /* Check for PID change after consuming the banked seed. */
+        ret = rng_pid_change_check(rng);
+#else
+        ret = 0;
+#endif
+    }
+    else {
+        wc_drbg_reseed_ctr_t ctr = WC_RESEED_INTERVAL;
+        (void)wc_RNG_DRBG_GetReseedCtr(rng, &ctr);
+        if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE)) {
+            /* Not reachable here -- retained only for uniformity with
+             * wc_RNG_GenerateBlock() and wc_RNG_DRBG_Reseed_Now().  Where
+             * reachable, the suspect seed was rejected before use, and the DRBG
+             * state and runway are intact. */
+            if (ctr >= WC_RESEED_INTERVAL) {
+                /* The instance is out of generate runway -- condemn now, matching
+                 * wc_RNG_GenerateBlock()'s behavior for mandatory reseeds. */
+                rng->status = DRBG_CONT_FAILED;
+            }
+            ret = DRBG_CONT_FIPS_E;
+        }
+        else if (ctr >= WC_RESEED_INTERVAL) {
+            /* The instance is out of generate runway -- condemn now, matching
+             * wc_RNG_GenerateBlock()'s behavior for mandatory reseeds. */
+            rng->status = DRBG_FAILED;
+            ret = RNG_FAILURE_E;
+        }
+        else {
+            ret = NOT_READY_E;
+        }
     }
 
     return ret;
 }
+
+int wc_RNG_DRBG_NextSeedNow_Nonce(WC_RNG* rng, const byte* nonce,
+                                  word32 nonceSz)
+{
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+    ret = wc_RNG_DRBG_NextSeedNow_Nonce_local(rng, nonce, nonceSz);
+    RngAutoLockExit(rng);
+    return ret;
+}
+
+#if defined(WC_RNG_HAVE_NEXT_SEED) && defined(WC_RNG_HAVE_LOCK) && \
+    defined(WC_RNG_HAVE_RBGC)
+/* For the generate path, which holds the lock already.  Guarded to match
+ * its one call site, which needs the lock and RBGC builds as well. */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_NextSeedNow_local(WC_RNG* rng) {
+    return wc_RNG_DRBG_NextSeedNow_Nonce_local(rng, NULL, 0);
+}
 #endif
 
+int wc_RNG_DRBG_NextSeedNow(WC_RNG* rng) {
+    return wc_RNG_DRBG_NextSeedNow_Nonce(rng, NULL, 0);
+}
+
+/* Deposit raw uncredited stir material into rng's accumulator.  Callable from
+ * any context and without owning the instance: the deposit protocol
+ * (read-copy-store) is multi-writer-tolerant -- every published span was
+ * written by its publisher, lost updates merely drop entropy, and interleaved
+ * fragments of compatible provenance are harmless.  A full accumulator
+ * publishes WC_DRBG_NEXT_SEED_READY (no health test -- no claim is being made)
+ * and shunts further deposits to xorbuf() until consumed. */
+int wc_RNG_DRBG_NextStirStore(WC_RNG* rng, const byte *nonce, word32 nonceSz)
+{
+    WC_ATOMIC_INT_ARG cur;
+
+    if ((rng == NULL) || (nonce == NULL) || (nonceSz == 0))
+        return BAD_FUNC_ARG;
+
+    /* Note, rng need not be locked -- that's the whole point of the
+     * banked-next-stir aperture protocol.
+     */
+
+    cur = WOLFSSL_ATOMIC_LOAD(rng->nextStirLen);
+
+    if ((cur >= 0) && (cur < (WC_ATOMIC_INT_ARG)sizeof(rng->nextStir))) {
+        word32 fill = (word32)cur;
+        word32 room = (word32)sizeof(rng->nextStir) - fill;
+        word32 take = (nonceSz < room) ? nonceSz : room;
+
+        XMEMCPY(rng->nextStir + fill, nonce, take);
+        fill += take;
+        if (fill == (word32)sizeof(rng->nextStir)) {
+            WOLFSSL_ATOMIC_STORE(rng->nextStirLen, WC_DRBG_NEXT_SEED_READY);
+            #ifdef WC_RNG_DEBUG_STATS
+            ++rng->_stats_nextstirs_banked; /* racy */
+            #endif
+            nonce += take;
+            nonceSz -= take; /* spillover falls through to the xorbuf() */
+        }
+        else {
+            WOLFSSL_ATOMIC_STORE(rng->nextStirLen,
+                                 cur + (WC_ATOMIC_INT_ARG)take);
+            return 0;
+        }
+        if (nonceSz == 0)
+            return 0;
+    }
+
+    if (nonceSz > (word32)sizeof(rng->nextStir))
+        nonceSz = (word32)sizeof(rng->nextStir);
+    xorbuf(rng->nextStir, nonce, nonceSz);
+
+    return 0;
+}
+
+/* Consume a ready uncredited accumulator in an immediate uncredited
+ * (stirring) reseed.  The caller must own the instance.  The credited=0
+ * path holds the three no-ops by construction: the reseed counter is not
+ * reset, WC_RNG_LOCK_ENTROPY_INVALIDATED is not cleared, and RBGCStratum
+ * is unchanged -- a stir must never masquerade as recovery or promotion.
+ * Use-once: the material is consumed (accumulation reopens) whether or not
+ * the reseed succeeds.  The buffer is never zeroized (racy against
+ * depositors, and zeroing is always a net entropy loss). */
+static WARN_UNUSED_RESULT int wc_RNG_DRBG_NextStirNow_local(WC_RNG* rng)
+{
+    WC_ATOMIC_INT_ARG expected = WC_DRBG_NEXT_SEED_READY;
+    wc_drbg_reseed_ctr_t reseedCtr;
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
+    /* Mirror wc_RNG_GenerateBlock(): only an in-service DRBG may reseed. */
+    if (rng->status != DRBG_OK)
+        return RNG_FAILURE_E;
+
+    /* If a reseed is due, the RNG is not ready for a stir. */
+    ret = wc_RNG_DRBG_GetReseedCtr(rng, &reseedCtr);
+    if (ret < 0)
+        return ret;
+    if (reseedCtr >= WC_RESEED_INTERVAL)
+        return NOT_READY_E;
+
+    if (! wolfSSL_Atomic_Int_CompareExchange(&rng->nextStirLen, &expected,
+                                             WC_DRBG_NEXT_SEED_CONSUMING))
+    {
+        /* Accumulator not READY. */
+        if (expected < 0) {
+            /* claimed by a racing consumer. */
+            return BUSY_E;
+        }
+        else {
+            /* empty or still accumulating -- nothing consumable yet. */
+            return NOT_READY_E;
+        }
+    }
+
+    ret = Hash_DRBG_StirGenerate(rng, rng->nextStir,
+                                 (word32)sizeof(rng->nextStir));
+
+#ifdef WC_RNG_DEBUG_STATS
+    if (ret == 0)
+        ++rng->_stats_nextstirs_redeemed;
+#endif
+
+    /* Always burn consumed data before releasing it, even if it's uncredited
+     * noise.  Unlike the seed aperture, the stir aperture has no producer
+     * claim: lease-free depositors xorbuf() into it at any time during
+     * _CONSUMING, so the burn here can only discard an incoming overflow
+     * fragment, after the full aperture has already been absorbed by
+     * the StirGenerate() above. */
+    ForceZero(rng->nextStir, (word32)sizeof(rng->nextStir));
+    WOLFSSL_ATOMIC_STORE(rng->nextStirLen, WC_DRBG_NEXT_SEED_EMPTY);
+
+    return ret;
+}
+
+int wc_RNG_DRBG_NextStirNow(WC_RNG* rng)
+{
+    int ret;
+
+    if (rng == NULL)
+        return BAD_FUNC_ARG;
+    ret = RngAutoLockEnter(rng);
+    if (ret != 0)
+        return ret;
+    ret = wc_RNG_DRBG_NextStirNow_local(rng);
+    RngAutoLockExit(rng);
+    return ret;
+}
+
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+#endif /* HAVE_HASHDRBG */
+
 /* place a generated block in output */
-#ifdef WC_RNG_BANK_SUPPORT
-static int wc_local_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
+#ifdef WC_HAVE_RNG_BANKREF
+static WARN_UNUSED_RESULT int wc_local_RNG_GenerateBlock(WC_RNG* rng,
+                                                         byte* output,
+                                                         word32 sz)
 #else
 WOLFSSL_ABI
 int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
@@ -2333,10 +5756,15 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     if (rng == NULL || output == NULL)
         return BAD_FUNC_ARG;
 
+    ret = rng_lock_required_check(rng);
+    if (ret != 0)
+        return ret;
+
     if (sz == 0)
         return 0;
 
 #ifdef WOLF_CRYPTO_CB
+    /* before the lock: a callback may fall back to this same instance */
     #ifndef WOLF_CRYPTO_CB_FIND
     if (rng->devId != INVALID_DEVID)
     #endif
@@ -2348,6 +5776,8 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     }
 #endif
 
+    /* These read a device, not this instance, so a lock protects nothing here.
+     * On RDRAND hardware wc_InitRng() creates no lock at all, as tested. */
 #ifdef HAVE_INTEL_RDRAND
     if (IS_INTEL_RDRAND(intel_flags))
         return wc_GenerateRand_IntelRD(NULL, output, sz);
@@ -2357,13 +5787,21 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     return silabs_GenerateRand(output, sz);
 #endif
 
+    ret = RngAutoLockEnter(rng);   /* held across every other backend */
+    if (ret != 0)
+        return ret;
+
 #if defined(WOLFSSL_ASYNC_CRYPT)
     if (rng->asyncDev.marker == WOLFSSL_ASYNC_MARKER_RNG) {
         /* these are blocking */
     #ifdef HAVE_CAVIUM
-        return NitroxRngGenerateBlock(rng, output, sz);
+        ret = NitroxRngGenerateBlock(rng, output, sz);
+        RngAutoLockExit(rng);
+        return ret;
     #elif defined(HAVE_INTEL_QA) && defined(QAT_ENABLE_RNG)
-        return IntelQaDrbg(&rng->asyncDev, output, sz);
+        ret = IntelQaDrbg(&rng->asyncDev, output, sz);
+        RngAutoLockExit(rng);
+        return ret;
     #else
         /* simulator not supported */
     #endif
@@ -2378,21 +5816,83 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
         WOLFSSL_DEBUG_PRINTF(
             "ERROR: CUSTOM_RAND_GENERATE_BLOCK failed with err %d.", ret);
     #endif
+    RngAutoLockExit(rng);   /* a no-op here today; the gate excludes this build */
 #else
 
 #ifdef HAVE_HASHDRBG
-    if (sz > RNG_MAX_BLOCK_LEN)
+    if (sz > RNG_MAX_BLOCK_LEN) {
+        RngAutoLockExit(rng);
         return BAD_FUNC_ARG;
+    }
 
-    if (rng->status != DRBG_OK)
+    if (rng->status != DRBG_OK) {
+        RngAutoLockExit(rng);
         return RNG_FAILURE_E;
+    }
+
+#ifdef WC_RNG_DEBUG_STATS
+    ++rng->_stats_total_requests;
+    rng->_stats_total_bytes_requested += sz;
+#endif
 
 #if defined(HAVE_GETPID) && !defined(WOLFSSL_NO_GETPID)
-    if (rng->pid != getpid()) {
-        rng->pid = getpid();
-        ret = PollAndReSeed(rng);
-        if (ret != DRBG_SUCCESS) {
+    ret = rng_pid_change_check(rng);
+    if (ret != 0) {
+        RngAutoLockExit(rng);
+        return ret;
+    }
+#endif
+
+#if defined(WC_RNG_HAVE_NEXT_SEED) && defined(WC_RNG_HAVE_LOCK) && \
+    defined(WC_RNG_HAVE_RBGC)
+    if (rng->flags & WC_RNG_FLAG_RECOVER_AND_PROMOTE_FROM_NEXT_SEED) {
+        /* externally-refreshed instance: consume a READY banked seed to
+         * recover from entropy invalidation (any provenance -- the purge
+         * in wc_RNG_invalidate_entropy() guarantees a READY seed is
+         * post-event), or to promote a chain-backed instance to primary.
+         * Consumption is a credited reseed, clearing the flag and
+         * resetting the schedule; failure falls through to the ordinary
+         * forced-reseed machinery. */
+        int banked_stratum = wc_RNG_DRBG_GetNextSeedRBGCStratum(rng);
+        if (banked_stratum >= 0) {
+            if (((WOLFSSL_ATOMIC_LOAD(rng->lock) &
+                  WC_RNG_LOCK_ENTROPY_INVALIDATED))
+                ||
+                ((rng->RBGCStratum > 0) && (banked_stratum == 0)))
+            {
+                ret = wc_RNG_DRBG_NextSeedNow_local(rng);
+                if ((ret == WC_NO_ERR_TRACE(DRBG_CONT_FIPS_E)) ||
+                    (ret == WC_NO_ERR_TRACE(RNG_FAILURE_E)))
+                {
+                    RngAutoLockExit(rng);
+                    return ret;
+                }
+            }
+        }
+    }
+#endif
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    /* Universal opportunistic stir: a READY uncredited accumulator is
+     * consumed by any generate, unconditionally -- stirs are always
+     * harmless, and are invisible to the credited legs above (no counter
+     * reset, no flag clear, no stratum change).  One relaxed load when
+     * empty. */
+    if (WOLFSSL_ATOMIC_LOAD(rng->nextStirLen) == WC_DRBG_NEXT_SEED_READY) {
+        int stir_ret = wc_RNG_DRBG_NextStirNow_local(rng);
+        if (stir_ret == WC_NO_ERR_TRACE(RNG_FAILURE_E)) {
+            /* The DRBG broke while we were stirring it. */
+            RngAutoLockExit(rng);
+            return stir_ret;
+        }
+    }
+#endif /* WC_RNG_HAVE_NEXT_SEED */
+
+#ifdef WC_RNG_HAVE_LOCK
+    if (WOLFSSL_ATOMIC_LOAD(rng->lock) & WC_RNG_LOCK_ENTROPY_INVALIDATED) {
+        if (PollAndReSeed(rng, NULL, 0) != DRBG_SUCCESS) {
             rng->status = DRBG_FAILED;
+            RngAutoLockExit(rng);
             return RNG_FAILURE_E;
         }
     }
@@ -2402,11 +5902,18 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     if (rng->drbgType == WC_DRBG_SHA256) {
         ret = Hash_DRBG_Generate((DRBG_internal *)rng->drbg, output, sz,
                                  NULL, 0);
-        if (ret == DRBG_NEED_RESEED) {
-            ret = PollAndReSeed(rng);
-            if (ret == DRBG_SUCCESS)
+        if (ret == WC_NO_ERR_TRACE(DRBG_NEED_RESEED)) {
+            ret = PollAndReSeed(rng, NULL, 0);
+            if (ret != DRBG_SUCCESS) {
+                if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE))
+                    rng->status = DRBG_CONT_FAILED;
+                else
+                    rng->status = DRBG_FAILED;
+            }
+            else {
                 ret = Hash_DRBG_Generate((DRBG_internal *)rng->drbg, output,
                                          sz, NULL, 0);
+            }
         }
     }
     else
@@ -2415,35 +5922,57 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     if (rng->drbgType == WC_DRBG_SHA512) {
         ret = Hash512_DRBG_Generate((DRBG_SHA512_internal *)rng->drbg512,
                                     output, sz, NULL, 0);
-        if (ret == DRBG_NEED_RESEED) {
-            ret = PollAndReSeed(rng);
-            if (ret == DRBG_SUCCESS)
+        if (ret == WC_NO_ERR_TRACE(DRBG_NEED_RESEED)) {
+            ret = PollAndReSeed(rng, NULL, 0);
+            if (ret != DRBG_SUCCESS) {
+                if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE))
+                    rng->status = DRBG_CONT_FAILED;
+                else
+                    rng->status = DRBG_FAILED;
+            }
+            else {
                 ret = Hash512_DRBG_Generate(
                     (DRBG_SHA512_internal *)rng->drbg512, output, sz,
                     NULL, 0);
+            }
         }
     }
     else
 #endif
     {
         ret = DRBG_FAILURE;
+        rng->status = DRBG_FAILED;
     }
 
     if (ret == DRBG_SUCCESS) {
         ret = 0;
+#ifdef WC_RNG_DEBUG_STATS
+        rng->_stats_total_bytes_produced += sz;
+    #ifdef WC_RNG_HAVE_RBGC
+        /* chain-provenance output: generated while chain-backed */
+        if (rng->RBGCStratum > 0)
+            rng->_stats_RBGC_bytes_produced += sz;
+    #endif
+#endif
     }
-    else if (ret == DRBG_CONT_FAILURE) {
+    else if (ret == WC_NO_ERR_TRACE(DRBG_CONT_FAILURE)) {
         ret = DRBG_CONT_FIPS_E;
         rng->status = DRBG_CONT_FAILED;
     }
     else {
         ret = RNG_FAILURE_E;
-        rng->status = DRBG_FAILED;
+        /* Note, Hash_DRBG_Generate() always leaves the DRBG in a
+         * self-consistent state, success or failure, and can fail for retryable
+         * causes (e.g. failed memory allocation), so we only update rng->status
+         * above.
+         */
     }
+    RngAutoLockExit(rng);
 #else
 
     /* if we get here then there is an RNG configuration error */
     ret = RNG_FAILURE_E;
+    RngAutoLockExit(rng);   /* a no-op here today; the gate excludes this build */
 
 #endif /* HAVE_HASHDRBG */
 #endif /* CUSTOM_RAND_GENERATE_BLOCK */
@@ -2451,14 +5980,20 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
     return ret;
 }
 
-#ifdef WC_RNG_BANK_SUPPORT
+#ifdef WC_HAVE_RNG_BANKREF
 WOLFSSL_ABI
 int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
 {
     if (rng == NULL)
         return BAD_FUNC_ARG;
 
-    if (rng->status == WC_DRBG_BANKREF) {
+    {
+        int lock_ret = rng_lock_required_check(rng);
+        if (lock_ret != 0)
+            return lock_ret;
+    }
+
+    if (rng->flags & WC_RNG_FLAG_BANKREF) {
         int ret;
         struct wc_rng_bank_inst *bank_inst = NULL;
 
@@ -2470,11 +6005,11 @@ int wc_RNG_GenerateBlock(WC_RNG* rng, byte* output, word32 sz)
         ret = wc_local_RNG_GenerateBlock(WC_RNG_BANK_INST_TO_RNG(bank_inst),
                                          output, sz);
         {
-            int checkin_ret = wc_rng_bank_checkin(rng->bankref, &bank_inst);
+            int checkin_ret = wc_rng_bank_inst_checkin(&bank_inst);
             if (checkin_ret != 0) {
 #ifdef WC_VERBOSE_RNG
                 WOLFSSL_DEBUG_PRINTF(
-                    "ERROR: wc_RNG_GenerateBlock() wc_rng_bank_checkin() "
+                    "ERROR: wc_RNG_GenerateBlock() wc_rng_bank_inst_checkin() "
                     "failed with err %d.", checkin_ret);
 #endif
                 if (ret == 0)
@@ -2501,10 +6036,53 @@ int wc_FreeRng(WC_RNG* rng)
     if (rng == NULL)
         return BAD_FUNC_ARG;
 
-#ifdef WC_RNG_BANK_SUPPORT
-    if (rng->status == WC_DRBG_BANKREF)
+    /* Note, deallocation proceeds regardless of RNG lock status.  Lifecycle
+     * management is the caller's responsibility, and a lock inside the object
+     * cannot arbitrate deallocation.
+     */
+
+#ifdef WC_HAVE_RNG_BANKREF
+    if (rng->flags & WC_RNG_FLAG_BANKREF)
         return wc_BankRef_Release(rng);
-#endif /* WC_RNG_BANK_SUPPORT */
+#endif /* WC_HAVE_RNG_BANKREF */
+
+#ifdef WC_RNG_HAVE_FREE_HOOK
+    if (rng->free_hook != NULL) {
+        /* one-shot, cleared before firing: re-entrant frees from the hook
+         * (not that they would be a good idea) can't loop. */
+        wc_RNG_free_hook_cb_t free_hook = rng->free_hook;
+        rng->free_hook = NULL;
+        ret = free_hook(rng, rng->free_hook_arg);
+        rng->free_hook_arg = NULL;
+    }
+#endif
+
+#ifdef WC_RNG_HAVE_POOL
+    /* single-owner teardown; the only pool deallocation site */
+    if (rng->pool != NULL) {
+        ForceZero(rng->pool, rng->poolSize);
+        XFREE(rng->pool, rng->heap, DYNAMIC_TYPE_RNG);
+        rng->pool = NULL;
+        rng->poolSize = 0;
+        WOLFSSL_ATOMIC_STORE(rng->poolHead, 0);
+        WOLFSSL_ATOMIC_STORE(rng->poolTail, 0);
+    }
+#endif
+
+#ifdef WC_RNG_HAVE_AUTO_LOCK
+    RngAutoLockFree(rng);
+#endif
+
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    /* The stir accumulator is WC_RNG-resident (it survives DRBG teardown so
+     * that blind depositors never dereference rng->drbg), so the DRBG
+     * teardown below cannot wipe it -- wipe it here.  A concurrent blind
+     * deposit can tear the wipe harmlessly (uncredited material, and
+     * all-zeros decodes as empty/accumulating).  Note the contrast with the
+     * lock word, which deliberately survives deallocation. */
+    ForceZero(rng->nextStir, (word32)sizeof(rng->nextStir));
+    WOLFSSL_ATOMIC_STORE(rng->nextStirLen, WC_DRBG_NEXT_SEED_EMPTY);
+#endif
 
 #if defined(WOLFSSL_ASYNC_CRYPT)
     wolfAsync_DevCtxFree(&rng->asyncDev, WOLFSSL_ASYNC_MARKER_RNG);
@@ -2595,6 +6173,22 @@ int wc_FreeRng(WC_RNG* rng)
     }
 #endif
 
+#ifdef WC_RNG_HAVE_LOCK_FULL_MUTEX
+    if (rng->flags & WC_RNG_FLAG_FULL_MUTEX) {
+        /* If the latch is held, the caller is the holder (enforced when
+         * _LOCK_REQUIRED) and owns the mutex: release it before
+         * destruction.  A free latch means the mutex is unowned. */
+        if (WOLFSSL_ATOMIC_LOAD(rng->lock) & WC_RNG_LOCK_HELD)
+            (void)wc_UnLockMutex(&rng->mutex);
+        (void)wc_FreeMutex(&rng->mutex);
+        rng->flags &= ~WC_RNG_FLAG_FULL_MUTEX;
+    }
+#endif
+
+    /* Note, rng->lock must *not* be cleared -- it may still be arbitrating
+     * access even after wc_FreeRng().
+     */
+
     return ret;
 }
 
@@ -2614,14 +6208,14 @@ int wc_RNG_HealthTest(int reseed, const byte* seedA, word32 seedASz,
 }
 
 
-static int wc_RNG_HealthTest_ex_internal(DRBG_internal* drbg,
+static WARN_UNUSED_RESULT int wc_RNG_HealthTest_ex_internal(DRBG_internal* drbg,
                                   int reseed, const byte* nonce, word32 nonceSz,
                                   const byte* seedA, word32 seedASz,
                                   const byte* seedB, word32 seedBSz,
                                   byte* output, word32 outputSz,
                                   void* heap, int devId)
 {
-    int ret = -1;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
 
     if (seedA == NULL || output == NULL) {
         return BAD_FUNC_ARG;
@@ -2632,7 +6226,7 @@ static int wc_RNG_HealthTest_ex_internal(DRBG_internal* drbg,
     }
 
     if (outputSz != RNG_HEALTH_TEST_CHECK_SIZE) {
-        return ret;
+        return BAD_FUNC_ARG;
     }
 
 #ifdef WOLFSSL_SMALL_STACK_CACHE
@@ -2651,7 +6245,7 @@ static int wc_RNG_HealthTest_ex_internal(DRBG_internal* drbg,
 #endif
 
     if (reseed) {
-        if (Hash_DRBG_Reseed(drbg, seedB, seedBSz, NULL, 0) != 0) {
+        if (Hash256_DRBG_Reseed(drbg, seedB, seedBSz, NULL, 0) != 0) {
             goto exit_rng_ht;
         }
     }
@@ -2676,8 +6270,8 @@ exit_rng_ht:
 
 #ifndef WOLFSSL_SMALL_STACK_CACHE
     /* This is safe to call even if Hash_DRBG_Instantiate fails */
-    if (Hash_DRBG_Uninstantiate(drbg) != 0) {
-        ret = -1;
+    if ((Hash_DRBG_Uninstantiate(drbg) != 0) && (ret == 0)) {
+        ret = DRBG_FAILURE;
     }
 #endif
 
@@ -2690,7 +6284,7 @@ int wc_RNG_HealthTest_ex(int reseed, const byte* nonce, word32 nonceSz,
                                   byte* output, word32 outputSz,
                                   void* heap, int devId)
 {
-    int ret = -1;
+    int ret = WC_NO_ERR_TRACE(WC_FAILURE);
     DRBG_internal* drbg;
 #ifndef WOLFSSL_SMALL_STACK
     DRBG_internal  drbg_var;
@@ -2722,6 +6316,11 @@ int wc_RNG_HealthTest_ex(int reseed, const byte* nonce, word32 nonceSz,
     }
     WC_FREE_VAR_EX(drbg, heap, DYNAMIC_TYPE_RNG);
 
+    if (ret > 0) {
+        /* Translate protocol-domain codes at the public boundary; negative
+         * codes (MEMORY_E, BAD_FUNC_ARG) pass verbatim. */
+        ret = WC_FAILURE;
+    }
     return ret;
 }
 #endif /* !NO_SHA256 - wc_RNG_HealthTest{,_ex,_ex_internal} */
@@ -2922,7 +6521,7 @@ static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
             if (ret == 0) {
                 if (ConstantCompare(check512, sha512_outputA_data,
                                     RNG_HEALTH_TEST_CHECK_SIZE_SHA512) != 0)
-                    ret = -1;
+                    ret = DRBG_CONT_FAILURE;
             }
         }
         else {
@@ -2937,7 +6536,7 @@ static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
             if (ret == 0) {
                 if (ConstantCompare(check512, sha512_outputB_data,
                                     RNG_HEALTH_TEST_CHECK_SIZE_SHA512) != 0)
-                    ret = -1;
+                    ret = DRBG_CONT_FAILURE;
             }
         }
 
@@ -3005,7 +6604,7 @@ static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
         if (ret == 0) {
             if (ConstantCompare(check, outputA,
                                 RNG_HEALTH_TEST_CHECK_SIZE) != 0)
-                ret = -1;
+                ret = DRBG_CONT_FAILURE;
         }
 
 #ifdef WOLFSSL_USE_FLASHMEM
@@ -3057,7 +6656,7 @@ static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
                 #if defined(DEBUG_WOLFSSL)
                 WOLFSSL_MSG_EX("Random ConstantCompare failed: err = %d", ret);
                 #endif
-                ret = -1;
+                ret = DRBG_CONT_FAILURE;
             }
         }
 
@@ -3074,7 +6673,7 @@ static int wc_RNG_HealthTestLocal(WC_RNG* rng, int reseed, void* heap,
                                        heap, devId);
             if (ret == 0) {
                 if (ConstantCompare(check, outputB, sizeof(outputB_data)) != 0)
-                    ret = -1;
+                    ret = DRBG_CONT_FAILURE;
             }
         }
 
@@ -3110,7 +6709,7 @@ static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
                                   byte* output, word32 outputSz,
                                   void* heap, int devId)
 {
-    int ret = -1;
+    int ret = WC_NO_ERR_TRACE(DRBG_FAILURE);
 
     if (seedA == NULL || output == NULL) {
         return BAD_FUNC_ARG;
@@ -3121,7 +6720,7 @@ static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
     }
 
     if (outputSz != RNG_HEALTH_TEST_CHECK_SIZE_SHA512) {
-        return ret;
+        return BAD_FUNC_ARG;
     }
 
 #ifdef WOLFSSL_SMALL_STACK_CACHE
@@ -3140,7 +6739,8 @@ static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
 #endif
 
     if (reseed) {
-        if (Hash512_DRBG_Reseed(drbg, seedB, seedBSz, NULL, 0) != 0) {
+        if (Hash512_DRBG_Reseed(drbg, seedB, seedBSz, NULL, 0) != 0)
+        {
             goto exit_rng_ht512;
         }
     }
@@ -3162,8 +6762,8 @@ static int wc_RNG_HealthTest_SHA512_ex_internal(DRBG_SHA512_internal* drbg,
 exit_rng_ht512:
 
 #ifndef WOLFSSL_SMALL_STACK_CACHE
-    if (Hash512_DRBG_Uninstantiate(drbg) != 0) {
-        ret = -1;
+    if ((Hash512_DRBG_Uninstantiate(drbg) != 0) && (ret == 0)) {
+        ret = DRBG_FAILURE;
     }
 #endif
 
@@ -3183,7 +6783,7 @@ int wc_RNG_HealthTest_SHA512_ex(int reseed,
                                 byte* output, word32 outputSz,
                                 void* heap, int devId)
 {
-    int ret = -1;
+    int ret = WC_NO_ERR_TRACE(WC_FAILURE);
     DRBG_SHA512_internal* drbg;
 #ifndef WOLFSSL_SMALL_STACK
     DRBG_SHA512_internal  drbg_var;
@@ -3194,7 +6794,7 @@ int wc_RNG_HealthTest_SHA512_ex(int reseed,
     }
 
     if (outputSz != RNG_HEALTH_TEST_CHECK_SIZE_SHA512) {
-        return ret;
+        return BAD_FUNC_ARG;
     }
 
 #ifdef WOLFSSL_SMALL_STACK
@@ -3248,7 +6848,7 @@ int wc_RNG_HealthTest_SHA512(int reseed,
                              const byte* seedB, word32 seedBSz,
                              byte* output, word32 outputSz)
 {
-    int ret = -1;
+    int ret = WC_NO_ERR_TRACE(WC_FAILURE);
     DRBG_SHA512_internal* drbg;
 #ifndef WOLFSSL_SMALL_STACK
     DRBG_SHA512_internal  drbg_var;
@@ -3282,12 +6882,18 @@ int wc_RNG_HealthTest_SHA512(int reseed,
     }
     WC_FREE_VAR_EX(drbg, NULL, DYNAMIC_TYPE_RNG);
 
+    if (ret > 0) {
+        /* Translate protocol-domain codes at the public boundary; negative
+         * codes (MEMORY_E, BAD_FUNC_ARG) pass verbatim. */
+        ret = WC_FAILURE;
+    }
     return ret;
 }
 
 #endif /* WOLFSSL_DRBG_SHA512 */
 
-#ifndef NO_SHA256
+#if !defined(NO_SHA256) && !defined(HAVE_SELFTEST) && \
+    (!defined(HAVE_FIPS) || FIPS_VERSION3_GE(7,0,0))
 /* Extended SHA-256 Hash_DRBG health test per SP 800-90A.
  * Supports flexible output sizes, prediction resistance, personalization
  * strings, and additional input.
@@ -3343,8 +6949,8 @@ int wc_RNG_HealthTest_SHA256_ex(
 
         /* Reseed 1 with additionalA, then Generate 1 with NULL (discard) */
         if (entropyB != NULL && entropyBSz > 0) {
-            ret = Hash_DRBG_Reseed(drbg, entropyB, entropyBSz,
-                                   additionalA, additionalASz);
+            ret = Hash256_DRBG_Reseed(drbg, entropyB, entropyBSz,
+                                      additionalA, additionalASz);
             if (ret != 0) goto exit_sha256_ex;
         }
         ret = Hash_DRBG_Generate(drbg, output, outputSz, NULL, 0);
@@ -3352,8 +6958,8 @@ int wc_RNG_HealthTest_SHA256_ex(
 
         /* Reseed 2 with additionalB, then Generate 2 with NULL (keep) */
         if (entropyC != NULL && entropyCsz > 0) {
-            ret = Hash_DRBG_Reseed(drbg, entropyC, entropyCsz,
-                                   additionalB, additionalBSz);
+            ret = Hash256_DRBG_Reseed(drbg, entropyC, entropyCsz,
+                                      additionalB, additionalBSz);
             if (ret != 0) goto exit_sha256_ex;
         }
         ret = Hash_DRBG_Generate(drbg, output, outputSz, NULL, 0);
@@ -3361,8 +6967,8 @@ int wc_RNG_HealthTest_SHA256_ex(
     else {
         /* Standard mode: explicit reseed, then two generates */
         if (entropyB != NULL && entropyBSz > 0) {
-            ret = Hash_DRBG_Reseed(drbg, entropyB, entropyBSz,
-                                   additionalReseed, additionalReseedSz);
+            ret = Hash256_DRBG_Reseed(drbg, entropyB, entropyBSz,
+                                      additionalReseed, additionalReseedSz);
             if (ret != 0) goto exit_sha256_ex;
         }
 
@@ -3385,7 +6991,7 @@ exit_sha256_ex:
 
     return ret;
 }
-#endif /* !NO_SHA256 */
+#endif /* !NO_SHA256 && !HAVE_SELFTEST && (!HAVE_FIPS || FIPS v7+) */
 
 
 #ifdef WOLFSSL_DRBG_SHA512
@@ -3503,23 +7109,17 @@ exit_sha512_ex2:
  */
 int wc_InitNetRandom(const char* configFile, wnr_hmac_key hmac_cb, int timeout)
 {
-    int ret;
+    int ret = 0;
 
     if (configFile == NULL || timeout < 0)
         return BAD_FUNC_ARG;
 
 #ifndef WOLFSSL_MUTEX_INITIALIZER
-    if (wnr_mutex_inited > 0) {
-        WOLFSSL_MSG("netRandom context already created, skipping");
-        return 0;
-    }
-
-    if (wc_InitMutex(&wnr_mutex) != 0) {
+    ret = wc_local_InitMutexOnce(&wnr_mutex, &wnr_mutex_inited);
+    if (ret != 0) {
         WOLFSSL_MSG("Bad Init Mutex wnr_mutex");
-        return BAD_MUTEX_E;
+        return ret;
     }
-
-    wnr_mutex_inited = 1;
 #endif
 
     if (wnr_inited > 0) {
@@ -3602,7 +7202,7 @@ int wc_FreeNetRandom(void)
 
 #ifndef WOLFSSL_MUTEX_INITIALIZER
         wc_FreeMutex(&wnr_mutex);
-        wnr_mutex_inited = 0;
+        WOLFSSL_ATOMIC_STORE(wnr_mutex_inited, 0);
 #endif
 
         wnr_inited = 0;
@@ -3663,20 +7263,21 @@ static WC_INLINE int IntelRDseed64_r(word64* rnd)
         if (IntelRDseed64(rnd) == 0)
             return 0;
     }
-    return -1;
+    return NOT_READY_E;
 }
 
 /* return 0 on success */
 static int wc_GenerateSeed_IntelRD(OS_Seed* os, byte* output, word32 sz)
 {
-    int ret;
+    int ret = 0;
     word64 rndTmp;
     static int rdseed_sanity_status = 0;
+    word64 rndTmpLocal = 0;
 
     (void)os;
 
     if (!IS_INTEL_RDSEED(intel_flags))
-        return -1;
+        return WC_HW_E;
 
     /* Note, access to rdseed_sanity_status is benignly racey on multithreaded
      * targets.
@@ -3704,22 +7305,30 @@ static int wc_GenerateSeed_IntelRD(OS_Seed* os, byte* output, word32 sz)
                     "check CPU microcode version.", sanity_word2);
 #endif
                 rdseed_sanity_status = -1;
-                return -1;
+                return WC_HW_E;
             }
         }
 
         rdseed_sanity_status = 1;
     }
     else if (rdseed_sanity_status < 0) {
-        return -1;
+        return WC_HW_E;
     }
 
     for (; (sz / sizeof(word64)) > 0; sz -= sizeof(word64),
-                                                    output += sizeof(word64)) {
-        ret = IntelRDseed64_r((word64*)output);
-        if (ret != 0)
-            return ret;
+                                                output += sizeof(word64)) {
+        ret = IntelRDseed64_r(&rndTmpLocal);
+        if (ret != 0) {
+            break;
+        }
+        writeUnalignedWord64(output, rndTmpLocal);
     }
+
+    ForceZero(&rndTmpLocal, sizeof(rndTmpLocal));
+    if (ret != 0) {
+        return ret;
+    }
+
     if (sz == 0)
         return 0;
 
@@ -3728,8 +7337,14 @@ static int wc_GenerateSeed_IntelRD(OS_Seed* os, byte* output, word32 sz)
     if (ret != 0)
         return ret;
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("wc_GenerateSeed rndTmp", &rndTmp, sizeof(rndTmp));
+#endif
     XMEMCPY(output, &rndTmp, sz);
     ForceZero(&rndTmp, sizeof(rndTmp));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(&rndTmp, sizeof(rndTmp));
+#endif
 
     return 0;
 }
@@ -3783,8 +7398,9 @@ static WC_INLINE int IntelRDrand64_r(word64 *rnd)
 /* return 0 on success */
 static int wc_GenerateRand_IntelRD(OS_Seed* os, byte* output, word32 sz)
 {
-    int ret;
     word64 rndTmp;
+    int ret = 0;
+    word64 rndTmpLocal = 0;
 
     (void)os;
 
@@ -3792,11 +7408,19 @@ static int wc_GenerateRand_IntelRD(OS_Seed* os, byte* output, word32 sz)
         return -1;
 
     for (; (sz / sizeof(word64)) > 0; sz -= sizeof(word64),
-                                                    output += sizeof(word64)) {
-        ret = IntelRDrand64_r((word64 *)output);
-        if (ret != 0)
-            return ret;
+                                                output += sizeof(word64)) {
+        ret = IntelRDrand64_r(&rndTmpLocal);
+        if (ret != 0) {
+            break;
+        }
+        writeUnalignedWord64(output, rndTmpLocal);
     }
+
+    ForceZero(&rndTmpLocal, sizeof(rndTmpLocal));
+    if (ret != 0) {
+        return ret;
+    }
+
     if (sz == 0)
         return 0;
 
@@ -3806,12 +7430,482 @@ static int wc_GenerateRand_IntelRD(OS_Seed* os, byte* output, word32 sz)
         return ret;
 
     XMEMCPY(output, &rndTmp, sz);
+    ForceZero(&rndTmp, sizeof(rndTmp));
 
     return 0;
 }
 
 #endif /* HAVE_INTEL_RDRAND */
 #endif /* HAVE_INTEL_RDRAND || HAVE_INTEL_RDSEED || HAVE_AMD_RDSEED */
+
+
+#ifdef WOLFSSL_NOISE_SRC
+
+/* Generic SP800-90B noise source.  Configuration struct and API:
+ * wolfssl/wolfcrypt/random.h.
+ *
+ * Entropy model.  A port supplies raw, unconditioned octets through one
+ * callback.  Each raw bit is credited hmin/100 bits of min-entropy, so a
+ * full-entropy output octet needs 8 / (hmin/100) raw bits, and margin
+ * oversamples on top of that; WC_NOISE_RAW_PER_SRC() turns the two into the
+ * raw octets gathered per conditioner chunk.  Only source 0 is budgeted - any
+ * further source is hashed in as defence in depth, and extra hash input can
+ * never subtract entropy.
+ *
+ * Every gathered octet passes the 4.4.1 Repetition Count Test and the 4.4.2
+ * Adaptive Proportion Test before reaching the conditioner, and _Init() runs
+ * the 4.3 startup test over startupOctets per source first.  A failure is
+ * latched: 4.3/4.4 want a persistent failure state, not a transparent retry,
+ * because a source that trips and then passes is exactly what continuous
+ * testing exists to catch.  Only _Free() clears it.
+ *
+ * Only test verdicts latch - the health tests and the _SelfTest() liveness
+ * checks.  An error from the sample callback propagates unlatched and stays
+ * retryable: it says the hardware did not answer, not that the noise is bad.
+ * Either way no output is produced.
+ *
+ * Latching is also limited to the credited source.  Source 0 carries the whole
+ * budget, so its failure fails closed.  Sources 1.. are unaccounted extra hash
+ * input, and the cutoffs are derived for source 0's assumed min-entropy rather
+ * than theirs, so one of them tripping is not evidence the seed is weak - it is
+ * dropped for the life of the instance (recorded in src->degraded) and stops
+ * contributing.  Output stays fully seeded because the budget never counted
+ * it, and a source the budget ignores cannot deny service.
+ *
+ * Cutoffs belong to the caller and must match the assumed hmin, or they either
+ * never trip or trip constantly.  For H bits of min-entropy per octet at
+ * alpha = 2^-30: RCT C = 1 + ceil(30/H), APT C = 1 + CRITBINOM(W, 2^-H,
+ * 1-alpha).
+ *
+ * No locking.  The instance is caller-owned state, so a port sharing one
+ * across threads provides its own mutual exclusion. */
+
+#ifdef NO_SHA256
+    #error "WOLFSSL_NOISE_SRC conditions with SHA-256; do not set NO_SHA256"
+#endif
+#if WC_NOISE_CHUNK_SZ != WC_SHA256_DIGEST_SIZE
+    #error "WC_NOISE_CHUNK_SZ must match WC_SHA256_DIGEST_SIZE"
+#endif
+
+/* len raw octets from one source.  No health testing - callers that keep the
+ * data run NoiseSrc_HealthTest() over it. */
+static int NoiseSrc_Gather(wc_NoiseSrc* src, byte* out, word32 len, int srcIdx)
+{
+    word32 i;
+    int ret;
+
+    for (i = 0; i < len; i++) {
+        ret = src->sampleCb(src->ctx, srcIdx, &out[i]);
+        if (ret != 0) {
+            return ret;
+        }
+        /* The contract is raw octets, but where CHAR_BIT != 8 a callback can
+         * legally leave bits above 0xFF in the cell.  Mask here so the
+         * conditioner sees exactly what the health tests scored - they mask
+         * already - and no high bits leak into the hash. */
+        out[i] = WC_OCTET(out[i]);
+    }
+
+    return 0;
+}
+
+/* SP800-90B 4.4.1 RCT and 4.4.2 APT over every octet drawn from a source.
+ * Returns at the offending sample so the rest of the buffer cannot scrub the
+ * state that detected it, and latches the failure. */
+static int NoiseSrc_HealthTest(wc_NoiseSrc* src, const byte* buf, word32 len,
+                               int srcIdx)
+{
+    wc_NoiseHealth* st;
+    word32 i;
+    word16 s;
+
+    if (srcIdx < 0 || srcIdx >= (int)src->numSrc) {
+        return BAD_FUNC_ARG;
+    }
+    st = &src->health[srcIdx];
+
+    for (i = 0; i < len; i++) {
+        s = (word16)WC_OCTET(buf[i]);
+
+        if (!st->started) {
+            st->started  = 1;
+            st->rctLast  = s;
+            st->rctCount = 1;
+            st->aptRef   = s;
+            st->aptCount = 1;
+            st->aptPos   = 1;
+            continue;
+        }
+
+        if (s == st->rctLast) {
+            st->rctCount++;
+            if (st->rctCount >= src->rctCutoff) {
+                if (srcIdx == 0) {
+                    src->failed = ENTROPY_RT_E;
+                }
+                return ENTROPY_RT_E;
+            }
+        }
+        else {
+            st->rctLast  = s;
+            st->rctCount = 1;
+        }
+
+        if (st->aptPos >= src->aptWindow) {
+            st->aptRef   = s;
+            st->aptCount = 1;
+            st->aptPos   = 1;
+        }
+        else {
+            if (s == st->aptRef) {
+                st->aptCount++;
+                if (st->aptCount >= src->aptCutoff) {
+                    if (srcIdx == 0) {
+                        src->failed = ENTROPY_APT_E;
+                    }
+                    return ENTROPY_APT_E;
+                }
+            }
+            st->aptPos++;
+        }
+    }
+
+    return 0;
+}
+
+int wc_NoiseSrc_Init(wc_NoiseSrc* src)
+{
+    word32 done;
+    word32 take;
+    word32 need;
+    int i;
+    int ret;
+
+    if (src == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    if (src->failed != 0) {
+        return src->failed;
+    }
+    if (src->inited) {
+        return 0;
+    }
+
+    if (src->sampleCb == NULL || src->tag == NULL || src->work == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    if (src->numSrc < 1 || src->numSrc > WC_NOISE_SRC_MAX) {
+        return BAD_FUNC_ARG;
+    }
+    if (src->hmin < 1 || src->hmin > 100 || src->margin < 1) {
+        return BAD_FUNC_ARG;
+    }
+    if (src->rctCutoff < 2 || src->aptCutoff < 2 || src->aptWindow < 2) {
+        return BAD_FUNC_ARG;
+    }
+    /* Below one APT window the startup pass never exercises that test. */
+    if (src->startupOctets < (word32)src->aptWindow) {
+        return BAD_FUNC_ARG;
+    }
+
+    src->rawPerSrc = WC_NOISE_RAW_PER_SRC(src->hmin, src->margin);
+    need = src->rawPerSrc * (word32)src->numSrc;
+    if (src->rawPerSrc == 0 || src->workSz < need) {
+        return BUFFER_E;
+    }
+
+    XMEMSET(src->health, 0, sizeof(src->health));
+    src->chunkCtr = 0;
+    src->degraded = 0;
+
+    /* SP800-90B 4.3: push startupOctets per source through the continuous
+     * tests - more than one APT window - before releasing anything. */
+    for (i = 0; i < (int)src->numSrc; i++) {
+        for (done = 0; done < src->startupOctets; done += take) {
+            take = src->startupOctets - done;
+            if (take > src->rawPerSrc) {
+                take = src->rawPerSrc;
+            }
+            /* Sampler errors and test verdicts are handled differently, so
+             * keep them apart: a callback error means the hardware did not
+             * answer and stays retryable for every source, while only a test
+             * verdict drops or latches. */
+            ret = NoiseSrc_Gather(src, src->work, take, i);
+            if (ret != 0) {
+                ForceZero(src->work, src->workSz);
+                return ret;
+            }
+            ret = NoiseSrc_HealthTest(src, src->work, take, i);
+            if (ret != 0) {
+                if (i == 0) {
+                    ForceZero(src->work, src->workSz);
+                    return ret;   /* credited source: fail closed */
+                }
+                /* Uncredited: drop it and keep going - see the latch policy
+                 * note at the top of this module. */
+                src->degraded |= (word16)(1U << i);
+                ret = 0;
+                break;
+            }
+        }
+    }
+
+    ForceZero(src->work, src->workSz);
+    src->inited = 1;
+    return 0;
+}
+
+void wc_NoiseSrc_Free(wc_NoiseSrc* src)
+{
+    if (src == NULL) {
+        return;
+    }
+
+    if (src->work != NULL && src->workSz > 0) {
+        ForceZero(src->work, src->workSz);
+    }
+    XMEMSET(src->health, 0, sizeof(src->health));
+    src->chunkCtr = 0;
+    src->failed   = 0;
+    src->degraded = 0;
+    src->inited   = 0;
+}
+
+int wc_NoiseSrc_GetRaw(wc_NoiseSrc* src, byte* output, word32 len, int srcIdx)
+{
+    int ret;
+
+    if (src == NULL || output == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    /* Before _Init(): numSrc is caller configuration, so a bad index need not
+     * pay for the startup test or burn hardware entropy first. */
+    if (srcIdx < 0 || srcIdx >= (int)src->numSrc) {
+        return BAD_FUNC_ARG;
+    }
+    if (src->failed != 0) {
+        return src->failed;
+    }
+
+    ret = wc_NoiseSrc_Init(src);
+    if (ret != 0) {
+        return ret;
+    }
+
+    ret = NoiseSrc_Gather(src, output, len, srcIdx);
+    if (ret != 0) {
+        ForceZero(output, len);
+    }
+    return ret;
+}
+
+int wc_NoiseSrc_GenerateSeed(wc_NoiseSrc* src, byte* output, word32 sz)
+{
+#ifdef WOLFSSL_SMALL_STACK
+    wc_Sha256* sha = NULL;
+#else
+    wc_Sha256 sha[1];
+#endif
+    byte digest[WC_NOISE_CHUNK_SZ];
+    byte ctrBuf[4];
+    byte* raw;
+    byte* outStart;
+    word32 outLen;
+    word32 take;
+    word16 contributed;
+    int i;
+    int ret;
+
+    if (src == NULL || output == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    if (sz == 0) {
+        return 0;
+    }
+    if (src->failed != 0) {
+        return src->failed;
+    }
+
+    /* Kept so a mid-way failure can wipe what already landed: no caller
+     * should ever see a partially-filled seed buffer. */
+    outStart = output;
+    outLen   = sz;
+
+    XMEMSET(digest, 0, sizeof(digest));
+
+    ret = wc_NoiseSrc_Init(src);
+    if (ret != 0) {
+        return ret;
+    }
+
+#ifdef WOLFSSL_SMALL_STACK
+    sha = (wc_Sha256*)XMALLOC(sizeof(wc_Sha256), NULL, DYNAMIC_TYPE_TMP_BUFFER);
+    if (sha == NULL) {
+        return MEMORY_E;
+    }
+#endif
+
+    while (sz > 0) {
+        contributed = 0;
+        for (i = 0; i < (int)src->numSrc; i++) {
+            if ((src->degraded & (word16)(1U << i)) != 0) {
+                continue;   /* uncredited source already dropped */
+            }
+            raw = src->work + ((word32)i * src->rawPerSrc);
+
+            /* A sampler error propagates for any source and is retryable;
+             * only a health-test verdict drops or latches. */
+            ret = NoiseSrc_Gather(src, raw, src->rawPerSrc, i);
+            if (ret != 0) {
+                goto out;
+            }
+            ret = NoiseSrc_HealthTest(src, raw, src->rawPerSrc, i);
+            if (ret != 0) {
+                if (i == 0) {
+                    goto out;  /* fail closed; HealthTest latched src->failed */
+                }
+                src->degraded |= (word16)(1U << i);
+                ret = 0;
+                continue;
+            }
+            contributed |= (word16)(1U << i);
+        }
+
+        ret = wc_InitSha256(sha);
+        if (ret != 0) {
+            ForceZero(sha, sizeof(*sha));
+            goto out;
+        }
+
+        src->chunkCtr++;
+        ctrBuf[0] = WC_OCTET(src->chunkCtr >> 24);
+        ctrBuf[1] = WC_OCTET(src->chunkCtr >> 16);
+        ctrBuf[2] = WC_OCTET(src->chunkCtr >> 8);
+        ctrBuf[3] = WC_OCTET(src->chunkCtr);
+
+        ret = wc_Sha256Update(sha, (const byte*)src->tag,
+                              (word32)XSTRLEN(src->tag));
+        if (ret == 0) {
+            ret = wc_Sha256Update(sha, ctrBuf, (word32)sizeof(ctrBuf));
+        }
+        for (i = 0; (ret == 0) && (i < (int)src->numSrc); i++) {
+            if ((contributed & (word16)(1U << i)) == 0) {
+                continue;   /* not gathered this chunk - never hash stale data */
+            }
+            raw = src->work + ((word32)i * src->rawPerSrc);
+            ret = wc_Sha256Update(sha, raw, src->rawPerSrc);
+        }
+        if (ret == 0) {
+            ret = wc_Sha256Final(sha, digest);
+        }
+        wc_Sha256Free(sha);
+        ForceZero(sha, sizeof(*sha));
+        if (ret != 0) {
+            goto out;
+        }
+
+        take = (sz < (word32)WC_NOISE_CHUNK_SZ) ? sz
+                                                : (word32)WC_NOISE_CHUNK_SZ;
+        XMEMCPY(output, digest, take);
+        output += take;
+        sz -= take;
+    }
+
+out:
+    if (ret != 0) {
+        ForceZero(outStart, outLen);
+    }
+    ForceZero(digest, sizeof(digest));
+    ForceZero(src->work, src->workSz);
+#ifdef WOLFSSL_SMALL_STACK
+    XFREE(sha, NULL, DYNAMIC_TYPE_TMP_BUFFER);
+#endif
+    return ret;
+}
+
+int wc_NoiseSrc_SelfTest(wc_NoiseSrc* src)
+{
+    /* Tests RAW noise, not conditioned seeds: the hashed chunk counter makes
+     * two GenerateSeed() outputs differ even with every source dead. */
+    byte* a;
+    byte* b;
+    word32 len;
+    word32 i;
+    byte diff;
+    int s;
+    int ret;
+
+    if (src == NULL) {
+        return BAD_FUNC_ARG;
+    }
+
+    ret = wc_NoiseSrc_Init(src);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Two gathers side by side in the work buffer. */
+    len = src->workSz / 2U;
+    if (len > 64U) {
+        len = 64U;
+    }
+    if (len == 0U) {
+        return BUFFER_E;
+    }
+    a = src->work;
+    b = src->work + len;
+
+    for (s = 0; s < (int)src->numSrc; s++) {
+        if ((src->degraded & (word16)(1U << s)) != 0) {
+            continue;   /* already dropped - no point re-testing it */
+        }
+        ret = NoiseSrc_Gather(src, a, len, s);
+        if (ret == 0) {
+            ret = NoiseSrc_Gather(src, b, len, s);
+        }
+        if (ret != 0) {
+            break;
+        }
+
+        /* A source stuck at any constant - including one whose clock was
+         * never enabled - produces identical gathers. */
+        /* ConstantCompare, not XMEMCMP: raw pre-conditioning samples. */
+        if (ConstantCompare(a, b, (int)len) == 0) {
+            ret = ENTROPY_RT_E;
+            if (s == 0) {
+                src->failed = ret;
+                break;
+            }
+            src->degraded |= (word16)(1U << s);
+            ret = 0;
+            continue;
+        }
+
+        /* Constant-octet check, accumulated rather than early-exit. */
+        diff = 0;
+        for (i = 1; i < len; i++) {
+            diff |= (byte)(a[i] ^ a[0]);
+        }
+        if (diff == 0) {
+            ret = ENTROPY_RT_E;
+            if (s == 0) {
+                src->failed = ret;
+                break;
+            }
+            src->degraded |= (word16)(1U << s);
+            ret = 0;
+            continue;
+        }
+    }
+
+    /* A gather error above is deliberately not latched - see the policy note
+     * at the top of this module. */
+    ForceZero(src->work, src->workSz);
+
+    return ret;
+}
+
+#endif /* WOLFSSL_NOISE_SRC */
 
 
 /* Begin wc_GenerateSeed Implementations */
@@ -4253,6 +8347,14 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
 #elif defined(STM32_RNG)
      /* Generate a RNG seed using the hardware random number generator
       * on the STM32F2/F4/F7/L4. */
+    #include <wolfssl/wolfcrypt/port/st/stm32.h>
+        /* Pulls in WC_STM32_RNG_CLK_ENABLE for WOLFSSL_STM32_BARE builds */
+    #ifdef WC_STM32_RNG_DIAG
+        /* The WC_STM32_RNG_DIAG paths below use printf(); pull in stdio.h so the
+         * file compiles on strict C99+ toolchains when diagnostics are enabled. */
+        #include <stdio.h>
+    #endif
+
 
     #ifdef WOLFSSL_STM32_CUBEMX
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
@@ -4321,6 +8423,118 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     #endif
 
 
+    /* Bounded poll for DRDY, plus recovery from SECS / CECS. The
+     * unbounded `while (DRDY == 0)` loop in the original code spins
+     * forever on chips where the RNG kernel clock is unstable
+     * (e.g. WL55 with RNGSEL = MSI under sustained ECDSA-key-gen
+     * load), because once the IP latches a Seed-error or Clock-
+     * error condition it stops asserting DRDY. Per the STM32 RM
+     * recovery sequence: clear SEIS/CEIS, toggle RNGEN, discard the
+     * stale words sitting in the RNG output, then retry. */
+    #ifndef STM32_BARE_RNG_BYTE_TIMEOUT
+        #define STM32_BARE_RNG_BYTE_TIMEOUT 0x40000
+    #endif
+    #ifndef STM32_BARE_RNG_MAX_RETRIES
+        #define STM32_BARE_RNG_MAX_RETRIES 8
+    #endif
+
+    /* Bring the direct-register RNG to a producing state: clock enable, the
+     * new-gen (C5) NIST conditioning under CONDRST on the first call, and
+     * RNGEN. Mutex-free -- the caller must already hold the crypto HW mutex.
+     * Shared by wc_GenerateSeed (below) and the SAES self-init path
+     * (Stm32SaesEnsureRng), so a cold DHUK/SAES operation no longer requires a
+     * prior wc_InitRng. Returns 0, or RNG_FAILURE_E if the conditioning
+     * soft-reset never clears. */
+    WOLFSSL_LOCAL int wc_stm32_rng_ensure_ready(void)
+    {
+        word32 t = 0;
+        (void)t;
+
+    #ifndef STM32_NUTTX_RNG
+        /* enable RNG peripheral clock */
+        #ifdef WC_STM32_RNG_CLK_ENABLE
+            WC_STM32_RNG_CLK_ENABLE();
+        #else
+            /* Default for F4/F7/L4/L5/U5/H5/H7 -- RNG on AHB2 */
+            RCC->AHB2ENR |= RCC_AHB2ENR_RNGEN;
+        #endif
+    #endif
+
+        /* On the new-gen STM32C5 RNG IP the CR register is locked at
+         * reset (CONFIGLOCK clear, but the IP refuses to produce data
+         * until a NIST-compliant CONFIG1/2/3 + NSCR + HTCR sequence
+         * has been written under CONDRST). The HAL ships canonical
+         * candidate values in the device header (RNG_CAND_NIST_*).
+         * Detect the family by presence of that symbol -- on chips
+         * without it (F4/F7/L4/U5/H7/H5/WL/etc.) skip. Do this only
+         * on the first call (RNGEN clear) so subsequent calls don't
+         * disturb a running peripheral. */
+    #if defined(RNG_CAND_NIST_CR_VALUE) && defined(RNG_CR_CONDRST) && \
+        !defined(WC_STM32_RNG_NO_NIST_INIT)
+        if ((WC_RNG_CR & RNG_CR_RNGEN) == 0U) {
+        #ifdef RNG_SR_BUSY
+            /* HAL flow: drain BUSY before writing CR. */
+            t = 0;
+            while ((WC_RNG_SR & RNG_SR_BUSY) != 0U) {
+                if (++t >= STM32_BARE_RNG_BYTE_TIMEOUT) {
+                    break;
+                }
+            }
+        #endif
+            WC_RNG_CR = (uint32_t)RNG_CAND_NIST_CR_VALUE |
+                        (uint32_t)RNG_CR_CONDRST;
+        #ifdef RNG_CAND_NIST_NSCR_VALUE
+            RNG->NSCR = (uint32_t)RNG_CAND_NIST_NSCR_VALUE;
+        #endif
+        #ifdef RNG_CAND_NIST_HTCR_VALUE
+            RNG->HTCR[0] = (uint32_t)RNG_CAND_NIST_HTCR_VALUE;
+        #endif
+            /* Clear CONDRST and wait for the IP to mirror it back. The
+             * STM32 HAL polls RNG_CR.CONDRST (not SR.BUSY) for completion
+             * of the conditioning soft-reset; SR.BUSY drops earlier in
+             * the seed-pull pipeline on at least the C5 IP and reading
+             * it as "conditioning done" trips a SECS=1 a few microseconds
+             * later when RNGEN goes high. Bounded so a misconfigured
+             * kernel clock returns a clean error instead of hanging. */
+            WC_RNG_CR &= ~(uint32_t)RNG_CR_CONDRST;
+            t = 0;
+            while ((WC_RNG_CR & RNG_CR_CONDRST) != 0U) {
+                if (++t >= STM32_BARE_RNG_BYTE_TIMEOUT) {
+#ifdef WC_STM32_RNG_DIAG
+                    printf("[RNG] CONDRST stuck CR=%08lx SR=%08lx\n",
+                           (unsigned long)WC_RNG_CR,
+                           (unsigned long)WC_RNG_SR);
+#endif
+                    return RNG_FAILURE_E;
+                }
+            }
+#ifdef WC_STM32_RNG_DIAG
+            printf("[RNG] post-NIST CR=%08lx SR=%08lx t=%lu\n",
+                   (unsigned long)WC_RNG_CR,
+                   (unsigned long)WC_RNG_SR,
+                   (unsigned long)t);
+#endif
+        }
+    #endif
+
+        /* enable RNG interrupt, set IE bit in RNG->CR register */
+        WC_RNG_CR |= RNG_CR_IE;
+
+        /* enable RNG, set RNGEN bit in RNG->CR. Activates RNG,
+         * RNG_LFSR, and error detector. WC_STM32_RNG_CED_DISABLE
+         * additionally sets CR.CED=1 to suppress the clock-error
+         * detection -- the Linux STM32 RNG driver does this and on
+         * the C5 silicon the CED detector trips on a (perfectly fine)
+         * 48 MHz kernel clock for reasons unclear in the RM. */
+#ifdef WC_STM32_RNG_CED_DISABLE
+        WC_RNG_CR |= RNG_CR_RNGEN | RNG_CR_CED;
+#else
+        WC_RNG_CR |= RNG_CR_RNGEN;
+#endif
+
+        return 0;
+    }
+
     /* Generate a RNG seed using the hardware RNG on the STM32F427
      * directly, following steps outlined in STM32F4 Reference
      * Manual (Chapter 24) for STM32F4xx family. */
@@ -4328,6 +8542,10 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
         int ret;
         word32 i;
+        word32 t;
+        word32 guard;
+        word32 retries;
+        word32 sr;
         (void)os;
 
         ret = wolfSSL_CryptHwMutexLock();
@@ -4335,31 +8553,106 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
             return ret;
         }
 
-    #ifndef STM32_NUTTX_RNG
-        /* enable RNG peripheral clock */
-        RCC->AHB2ENR |= RCC_AHB2ENR_RNGEN;
-    #endif
-
-        /* enable RNG interrupt, set IE bit in RNG->CR register */
-        WC_RNG_CR |= RNG_CR_IE;
-
-        /* enable RNG, set RNGEN bit in RNG->CR. Activates RNG,
-         * RNG_LFSR, and error detector */
-        WC_RNG_CR |= RNG_CR_RNGEN;
-
-        /* verify no errors, make sure SEIS and CEIS bits are 0
-         * in RNG->SR register */
-        if (WC_RNG_SR & (RNG_SR_SECS | RNG_SR_CECS)) {
+        /* Clock enable + (C5) NIST conditioning + RNGEN, shared with the SAES
+         * self-init path. Mutex-free helper; we hold the mutex. */
+        ret = wc_stm32_rng_ensure_ready();
+        if (ret != 0) {
             wolfSSL_CryptHwMutexUnLock();
-            return RNG_FAILURE_E;
+            return ret;
         }
 
-        for (i = 0; i < sz; i++) {
-            /* wait until RNG number is ready */
-            while ((WC_RNG_SR & RNG_SR_DRDY) == 0) { }
+        /* (No early SECS/CECS bail here.) The HAL doesn't check error
+         * status immediately after RNGEN -- the IP needs a few cycles
+         * after enable for the first seed pull, and a transient SEIS/SECS
+         * can latch and resolve itself through the auto-reset that the
+         * retry loop below already handles. Bailing here returned
+         * RNG_FAILURE_E (-199) on first-init on the STM32C5 silicon.
+         * NOTE: this branch serves all direct-register STM32 RNG users
+         * (WOLFSSL_STM32F427_RNG / WOLFSSL_STM32_RNG_NOLIB / STM32_NUTTX_RNG),
+         * not only the BARE/C5 port, so this bounded-retry + recovery applies
+         * to every NOLIB family. It is strictly more robust than the old early
+         * fast-fail: it still returns RNG_FAILURE_E after the retry budget. */
 
-            /* get value */
-            output[i] = WC_RNG_DR;
+        for (i = 0; i < sz; i++) {
+            retries = 0;
+            for (;;) {
+                t = 0;
+                /* Sample SR once before the loop so the post-loop
+                 * happy-path / error checks have a defined value even
+                 * if STM32_BARE_RNG_BYTE_TIMEOUT is configured to 0. */
+                sr = WC_RNG_SR;
+                /* Bounded DRDY poll -- breaks on either DRDY or any
+                 * error indication (SECS/CECS). */
+                while (t < STM32_BARE_RNG_BYTE_TIMEOUT) {
+                    sr = WC_RNG_SR;
+                    if ((sr & (RNG_SR_DRDY | RNG_SR_SECS |
+                               RNG_SR_CECS)) != 0U) {
+                        break;
+                    }
+                    t++;
+                }
+
+                /* Happy path: data ready and no error. */
+                if ((sr & RNG_SR_DRDY) != 0U &&
+                    (sr & (RNG_SR_SECS | RNG_SR_CECS)) == 0U) {
+                    output[i] = WC_RNG_DR;
+                    break;
+                }
+
+                /* Either timed out or an error latched. Recover. */
+                if (++retries > STM32_BARE_RNG_MAX_RETRIES) {
+#ifdef WC_STM32_RNG_DIAG
+                    printf("[RNG] retry max byte=%lu sr=%08lx CR=%08lx\n",
+                           (unsigned long)i,
+                           (unsigned long)sr,
+                           (unsigned long)WC_RNG_CR);
+#endif
+                    wolfSSL_CryptHwMutexUnLock();
+                    return RNG_FAILURE_E;
+                }
+#ifdef WC_STM32_RNG_DIAG
+                printf("[RNG] retry byte=%lu retries=%lu sr=%08lx\n",
+                       (unsigned long)i,
+                       (unsigned long)retries,
+                       (unsigned long)sr);
+#endif
+
+                /* Recovery sequence (per STM32 RM RNG chapter):
+                 *   1. Clear SEIS / CEIS interrupt status by writing 0
+                 *      to those bits. All other SR bits are read-only
+                 *      status indicators (DRDY / BUSY / SECS / CECS);
+                 *      writing 0 to them has no effect per the RM, so
+                 *      a plain 0 write is safe and avoids the
+                 *      read-modify-write hitting any reserved bits the
+                 *      IP revision may add later.
+                 *   2. Toggle RNGEN off then on to drop any stale
+                 *      LFSR state that may be tainted by the error.
+                 *   3. Discard four DR reads to flush the pipeline
+                 *      (only meaningful when DRDY is set; otherwise
+                 *      the reads are harmless and bounded). The 'guard'
+                 *      counter bounds the loop independently of 't' so a
+                 *      marginal kernel clock (DRDY stays 0, no error
+                 *      latched) cannot spin forever -- it falls through
+                 *      to the outer retry/backoff instead of hanging. */
+                WC_RNG_SR = 0;
+                WC_RNG_CR &= ~RNG_CR_RNGEN;
+                WC_RNG_CR |= RNG_CR_RNGEN;
+                t = 0;
+                guard = 0;
+                while (t < 4U && guard < STM32_BARE_RNG_BYTE_TIMEOUT) {
+                    guard++;
+                    if ((WC_RNG_SR & RNG_SR_DRDY) != 0U) {
+                        (void)WC_RNG_DR;
+                        t++;
+                    }
+                    else if ((WC_RNG_SR &
+                              (RNG_SR_SECS | RNG_SR_CECS)) != 0U) {
+                        /* Clock-error during recovery -- bail and
+                         * let the outer retry handle it. */
+                        break;
+                    }
+                }
+            }
         }
 
         wolfSSL_CryptHwMutexUnLock();
@@ -4607,10 +8900,12 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
             return BAD_FUNC_ARG;
         }
 
-        if (wnr_mutex_init == 0) {
+    #ifndef WOLFSSL_MUTEX_INITIALIZER
+        if (WOLFSSL_ATOMIC_LOAD(wnr_mutex_inited) != 2) {
             WOLFSSL_MSG("netRandom context must be created before use");
             return RNG_FAILURE_E;
         }
+    #endif
 
         if (wc_LockMutex(&wnr_mutex) != 0) {
             WOLFSSL_MSG("Bad Lock Mutex wnr_mutex");
@@ -4913,10 +9208,6 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
 
 #elif defined(WOLFSSL_LINUXKM)
 
-    #ifndef LINUXKM_LKCAPI_REGISTER_HASH_DRBG_DEFAULT
-        #include <linux/random.h>
-    #endif
-
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
         (void)os;
@@ -5122,10 +9413,57 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
         #include <posix/time.h>
     #endif
 
+    #if KERNEL_VERSION_NUMBER >= 0x30100
+        #include <zephyr/devicetree.h>
+    #else
+        #include <devicetree.h>
+    #endif
+
+    #if defined(CONFIG_ENTROPY_HAS_DRIVER) && DT_HAS_CHOSEN(zephyr_entropy)
+        #if KERNEL_VERSION_NUMBER >= 0x30100
+            #include <zephyr/device.h>
+            #include <zephyr/drivers/entropy.h>
+        #else
+            #include <device.h>
+            #include <drivers/entropy.h>
+        #endif
+    #endif
+
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
+    /* Seed the DRBG straight from the hardware entropy driver when the platform
+     * exposes one (a zephyr,entropy chosen node), so wolfCrypt gets
+     * cryptographic-quality seed material instead of the general-purpose
+     * sys_rand_get(). A dead source returns an error, which makes wc_InitRng()
+     * fail (RNG_FAILURE_E) rather than yield weak output. Boards that set
+     * CONFIG_ENTROPY_HAS_DRIVER without a chosen entropy node fall back to
+     * sys_rand_get() rather than failing the build. */
+    #if defined(CONFIG_ENTROPY_HAS_DRIVER) && DT_HAS_CHOSEN(zephyr_entropy)
+        const struct device *dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_entropy));
+        word32 off = 0;
+        word32 rem;
+        uint16_t chunk;
+
+        (void)os;
+        if (!device_is_ready(dev)) {
+            return RNG_FAILURE_E;
+        }
+        /* entropy_get_entropy() takes a uint16_t length; chunk the request so
+         * any word32 seed size is honored without silent truncation. */
+        while (off < sz) {
+            rem = sz - off;
+            chunk = (rem > 0xFFFFU) ? (uint16_t)0xFFFFU : (uint16_t)rem;
+            if (entropy_get_entropy(dev, (uint8_t *)output + off, chunk) != 0) {
+                return RNG_FAILURE_E;
+            }
+            off += chunk;
+        }
+        return 0;
+    #else
+        (void)os;
         sys_rand_get(output, sz);
         return 0;
+    #endif
     }
 
 #elif defined(WOLFSSL_TELIT_M2MB)
@@ -5158,19 +9496,12 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
      #include <wolfssl/wolfcrypt/port/nxp/se050_port.h>
 
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz){
-        int ret = 0;
-
         (void)os;
 
         if (output == NULL) {
             return BUFFER_E;
         }
-        ret = wolfSSL_CryptHwMutexLock();
-        if (ret == 0) {
-            ret = se050_get_random_number(sz, output);
-            wolfSSL_CryptHwMutexUnLock();
-        }
-        return ret;
+        return se050_get_random_number(sz, output);
     }
 
 #elif defined(WOLFSSL_NXP_RNG_1)
@@ -5187,6 +9518,186 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
             return RNG_FAILURE_E;
 
         return 0;
+    }
+
+#elif defined(WOLFSSL_VA416X0_TRNG)
+    /* Vorago VA416x0 hardware TRNG (an Arm CryptoCell-style entropy block).
+     * Used to seed the SP800-90A Hash-DRBG (keep HAVE_HASHDRBG enabled); the
+     * TRNG yields only ~1.25 kb/s of entropy, so the DRBG expands it.
+     *
+     * Build: define WOLFSSL_VA416X0_TRNG, and have the VA416xx SDK header
+     * "va416xx.h" on the include path (provides VOR_SYSCONFIG / VOR_TRNG and
+     * the register field macros). There is no SDK HAL driver for the TRNG, so
+     * it is accessed at the register level below. The tuning macros
+     * WOLFSSL_VA416X0_TRNG_SAMPLE_CNT, WOLFSSL_VA416X0_TRNG_MAX_RETRY and
+     * WOLFSSL_VA416X0_TRNG_TIMEOUT have overridable defaults defined below.
+     *
+     * Note: the TRNG PERIPHERAL_RESET bit is active low and must be released
+     * or every TRNG register write is silently ignored. */
+    #include "va416xx.h"
+
+    /* Ring-oscillator sample count (must be non-zero). May need tuning on
+     * hardware: too low results in repeated autocorrelation/CRNGT errors. */
+    #ifndef WOLFSSL_VA416X0_TRNG_SAMPLE_CNT
+        #define WOLFSSL_VA416X0_TRNG_SAMPLE_CNT 1000
+    #endif
+    #ifndef WOLFSSL_VA416X0_TRNG_MAX_RETRY
+        #define WOLFSSL_VA416X0_TRNG_MAX_RETRY 10
+    #endif
+    /* Max poll iterations waiting for one 192-bit entropy block before
+     * giving up (guards against a non-responsive TRNG). */
+    #ifndef WOLFSSL_VA416X0_TRNG_TIMEOUT
+        #define WOLFSSL_VA416X0_TRNG_TIMEOUT 1000000
+    #endif
+    #if WOLFSSL_VA416X0_TRNG_SAMPLE_CNT == 0
+        #error "WOLFSSL_VA416X0_TRNG_SAMPLE_CNT must be non-zero"
+    #endif
+    #if WOLFSSL_VA416X0_TRNG_TIMEOUT == 0
+        #error "WOLFSSL_VA416X0_TRNG_TIMEOUT must be non-zero"
+    #endif
+
+    int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
+    {
+        word32 i;
+        word32 reg;
+        word32 chunk;
+        word32 timeout;
+        word32 entropy[6]; /* 192-bit entropy holding register */
+        int retry;
+        int ret;
+
+        (void)os;
+
+        if (output == NULL) {
+            return BUFFER_E;
+        }
+
+        /* serialize access to the shared TRNG hardware */
+        ret = wolfSSL_CryptHwMutexLock();
+        if (ret != 0) {
+            return ret;
+        }
+
+        /* enable the TRNG peripheral clock and release it from reset (the
+         * reset bit is active low: 0 = held in reset, 1 = released) */
+        VOR_SYSCONFIG->PERIPHERAL_CLK_ENABLE |=
+            SYSCONFIG_PERIPHERAL_CLK_ENABLE_TRNG_Msk;
+        VOR_SYSCONFIG->PERIPHERAL_RESET |=
+            SYSCONFIG_PERIPHERAL_RESET_TRNG_Msk;
+
+        /* mask all interrupts (poll instead) and clear any stale status */
+        VOR_TRNG->IMR = TRNG_IMR_EHR_VALID_INT_MASK_Msk |
+                        TRNG_IMR_AUTOCORR_ERR_INT_MASK_Msk |
+                        TRNG_IMR_CRNGT_ERR_INT_MASK_Msk |
+                        TRNG_IMR_VN_ERR_INT_MASK_Msk;
+        VOR_TRNG->ICR = TRNG_ICR_EHR_VALID_Msk | TRNG_ICR_AUTOCORR_ERR_Msk |
+                        TRNG_ICR_CRNGT_ERR_Msk | TRNG_ICR_VN_ERR_Msk;
+
+        /* CONFIG = 0 sets RND_SRC_SEL = 0, which selects the ring-oscillator
+         * entropy source (per the VA416x0 reference manual) and clears the
+         * rest of the register; set the sample rate and keep the health tests
+         * enabled (no DEBUG_CONTROL bypass) */
+        VOR_TRNG->CONFIG = 0;
+        VOR_TRNG->SAMPLE_CNT1 = WOLFSSL_VA416X0_TRNG_SAMPLE_CNT;
+        VOR_TRNG->DEBUG_CONTROL = 0;
+
+        for (i = 0; i < sz; ) {
+            retry = 0;
+            timeout = WOLFSSL_VA416X0_TRNG_TIMEOUT;
+
+            /* start entropy collection */
+            VOR_TRNG->RND_SOURCE_ENABLE =
+                TRNG_RND_SOURCE_ENABLE_RND_SRC_EN_Msk;
+
+            for (;;) {
+                reg = VOR_TRNG->ISR;
+                if ((reg & (TRNG_ISR_AUTOCORR_ERR_Msk |
+                            TRNG_ISR_CRNGT_ERR_Msk |
+                            TRNG_ISR_VN_ERR_Msk)) != 0) {
+                    /* health-test failure: stop, then clear the error flags
+                     * and any latched EHR_VALID so a stale/invalid block is
+                     * not consumed on the next iteration, then re-collect */
+                    VOR_TRNG->RND_SOURCE_ENABLE = 0;
+                    VOR_TRNG->ICR = TRNG_ICR_EHR_VALID_Msk |
+                                    TRNG_ICR_AUTOCORR_ERR_Msk |
+                                    TRNG_ICR_CRNGT_ERR_Msk |
+                                    TRNG_ICR_VN_ERR_Msk;
+                    if (++retry > WOLFSSL_VA416X0_TRNG_MAX_RETRY) {
+                        ForceZero(entropy, sizeof(entropy));
+                        wolfSSL_CryptHwMutexUnLock();
+                        return RNG_FAILURE_E;
+                    }
+                    timeout = WOLFSSL_VA416X0_TRNG_TIMEOUT;
+                    VOR_TRNG->RND_SOURCE_ENABLE =
+                        TRNG_RND_SOURCE_ENABLE_RND_SRC_EN_Msk;
+                    continue;
+                }
+                if ((VOR_TRNG->VALID & TRNG_VALID_EHR_VALID_Msk) != 0) {
+                    break;
+                }
+                if (--timeout == 0) {
+                    VOR_TRNG->RND_SOURCE_ENABLE = 0;
+                    ForceZero(entropy, sizeof(entropy));
+                    wolfSSL_CryptHwMutexUnLock();
+                    return RNG_FAILURE_E;
+                }
+            }
+
+            /* read 192 bits of entropy (6 x 32-bit words) */
+            entropy[0] = VOR_TRNG->EHR_DATA0;
+            entropy[1] = VOR_TRNG->EHR_DATA1;
+            entropy[2] = VOR_TRNG->EHR_DATA2;
+            entropy[3] = VOR_TRNG->EHR_DATA3;
+            entropy[4] = VOR_TRNG->EHR_DATA4;
+            entropy[5] = VOR_TRNG->EHR_DATA5;
+
+            /* reading EHR_DATA clears EHR_VALID; stop the source and ack */
+            VOR_TRNG->RND_SOURCE_ENABLE = 0;
+            VOR_TRNG->ICR = TRNG_ICR_EHR_VALID_Msk;
+
+            chunk = sz - i;
+            if (chunk > sizeof(entropy)) {
+                chunk = sizeof(entropy);
+            }
+            XMEMCPY(&output[i], (byte*)entropy, chunk);
+            i += chunk;
+        }
+
+        ForceZero(entropy, sizeof(entropy)); /* scrub seed material from stack */
+        wolfSSL_CryptHwMutexUnLock();
+        return 0;
+    }
+
+#elif defined(WOLFSSL_C2000_ENTROPY)
+    /* TI C2000 (C28x) oscillator-jitter entropy source.  The part has no
+     * TRNG; the noise bit is the LSB of a Dual-Clock Comparator measurement,
+     * oversampled past its measured min-entropy, health-tested per SP800-90B
+     * 4.4 and SHA-256 conditioned before feeding the Hash-DRBG.
+     *
+     * Build: define WOLFSSL_C2000_ENTROPY and add
+     * wolfcrypt/src/port/ti/ti-c2000-entropy.c with the C2000Ware driverlib
+     * headers on the include path.  Tuning macros, hardware overrides and the
+     * characterization: wolfssl/wolfcrypt/port/ti/ti-c2000-entropy.h and
+     * IDE/C2000/README.md.
+     *
+     * Blocking by design: ~26 ms per 32-octet chunk per source at the default
+     * window, ~100 ms for a typical seed, ~420 ms for the one-time startup
+     * test.  Fine at boot, not for a control loop. */
+    #if !defined(HAVE_HASHDRBG)
+        #error "WOLFSSL_C2000_ENTROPY expects HAVE_HASHDRBG to expand the seed"
+    #endif
+
+    #include <wolfssl/wolfcrypt/port/ti/ti-c2000-entropy.h>
+
+    int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
+    {
+        (void)os;
+
+        if (output == NULL) {
+            return BUFFER_E;
+        }
+
+        return wc_c2000_GenerateSeed(output, sz);
     }
 
 #elif defined(DOLPHIN_EMULATOR) || defined (WOLFSSL_NDS)
@@ -5211,30 +9722,22 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
 #elif defined(MAX3266X_RNG)
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
-        #ifdef WOLFSSL_MAX3266X
         int status;
-        #endif /* WOLFSSL_MAX3266X */
         static int initDone = 0;
         (void)os;
         if (initDone == 0) {
-            #ifdef WOLFSSL_MAX3266X
             status = wolfSSL_HwRngMutexLock();
             if (status != 0) {
                 return status;
             }
-            #endif /* WOLFSSL_MAX3266X */
             if(MXC_TRNG_HealthTest() != 0) {
                 #ifdef DEBUG_WOLFSSL
                 WOLFSSL_MSG("TRNG HW Health Test Failed");
                 #endif /* DEBUG_WOLFSSL */
-                #ifdef WOLFSSL_MAX3266X
                 wolfSSL_HwRngMutexUnLock();
-                #endif /* WOLFSSL_MAX3266X */
                 return WC_HW_E;
             }
-            #ifdef WOLFSSL_MAX3266X
             wolfSSL_HwRngMutexUnLock();
-            #endif /* WOLFSSL_MAX3266X */
             initDone = 1;
         }
         return wc_MXC_TRNG_Random(output, sz);
@@ -5329,8 +9832,21 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
         int ret = 0;
+    /* Same condition as the seed-device block below: with
+     * ENTROPY_MEMUSE_FORCE_FAILURE the code that uses these is compiled out,
+     * and declaring them anyway is an unused-variable error under -Werror. */
+    #if defined(WC_RNG_SEED_DEVICE) && (!defined(HAVE_ENTROPY_MEMUSE) || \
+        !defined(ENTROPY_MEMUSE_FORCE_FAILURE))
+        byte*  devOut;
+        word32 devSz;
+        int    devFd;
+        int    devLen;
+    #endif
 
-        if (os == NULL) {
+        /* Validate output before any entropy backend dereferences it: some
+         * (e.g. glibc's vDSO getrandom()) fault on a NULL buffer rather than
+         * returning an error. Mirrors wc_RNG_GenerateBlock's NULL check. */
+        if (os == NULL || output == NULL) {
             return BAD_FUNC_ARG;
         }
 
@@ -5363,6 +9879,43 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     #endif
 
     #if !defined(HAVE_ENTROPY_MEMUSE) || !defined(ENTROPY_MEMUSE_FORCE_FAILURE)
+
+    #ifdef WC_RNG_SEED_DEVICE
+        /* Nominated entropy source, usually a hardware RNG. Best effort: on
+         * any failure fall through to the default sources below. Those refill
+         * the whole request from the start, so bytes a partial read left in
+         * output are overwritten rather than mixed in. */
+        devOut = output;
+        devSz  = sz;
+        devFd  = wc_open_cloexec(WC_RNG_SEED_DEVICE, O_RDONLY);
+        if (devFd != XBADFD) {
+            while (devSz > 0) {
+                errno = 0;
+                devLen = (int)read(devFd, devOut, devSz);
+                if (devLen < 0) {
+                    if (errno == EINTR)
+                        continue; /* interrupted, read again */
+                    break;
+                }
+                if (devLen == 0)
+                    break;        /* at EOF, will never fill the request */
+
+                devSz  -= (word32)devLen;
+                devOut += devLen;
+            }
+            close(devFd);
+        }
+        #if defined(DEBUG_WOLFSSL)
+            if (devSz == 0)
+                WOLFSSL_MSG("seeded from WC_RNG_SEED_DEVICE.");
+            else
+                WOLFSSL_MSG("WC_RNG_SEED_DEVICE unusable, using default.");
+        #endif /* DEBUG_WOLFSSL */
+        if (devSz == 0) {
+            /* success, we're done */
+            return 0;
+        }
+    #endif /* WC_RNG_SEED_DEVICE */
 
     #if defined(HAVE_INTEL_RDSEED) || defined(HAVE_AMD_RDSEED)
         if (IS_INTEL_RDSEED(intel_flags)) {
@@ -5431,25 +9984,27 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     #ifdef WOLFSSL_KEEP_RNG_SEED_FD_OPEN
         if (!os->seedFdOpen)
         {
+            os->fd = XBADFD;
         #ifndef NO_DEV_URANDOM /* way to disable use of /dev/urandom */
-            os->fd = wc_open_cloexec("/dev/urandom", O_RDONLY);
+            if (os->fd == XBADFD) {
+                os->fd = wc_open_cloexec("/dev/urandom", O_RDONLY);
             #if defined(DEBUG_WOLFSSL)
-                WOLFSSL_MSG("opened /dev/urandom.");
+                if (os->fd != XBADFD)
+                    WOLFSSL_MSG("opened /dev/urandom.");
             #endif /* DEBUG_WOLFSSL */
-            if (os->fd == XBADFD)
+            }
         #endif /* NO_DEV_URANDOM */
-            {
+            if (os->fd == XBADFD) {
                 /* may still have /dev/random */
                 os->fd = wc_open_cloexec("/dev/random", O_RDONLY);
             #if defined(DEBUG_WOLFSSL)
-                WOLFSSL_MSG("opened /dev/random.");
+                if (os->fd != XBADFD)
+                    WOLFSSL_MSG("opened /dev/random.");
             #endif /* DEBUG_WOLFSSL */
                 if (os->fd == XBADFD)
                     return OPEN_RAN_E;
-                else {
-                    os->keepSeedFdOpen = 0;
-                    os->seedFdOpen = 1;
-                }
+                os->keepSeedFdOpen = 0;
+                os->seedFdOpen = 1;
             }
             else {
                 os->keepSeedFdOpen = 1;
@@ -5457,18 +10012,22 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
             }
         }
     #else /* WOLFSSL_KEEP_RNG_SEED_FD_OPEN */
-        #ifndef NO_DEV_URANDOM /* way to disable use of /dev/urandom */
-        os->fd = wc_open_cloexec("/dev/urandom", O_RDONLY);
+        os->fd = XBADFD;
+    #ifndef NO_DEV_URANDOM /* way to disable use of /dev/urandom */
+        if (os->fd == XBADFD) {
+            os->fd = wc_open_cloexec("/dev/urandom", O_RDONLY);
         #if defined(DEBUG_WOLFSSL)
-            WOLFSSL_MSG("opened /dev/urandom.");
+            if (os->fd != XBADFD)
+                WOLFSSL_MSG("opened /dev/urandom.");
         #endif /* DEBUG_WOLFSSL */
-        if (os->fd == XBADFD)
-        #endif /* !NO_DEV_URANDOM */
-        {
+        }
+    #endif /* !NO_DEV_URANDOM */
+        if (os->fd == XBADFD) {
             /* may still have /dev/random */
             os->fd = wc_open_cloexec("/dev/random", O_RDONLY);
         #if defined(DEBUG_WOLFSSL)
-            WOLFSSL_MSG("opened /dev/random.");
+            if (os->fd != XBADFD)
+                WOLFSSL_MSG("opened /dev/random.");
         #endif /* DEBUG_WOLFSSL */
             if (os->fd == XBADFD)
                 return OPEN_RAN_E;
@@ -5479,7 +10038,8 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     #endif /* DEBUG_WOLFSSL */
         while (sz) {
             int len = (int)read(os->fd, output, sz);
-            if (len == -1) {
+            /* EOF never fills the request, don't retry forever */
+            if (len <= 0) {
                 ret = READ_RAN_E;
                 break;
             }
@@ -5531,8 +10091,10 @@ int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     int wc_GenerateSeed(OS_Seed* os, byte* output, word32 sz)
     {
         word32 i;
+        /* WC_OCTET, not (byte): the cast does not truncate where
+         * CHAR_BIT != 8, so sz > 256 would emit values above 0xFF. */
         for (i = 0; i < sz; i++ )
-            output[i] = (byte)i;
+            output[i] = WC_OCTET(i);
 
         (void)os;
 
@@ -5565,5 +10127,142 @@ int wc_hwrng_generate_block(byte *output, word32 sz)
     return ret;
 }
 #endif
+
+#ifdef WC_RNG_DEBUG_STATS
+
+/* Note on WC_RNG_DEBUG_STATS collection points:
+ *
+ * Placement doctrine: each counter is maintained at the single funnel that
+ * owns the distinction it records --
+ *
+ *   - reseed counts in Hash_DRBG_Reseed() (every reseed flavor routes
+ *     through it: interval backstop, Reseed_Now, RBGC, banked redemption);
+ *   - request/byte counts in the DRBG arm of wc_RNG_GenerateBlock()
+ *     (hardware-offload arms -- RDRAND, Silabs, async, cryptocb, custom --
+ *     are deliberately uncounted: these are DRBG-facility statistics);
+ *   - banked-seed redemption provenance in wc_RNG_DRBG_NextSeedNow_Nonce();
+ *   - seed health failures at the two sites that observe them per-instance
+ *     (PollAndReSeed(), NextSeedGenerate);
+ *   - chain-provenance bytes (RBGC_bytes_produced: output generated while
+ *     the instance's own RBGCStratum > 0) in the same generate funnel;
+ *   - pool byte accounting in wc_RNG_Pool_Extract(), under the consumer's
+ *     instance lock: bytes produced by reading from the pool, and bytes
+ *     requested but not fulfilled (empty-pool and partial-serve shortfall),
+ *     so requested == produced + missed on the capacity paths.  The
+ *     failed-DRBG burn path deliberately counts nothing: it is a failure
+ *     event (visible via rng->status), not a capacity signal.
+ *
+ * Counters are plain (non-atomic) adds/increments, and update under the owner's
+ * exclusive access (the lock contract shared by all WC_RNG operations) except
+ * where labeled racy: those are unreliable under concurrency, by design.  Every
+ * site carries its own #ifdef WC_RNG_DEBUG_STATS gate so the facility is
+ * removable outright with unifdef.
+ */
+
+WOLFSSL_API int wc_rng_debug_stats_snap(struct wc_rng_debug_stats_snapshot *s,
+                                        const WC_RNG *rng)
+{
+    if ((s == NULL) || (rng == NULL))
+        return BAD_FUNC_ARG;
+
+    s->_stats_total_bytes_requested = rng->_stats_total_bytes_requested;
+    s->_stats_total_bytes_produced  = rng->_stats_total_bytes_produced;
+    s->_stats_total_requests        = rng->_stats_total_requests;
+    s->_stats_reseeds               = rng->_stats_reseeds;
+    s->_stats_stirs                 = rng->_stats_stirs;
+    s->_stats_seed_failures         = rng->_stats_seed_failures;
+    s->_stats_locks_taken           = rng->_stats_locks_taken;
+    s->_stats_locks_released        = rng->_stats_locks_released;
+    s->_stats_locks_refused         = rng->_stats_locks_refused;
+#ifdef WC_RNG_HAVE_RBGC
+    s->_stats_RBGC_bytes_produced   = rng->_stats_RBGC_bytes_produced;
+    s->_stats_RBGC_reseeds          = rng->_stats_RBGC_reseeds;
+#endif
+#ifdef WC_RNG_HAVE_POOL
+    s->_stats_pool_bytes_produced   = rng->_stats_pool_bytes_produced;
+    s->_stats_pool_bytes_missed     = rng->_stats_pool_bytes_missed;
+#endif
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    s->_stats_nextseedsprimary_redeemed = rng->_stats_nextseedsprimary_redeemed;
+    s->_stats_nextseedsRBGC_redeemed = rng->_stats_nextseedsRBGC_redeemed;
+    s->_stats_nextstirs_redeemed    = rng->_stats_nextstirs_redeemed;
+    s->_stats_nextseedsbanked       = rng->_stats_nextseedsbanked;
+    s->_stats_nextstirs_banked      = rng->_stats_nextstirs_banked;
+#endif
+
+    return 0;
+}
+
+WOLFSSL_API int wc_rng_debug_stats_restore(
+    const struct wc_rng_debug_stats_snapshot *s,
+    WC_RNG *rng)
+{
+    if ((s == NULL) || (rng == NULL))
+        return BAD_FUNC_ARG;
+
+    rng->_stats_total_bytes_requested = s->_stats_total_bytes_requested;
+    rng->_stats_total_bytes_produced  = s->_stats_total_bytes_produced;
+    rng->_stats_total_requests        = s->_stats_total_requests;
+    rng->_stats_reseeds               = s->_stats_reseeds;
+    rng->_stats_stirs                 = s->_stats_stirs;
+    rng->_stats_seed_failures         = s->_stats_seed_failures;
+    rng->_stats_locks_taken           = s->_stats_locks_taken;
+    rng->_stats_locks_released        = s->_stats_locks_released;
+    rng->_stats_locks_refused         = s->_stats_locks_refused;
+#ifdef WC_RNG_HAVE_RBGC
+    rng->_stats_RBGC_bytes_produced   = s->_stats_RBGC_bytes_produced;
+    rng->_stats_RBGC_reseeds          = s->_stats_RBGC_reseeds;
+#endif
+#ifdef WC_RNG_HAVE_POOL
+    rng->_stats_pool_bytes_produced   = s->_stats_pool_bytes_produced;
+    rng->_stats_pool_bytes_missed     = s->_stats_pool_bytes_missed;
+#endif
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    rng->_stats_nextseedsprimary_redeemed = s->_stats_nextseedsprimary_redeemed;
+    rng->_stats_nextseedsRBGC_redeemed = s->_stats_nextseedsRBGC_redeemed;
+    rng->_stats_nextstirs_redeemed    = s->_stats_nextstirs_redeemed;
+    rng->_stats_nextseedsbanked       = s->_stats_nextseedsbanked;
+    rng->_stats_nextstirs_banked      = s->_stats_nextstirs_banked;
+#endif
+
+    return 0;
+}
+
+WOLFSSL_API int wc_rng_debug_stats_sum(struct wc_rng_debug_stats_snapshot *s,
+                                        const WC_RNG *rng)
+{
+    if ((s == NULL) || (rng == NULL))
+        return BAD_FUNC_ARG;
+
+    s->_stats_total_bytes_requested += rng->_stats_total_bytes_requested;
+    s->_stats_total_bytes_produced  += rng->_stats_total_bytes_produced;
+    s->_stats_total_requests        += rng->_stats_total_requests;
+    s->_stats_reseeds               += rng->_stats_reseeds;
+    s->_stats_stirs                 += rng->_stats_stirs;
+    s->_stats_seed_failures         += rng->_stats_seed_failures;
+    s->_stats_locks_taken           += rng->_stats_locks_taken;
+    s->_stats_locks_released        += rng->_stats_locks_released;
+    s->_stats_locks_refused         += rng->_stats_locks_refused;
+#ifdef WC_RNG_HAVE_RBGC
+    s->_stats_RBGC_bytes_produced   += rng->_stats_RBGC_bytes_produced;
+    s->_stats_RBGC_reseeds          += rng->_stats_RBGC_reseeds;
+#endif
+#ifdef WC_RNG_HAVE_POOL
+    s->_stats_pool_bytes_produced   += rng->_stats_pool_bytes_produced;
+    s->_stats_pool_bytes_missed     += rng->_stats_pool_bytes_missed;
+#endif
+#ifdef WC_RNG_HAVE_NEXT_SEED
+    s->_stats_nextseedsprimary_redeemed += rng->_stats_nextseedsprimary_redeemed;
+    s->_stats_nextseedsRBGC_redeemed += rng->_stats_nextseedsRBGC_redeemed;
+    s->_stats_nextstirs_redeemed    += rng->_stats_nextstirs_redeemed;
+    s->_stats_nextseedsbanked       += rng->_stats_nextseedsbanked;
+    s->_stats_nextstirs_banked      += rng->_stats_nextstirs_banked;
+#endif
+
+    return 0;
+}
+
+#endif /* WC_RNG_DEBUG_STATS */
+
 
 #endif /* WC_NO_RNG */

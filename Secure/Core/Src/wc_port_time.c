@@ -122,7 +122,7 @@ uint32_t se_time_unix_now(void)
 #define SE_TIME_LEAPYEAR(y) (!((y) % 4) && (((y) % 100) || !((y) % 400)))
 #define SE_TIME_YEARSIZE(y) (SE_TIME_LEAPYEAR(y) ? 366 : 365)
 
-time_t XTIME(time_t *t)
+time_t se_time_xtime(time_t *t)
 {
     time_t now = (time_t)se_time_unix_now();
     if (t != NULL) {
@@ -131,7 +131,7 @@ time_t XTIME(time_t *t)
     return now;
 }
 
-struct tm *XGMTIME(const time_t *timer, struct tm *tmp)
+struct tm *se_time_xgmtime(const time_t *timer, struct tm *tmp)
 {
     static const int ytab[2][12] = {
         {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},

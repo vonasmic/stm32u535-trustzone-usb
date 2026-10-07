@@ -19,14 +19,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_PWDBASED_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
 #ifndef NO_PWDBASED
 
 #if FIPS_VERSION3_GE(6,0,0)
-    /* set NO_WRAPPERS before headers, use direct internal f()s not wrappers */
-    #define FIPS_NO_WRAPPERS
-
        #ifdef USE_WINDOWS_API
                #pragma code_seg(".fipsA$h")
                #pragma const_seg(".fipsB$h")
@@ -121,6 +121,12 @@ int wc_PBKDF1_ex(byte* key, int keyLen, byte* iv, int ivLen,
         return err;
     }
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* poison so a missed ForceZero on any path is caught by the check */
+    XMEMSET(digest, 0xff, sizeof(digest));
+    wc_MemZero_Add("wc_PBKDF1_ex digest", digest, sizeof(digest));
+#endif
+
     keyLeft = keyLen;
     ivLeft  = ivLen;
     while (keyOutput < (keyLen + ivLen)) {
@@ -179,6 +185,9 @@ int wc_PBKDF1_ex(byte* key, int keyLen, byte* iv, int ivLen,
     WC_FREE_VAR_EX(hash, heap, DYNAMIC_TYPE_HASHCTX);
 
     ForceZero(digest, sizeof(digest));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(digest, sizeof(digest));
+#endif
 
     if (err != 0)
         return err;
@@ -262,6 +271,12 @@ int wc_PBKDF2_ex(byte* output, const byte* passwd, int pLen, const byte* salt,
     }
 #endif
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* poison so a missed ForceZero on any path is caught by the check */
+    XMEMSET(buffer, 0xff, (word32)hLen);
+    wc_MemZero_Add("wc_PBKDF2_ex buffer", buffer, (word32)hLen);
+#endif
+
     ret = wc_HmacInit(hmac, heap, devId);
     if (ret == 0) {
         word32 i = 1;
@@ -328,6 +343,9 @@ int wc_PBKDF2_ex(byte* output, const byte* passwd, int pLen, const byte* salt,
     }
 
     ForceZero(buffer, (word32)hLen);
+#if !defined(WOLFSSL_SMALL_STACK) && defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(buffer, (word32)hLen);
+#endif
     WC_FREE_VAR_EX(buffer, heap, DYNAMIC_TYPE_TMP_BUFFER);
     WC_FREE_VAR_EX(hmac, heap, DYNAMIC_TYPE_HMAC);
 
@@ -345,17 +363,15 @@ int wc_PBKDF2(byte* output, const byte* passwd, int pLen, const byte* salt,
 
 #ifdef HAVE_PKCS12
 
-/* helper for PKCS12_PBKDF(), does hash operation */
+/* helper for PKCS12_PBKDF(), does hash operation.
+ * buffer and Ai are guaranteed non-NULL by the caller: each is either a stack
+ * array or an XMALLOC result whose failure returns MEMORY_E before the call. */
 static int DoPKCS12Hash(enum wc_HashType hashT, byte* buffer, word32 totalLen,
     byte* Ai, word32 u, int iterations)
 {
     int i;
     int ret = 0;
     WC_DECLARE_VAR(hash, wc_HashAlg, 1, 0);
-
-    if ((buffer == NULL) || (Ai == NULL)) {
-        return BAD_FUNC_ARG;
-    }
 
     /* initialize hash */
     WC_ALLOC_VAR_EX(hash, wc_HashAlg, 1, NULL, DYNAMIC_TYPE_HASHCTX,
@@ -454,6 +470,9 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
     if (ret == 0)
         return BAD_STATE_E;
     v = (word32)ret;
+    /* the block size must not be mistaken for a result when kLen is 0 and the
+     * derivation loop below never runs */
+    ret = 0;
 
 #ifdef WOLFSSL_SMALL_STACK
     Ai = (byte*)XMALLOC(WC_MAX_DIGEST_SIZE, heap, DYNAMIC_TYPE_TMP_BUFFER);
@@ -483,7 +502,8 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
         return BAD_FUNC_ARG;
     }
 
-    if (! WC_SAFE_SUM_UNSIGNED(word32, dLen, sLen, totalLen)) {
+    /* the working buffer holds D || S || P, so totalLen is dLen + iLen */
+    if (! WC_SAFE_SUM_UNSIGNED(word32, dLen, iLen, totalLen)) {
         WC_FREE_VAR_EX(Ai, heap, DYNAMIC_TYPE_TMP_BUFFER);
         WC_FREE_VAR_EX(B, heap, DYNAMIC_TYPE_TMP_BUFFER);
         return BAD_FUNC_ARG;
@@ -510,6 +530,12 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
         S[i] = salt[i % (word32)saltLen];
     for (i = 0; i < pLen; i++)
         P[i] = passwd[i % (word32)passLen];
+
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("wc_PKCS12_PBKDF_ex Ai", Ai, WC_MAX_DIGEST_SIZE);
+    wc_MemZero_Add("wc_PKCS12_PBKDF_ex B", B, WC_MAX_BLOCK_SIZE);
+    wc_MemZero_Add("wc_PKCS12_PBKDF_ex buffer", buffer, totalLen);
+#endif
 
 #ifdef WOLFSSL_SMALL_STACK
     if (((B1 = (mp_int *)XMALLOC(sizeof(*B1), heap, DYNAMIC_TYPE_TMP_BUFFER))
@@ -603,9 +629,17 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
 #else
     ForceZero(Ai, WC_MAX_DIGEST_SIZE);
     ForceZero(B, WC_MAX_BLOCK_SIZE);
+#if defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(Ai, WC_MAX_DIGEST_SIZE);
+    wc_MemZero_Check(B, WC_MAX_BLOCK_SIZE);
+#endif
 #endif
 
     ForceZero(buffer, totalLen);
+#if defined(WOLFSSL_CHECK_MEM_ZERO)
+    if (!dynamic)
+        wc_MemZero_Check(buffer, totalLen);
+#endif
     if (dynamic)
         XFREE(buffer, heap, DYNAMIC_TYPE_KEY);
 
@@ -727,6 +761,10 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
     for (i = 0; i < pLen; i++)
         I[sLen + i] = passwd[i % (word32)passLen];
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Add("wc_PKCS12_PBKDF_ex buffer", buffer, totalLen);
+#endif
+
     ret = 0;
     while ((ret == 0) && (kLen > 0)) {
         /* RFC 7292 B.2 step 6a: A_i = H^r(D || I) */
@@ -780,6 +818,10 @@ int wc_PKCS12_PBKDF_ex(byte* output, const byte* passwd, int passLen,
     ForceZero(B, WC_MAX_BLOCK_SIZE);
     WC_FREE_VAR_EX(B, heap, DYNAMIC_TYPE_TMP_BUFFER);
     ForceZero(buffer, totalLen);
+#if defined(WOLFSSL_CHECK_MEM_ZERO)
+    if (buffer == staticBuffer)
+        wc_MemZero_Check(buffer, totalLen);
+#endif
     if (buffer != staticBuffer) {
         XFREE(buffer, heap, DYNAMIC_TYPE_KEY);
     }
@@ -943,14 +985,17 @@ static void scryptROMix(byte* x, byte* v, byte* y, int r, word32 n)
     for (i = 0; i < n; i++)
     {
 #ifdef LITTLE_ENDIAN_ORDER
-#ifdef WORD64_AVAILABLE
-        j = (word32)(*(word64*)(x + (2*r - 1) * 64) & (n-1));
+        /* x is an allocator byte array; the big-endian path below already
+         * assembles this byte-wise. */
+#if defined(WORD64_AVAILABLE) && !defined(WOLFSSL_NO_WORD64_OPS)
+        j = (word32)(readUnalignedWord64(x + (2*r - 1) * 64) & (n-1));
 #else
-        j = *(word32*)(x + (2*r - 1) * 64) & (n-1);
+        j = readUnalignedWord32(x + (2*r - 1) * 64) & (n-1);
 #endif
 #else
         byte* t = x + (2*r - 1) * 64;
-        j = (t[0] | (t[1] << 8) | (t[2] << 16) | ((word32)t[3] << 24)) & (n-1);
+        j = ((word32)t[0] | ((word32)t[1] << 8) | ((word32)t[2] << 16) |
+                ((word32)t[3] << 24)) & (n-1);
 #endif
 #ifdef WORD64_AVAILABLE
         for (k = 0; k < bSz / 8; k++)

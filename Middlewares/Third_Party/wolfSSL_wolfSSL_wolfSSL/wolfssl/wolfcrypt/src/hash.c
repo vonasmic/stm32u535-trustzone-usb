@@ -325,6 +325,24 @@ enum wc_HashType wc_OidGetHash(int oid)
             hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
         #endif
             break;
+        case SHA512_224h:
+        #if (!defined(HAVE_FIPS) || FIPS_VERSION3_GE(7,0,0)) && \
+            !defined(HAVE_SELFTEST) && defined(WOLFSSL_SHA512) && \
+            !defined(WOLFSSL_NOSHA512_224)
+            hash_type = WC_HASH_TYPE_SHA512_224;
+        #else
+            hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
+        #endif
+            break;
+        case SHA512_256h:
+        #if (!defined(HAVE_FIPS) || FIPS_VERSION3_GE(7,0,0)) && \
+            !defined(HAVE_SELFTEST) && defined(WOLFSSL_SHA512) && \
+            !defined(WOLFSSL_NOSHA512_256)
+            hash_type = WC_HASH_TYPE_SHA512_256;
+        #else
+            hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
+        #endif
+            break;
         case SHA3_224h:
         #ifdef WOLFSSL_SHA3
             hash_type = WC_HASH_TYPE_SHA3_224;
@@ -349,6 +367,20 @@ enum wc_HashType wc_OidGetHash(int oid)
         case SHA3_512h:
         #ifdef WOLFSSL_SHA3
             hash_type = WC_HASH_TYPE_SHA3_512;
+        #else
+            hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
+        #endif
+            break;
+        case SHAKE128h:
+        #if defined(WOLFSSL_SHA3) && defined(WOLFSSL_SHAKE128)
+            hash_type = WC_HASH_TYPE_SHAKE128;
+        #else
+            hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
+        #endif
+            break;
+        case SHAKE256h:
+        #if defined(WOLFSSL_SHA3) && defined(WOLFSSL_SHAKE256)
+            hash_type = WC_HASH_TYPE_SHAKE256;
         #else
             hash_type = WC_ERR_TRACE(WC_HASH_TYPE_NONE);
         #endif
@@ -1129,7 +1161,7 @@ int wc_HashUpdate(wc_HashAlg* hash, enum wc_HashType type, const byte* data,
         return BAD_FUNC_ARG;
 
 #ifdef DEBUG_WOLFSSL
-    if (hash->type != type) {
+    if (hash->type != WC_HASH_TYPE_NONE && hash->type != type) {
         WOLFSSL_MSG("Hash update type mismatch!");
         return BAD_FUNC_ARG;
     }
@@ -1278,7 +1310,7 @@ int wc_HashFinal(wc_HashAlg* hash, enum wc_HashType type, byte* out)
         return BAD_FUNC_ARG;
 
 #ifdef DEBUG_WOLFSSL
-    if (hash->type != type) {
+    if (hash->type != WC_HASH_TYPE_NONE && hash->type != type) {
         WOLFSSL_MSG("Hash final type mismatch!");
         return BAD_FUNC_ARG;
     }
@@ -1429,7 +1461,7 @@ int wc_HashFree(wc_HashAlg* hash, enum wc_HashType type)
         return BAD_FUNC_ARG;
 
 #ifdef DEBUG_WOLFSSL
-    if (hash->type != type) {
+    if (hash->type != WC_HASH_TYPE_NONE && hash->type != type) {
         WOLFSSL_MSG("Hash free type mismatch!");
         return BAD_FUNC_ARG;
     }

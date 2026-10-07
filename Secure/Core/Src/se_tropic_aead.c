@@ -20,7 +20,8 @@ uint16_t se_tropic_get_rmem_slot_max_size(const lt_handle_t *h)
     if ((h != NULL) && (h->tr01_attrs.r_mem_udata_slot_size_max > 0U)) {
         return h->tr01_attrs.r_mem_udata_slot_size_max;
     }
-    return SE_TROPIC_RMEM_SLOT_MAX;
+    /* 0 attrs: do not pretend 475 — that passes our check then fails in libtropic. */
+    return 0U;
 }
 
 uint16_t se_tropic_get_rmem_slot_plaintext_max_size(const lt_handle_t *h)

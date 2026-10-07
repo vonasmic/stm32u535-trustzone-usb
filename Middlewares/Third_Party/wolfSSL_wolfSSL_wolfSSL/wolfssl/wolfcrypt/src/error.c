@@ -32,6 +32,10 @@
 #include <wolfssl/debug-untrace-error-codes.h>
 #endif
 
+wc_static_assert((int)WC_LAST_E <= (int)WC_SPAN2_LAST_E);
+wc_static_assert((int)MIN_CODE_E <= (int)WC_LAST_E);
+wc_static_assert((int)MIN_CODE_E <= (int)WC_SPAN2_MIN_CODE_E);
+
 WOLFSSL_ABI
 const char* wc_GetErrorString(int error)
 {
@@ -620,6 +624,9 @@ const char* wc_GetErrorString(int error)
     case KEY_EXHAUSTED_E:
         return "Key no longer usable for operation";
 
+    case ML_KEM_KAT_FIPS_E:
+        return "wolfCrypt FIPS ML-KEM Known Answer Test Failure";
+
     case FIPS_INVALID_VER_E:
         return "Invalid FIPS version defined, check length";
 
@@ -643,6 +650,15 @@ const char* wc_GetErrorString(int error)
 
     case WC_KEY_MISMATCH_E:
         return "key values mismatch";
+
+    case ML_DSA_KAT_FIPS_E:
+        return "wolfCrypt FIPS ML-DSA Known Answer Test Failure";
+
+    case LMS_KAT_FIPS_E:
+        return "wolfCrypt FIPS LMS Known Answer Test Failure";
+
+    case XMSS_KAT_FIPS_E:
+        return "wolfCrypt FIPS XMSS Known Answer Test Failure";
 
     case DEADLOCK_AVERTED_E:
         return "Deadlock averted -- retry the call";
@@ -668,30 +684,6 @@ const char* wc_GetErrorString(int error)
     case ALREADY_E:
         return "Operation was redundant or preempted";
 
-    case ML_KEM_KAT_FIPS_E:
-        return "wolfCrypt FIPS ML-KEM Known Answer Test Failure";
-
-    case ML_DSA_KAT_FIPS_E:
-        return "wolfCrypt FIPS ML-DSA Known Answer Test Failure";
-
-    case LMS_KAT_FIPS_E:
-        return "wolfCrypt FIPS LMS Known Answer Test Failure";
-
-    case XMSS_KAT_FIPS_E:
-        return "wolfCrypt FIPS XMSS Known Answer Test Failure";
-
-    case ML_KEM_PCT_E:
-        return "wolfcrypt ML-KEM Pairwise Consistency Test Failure";
-
-    case ML_DSA_PCT_E:
-        return "wolfcrypt ML-DSA Pairwise Consistency Test Failure";
-
-    case DRBG_SHA512_KAT_FIPS_E:
-        return "SHA-512 DRBG Known Answer Test check FIPS error";
-
-    case SLH_DSA_KAT_FIPS_E:
-        return "SLH-DSA Known Answer Test check FIPS error";
-
     case SEQ_OVERFLOW_E:
         return "Sequence counter would overflow";
 
@@ -712,6 +704,67 @@ const char* wc_GetErrorString(int error)
 
     case PUF_IDENTITY_E:
         return "PUF identity retrieval failed";
+
+    case ML_KEM_PCT_E:
+        return "wolfcrypt ML-KEM Pairwise Consistency Test Failure";
+
+    case ML_DSA_PCT_E:
+        return "wolfcrypt ML-DSA Pairwise Consistency Test Failure";
+
+    case DRBG_SHA512_KAT_FIPS_E:
+        return "SHA-512 DRBG Known Answer Test check FIPS error";
+
+    case SLH_DSA_KAT_FIPS_E:
+        return "SLH-DSA Known Answer Test check FIPS error";
+
+    case TSP_VERIFY_E:
+        return "TSP token invalid or response doesn't match request error";
+
+    case SLH_DSA_PCT_E:
+        return "wolfcrypt SLH-DSA Pairwise Consistency Test Failure";
+
+    case CMAC_KAT_FIPS_E:
+        return "wolfCrypt FIPS AES-CMAC Known Answer Test Failure";
+
+    case SHAKE_KAT_FIPS_E:
+        return "wolfCrypt FIPS SHAKE Known Answer Test Failure";
+
+    case DH_PCT_E:
+        return "wolfcrypt DH Pairwise Consistency Test Failure";
+
+    case AES_KW_KAT_FIPS_E:
+        return "wolfCrypt FIPS AES Key Wrap Known Answer Test Failure";
+
+    case FIPS_WRONG_API_E:
+        return "Requested API is not allowed in FIPS mode";
+
+    case KMAC_MIN_KEYLEN_E:
+        return "FIPS Mode KMAC Minimum Key Length error";
+
+    case FIPS_BAD_VALUE_E:
+        return "Supplied value was rejected by FIPS policy";
+
+    case FIPS_UNAPPROVED_E:
+        return "Requested operation succeeded, but supplied "
+               "parameters are unapproved for FIPS";
+
+    case NO_DEFAULT_FOUND_E:
+        return "No default object registered for request type";
+
+    case NOT_READY_E:
+        return "Resource not yet ready (retry)";
+
+    case OBJECT_NOT_LOCKED_E:
+        return "Required lock on object is not held";
+
+    case WRONG_TYPE_OBJECT_E:
+        return "Object is wrong type for requested operation";
+
+    case NEEDS_RECOVERY_E:
+        return "Object needs recovery before use";
+
+    case UNEXPECTED_STATE_E:
+        return "Object has unexpected state";
 
     case MAX_CODE_E:
     case WC_SPAN1_MIN_CODE_E:

@@ -5,8 +5,10 @@
 #include "se_device_id.h"
 #include "se_cert_spki.h"
 #include "se_nv.h"
+#include "se_owner.h"
 #include "se_tropic.h"
 #include "se_tropic_port.h"
+#include "se_ram.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/settings.h>
 #include <wolfssl/wolfcrypt/dilithium.h>
@@ -16,13 +18,12 @@
 #define SE_DEVICE_ID_PUB_MAX SE_NV_OWNER_SPKI_MAX
 
 static dilithium_key s_id_key;
-static uint8_t s_id_der[SE_NV_SK_MAX];
 static uint8_t s_id_pub[SE_DEVICE_ID_PUB_MAX];
 
 static void id_wipe_key(void)
 {
     wc_dilithium_free(&s_id_key);
-    wc_ForceZero(s_id_der, sizeof(s_id_der));
+    wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
     wc_ForceZero(s_id_pub, sizeof(s_id_pub));
 }
 
@@ -33,7 +34,7 @@ static lt_ret_t id_load_sk(uint16_t *der_len)
     uint16_t n = 0U;
     lt_ret_t ret;
 
-    ret = se_nv_get_device_sk(s_id_der, &n, (uint16_t)sizeof(s_id_der));
+    ret = se_nv_get_device_sk(se_der_scratch(), &n, SE_NV_SK_MAX);
     if (ret != LT_OK) {
         return ret;
     }
@@ -42,7 +43,7 @@ static lt_ret_t id_load_sk(uint16_t *der_len)
         rc = wc_dilithium_set_level(&s_id_key, WC_ML_DSA_44);
     }
     if (rc == 0) {
-        rc = wc_Dilithium_PrivateKeyDecode(s_id_der, &idx, &s_id_key, n);
+        rc = wc_Dilithium_PrivateKeyDecode(se_der_scratch(), &idx, &s_id_key, n);
     }
     if (rc != 0) {
         id_wipe_key();
@@ -79,33 +80,38 @@ lt_ret_t se_device_id_ensure(void)
     der_sz = 0;
     if (rc == 0) {
         /* Priv-only DER does not set pubKeySet on decode; CLIENT CSR needs the pub. */
-        der_sz = wc_Dilithium_KeyToDer(&s_id_key, s_id_der, (word32)sizeof(s_id_der));
+        der_sz = wc_Dilithium_KeyToDer(&s_id_key, se_der_scratch(), SE_NV_SK_MAX);
         if (der_sz <= 0) {
             rc = der_sz;
         }
     }
     wc_FreeRng(&rng);
     if (rc != 0) {
+        se_owner_die = 6U;
+        se_owner_die_err = rc;
         id_wipe_key();
         return LT_CRYPTO_ERR;
     }
-    ret = se_nv_set_device_sk(s_id_der, (uint16_t)der_sz);
+    ret = se_nv_set_device_sk(se_der_scratch(), (uint16_t)der_sz);
     id_wipe_key();
     if (ret != LT_OK) {
+        se_owner_die = 6U;
+        se_owner_die_err = (int)ret;
         return ret;
     }
     return LT_OK;
 }
 
-lt_ret_t se_device_id_export_pub(uint8_t *out, uint16_t *len, uint16_t cap)
+lt_ret_t se_device_id_open_pub(const uint8_t **pub, uint16_t *len)
 {
     word32 pub_len = (word32)sizeof(s_id_pub);
     int rc;
     lt_ret_t ret;
 
-    if ((out == NULL) || (len == NULL)) {
+    if ((pub == NULL) || (len == NULL)) {
         return LT_PARAM_ERR;
     }
+    *pub = NULL;
     *len = 0U;
     ret = id_load_sk(NULL);
     if (ret != LT_OK) {
@@ -116,13 +122,37 @@ lt_ret_t se_device_id_export_pub(uint8_t *out, uint16_t *len, uint16_t cap)
         id_wipe_key();
         return LT_CRYPTO_ERR;
     }
-    if (pub_len > (word32)cap) {
-        id_wipe_key();
+    *pub = s_id_pub;
+    *len = (uint16_t)pub_len;
+    return LT_OK;
+}
+
+void se_device_id_close_pub(void)
+{
+    id_wipe_key();
+}
+
+lt_ret_t se_device_id_export_pub(uint8_t *out, uint16_t *len, uint16_t cap)
+{
+    const uint8_t *pub = NULL;
+    uint16_t n = 0U;
+    lt_ret_t ret;
+
+    if ((out == NULL) || (len == NULL)) {
         return LT_PARAM_ERR;
     }
-    (void)memcpy(out, s_id_pub, pub_len);
-    *len = (uint16_t)pub_len;
-    id_wipe_key();
+    *len = 0U;
+    ret = se_device_id_open_pub(&pub, &n);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (n > cap) {
+        se_device_id_close_pub();
+        return LT_PARAM_ERR;
+    }
+    (void)memcpy(out, pub, n);
+    *len = n;
+    se_device_id_close_pub();
     return LT_OK;
 }
 

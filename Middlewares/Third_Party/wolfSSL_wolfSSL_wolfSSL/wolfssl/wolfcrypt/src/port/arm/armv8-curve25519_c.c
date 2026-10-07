@@ -19,14 +19,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
  */
 
-#include <wolfssl/wolfcrypt/libwolfssl_sources_asm.h>
-#include <wolfssl/wolfcrypt/error-crypt.h>
-
 /* Generated using (from wolfssl):
  *   cd ../scripts
  *   ruby ./x25519/x25519.rb arm64 \
  *       ../wolfssl/wolfcrypt/src/port/arm/armv8-curve25519.c
  */
+
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_ARMV8_CURVE25519_C
+
+#include <wolfssl/wolfcrypt/libwolfssl_sources.h>
+#include <wolfssl/wolfcrypt/error-crypt.h>
+
 #ifdef WOLFSSL_ARMASM
 #ifdef __aarch64__
 #ifdef WOLFSSL_ARMASM_INLINE
@@ -38,7 +42,7 @@
 #if !defined(CURVE25519_SMALL) || !defined(ED25519_SMALL)
 #include <wolfssl/wolfcrypt/fe_operations.h>
 
-void fe_init()
+void fe_init(void)
 {
     __asm__ __volatile__ (
         "\n\t"
@@ -229,8 +233,8 @@ int fe_isnonzero(const fe a)
         "orr	%x[a], x1, x2\n\t"
         "orr	x3, x3, x4\n\t"
         "orr	%x[a], %x[a], x3\n\t"
+        : [a] "+r" (a)
         :
-        : [a] "r" (a)
         : "memory", "cc", "x1", "x2", "x3", "x4", "x5", "x6"
     );
     return (word32)(size_t)a;
@@ -248,8 +252,8 @@ int fe_isnegative(const fe a)
         "adc	x5, x4, xzr\n\t"
         "and	%x[a], x1, #1\n\t"
         "eor	%x[a], %x[a], x5, lsr 63\n\t"
+        : [a] "+r" (a)
         :
-        : [a] "r" (a)
         : "memory", "cc", "x1", "x2", "x3", "x4", "x5", "x6"
     );
     return (word32)(size_t)a;
@@ -728,7 +732,7 @@ void fe_invert_nct(fe r, const fe a)
     );
 }
 
-void fe_mul(fe r, const fe a, const fe b)
+WC_KEEP_FOR_ASM void fe_mul(fe r, const fe a, const fe b)
 {
     __asm__ __volatile__ (
         /* Multiply */
@@ -865,7 +869,7 @@ void fe_mul(fe r, const fe a, const fe b)
     );
 }
 
-void fe_sq(fe r, const fe a)
+WC_KEEP_FOR_ASM void fe_sq(fe r, const fe a)
 {
     __asm__ __volatile__ (
         /* Square */
@@ -4362,7 +4366,7 @@ int curve25519_base(byte* r, const byte* n)
         /* Store */
         "stp	x14, x15, [%x[r]]\n\t"
         "stp	x16, x17, [%x[r], #16]\n\t"
-        "mov	x0, xzr\n\t"
+        "mov	%x[r], xzr\n\t"
         "ldp	x29, x30, [sp], #0xb0\n\t"
         : [r] "+r" (r)
         : [n] "r" (n), [x2] "r" (x2)
@@ -5271,6 +5275,14 @@ int curve25519(byte* r, const byte* n, const byte* a)
         "adcs	x7, x7, x25\n\t"
         "adcs	x8, x8, x26\n\t"
         "adc	x9, x9, x27\n\t"
+        /* Reduce if top bit set */
+        "mov	x3, #19\n\t"
+        "and	x4, x3, x9, asr 63\n\t"
+        "adds	x6, x6, x4\n\t"
+        "adcs	x7, x7, xzr\n\t"
+        "and	x9, x9, #0x7fffffffffffffff\n\t"
+        "adcs	x8, x8, xzr\n\t"
+        "adc	x9, x9, xzr\n\t"
         /* Square */
         /*  A[0] * A[1] */
         "umulh	x16, x19, x20\n\t"
@@ -6969,7 +6981,7 @@ int curve25519(byte* r, const byte* n, const byte* a)
         /* Store */
         "stp	x14, x15, [%x[r]]\n\t"
         "stp	x16, x17, [%x[r], #16]\n\t"
-        "mov	x0, xzr\n\t"
+        "mov	%x[r], xzr\n\t"
         "ldp	x29, x30, [sp], #0xc0\n\t"
         : [r] "+r" (r)
         : [n] "r" (n), [a] "r" (a)

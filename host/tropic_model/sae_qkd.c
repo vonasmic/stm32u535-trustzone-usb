@@ -6,6 +6,7 @@
 #include "se_nv.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
+#include <wolfssl/wolfcrypt/memory.h>
 
 lt_ret_t sae_qkd_encrypt_pad_image(const uint8_t ss[SE_TROPIC_MLKEM_SS_LEN], uint16_t slot,
                            const uint8_t *plain, uint16_t plain_len,

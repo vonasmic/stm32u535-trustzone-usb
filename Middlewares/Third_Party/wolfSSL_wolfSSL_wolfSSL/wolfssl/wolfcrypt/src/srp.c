@@ -450,6 +450,13 @@ int wc_SrpSetPassword(Srp* srp, const byte* password, word32 size)
     if (digestSz < 0)
         return digestSz;
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* digest will hold the SRP private key x = H(salt | H(user:pass)).
+     * Register early so any future path that skips the ForceZero is caught. */
+    XMEMSET(digest, 0, SRP_MAX_DIGEST_SIZE);
+    wc_MemZero_Add("wc_SrpSetPassword digest", digest, SRP_MAX_DIGEST_SIZE);
+#endif
+
     /* digest = H(username | ':' | password) */
             r = SrpHashInit(&hash, srp->type, srp->heap);
     if (!r) r = SrpHashUpdate(&hash, srp->user, srp->userSz);
@@ -469,6 +476,9 @@ int wc_SrpSetPassword(Srp* srp, const byte* password, word32 size)
     if (!r) r = mp_read_unsigned_bin(&srp->auth, digest, (word32)digestSz);
 
     ForceZero(digest, SRP_MAX_DIGEST_SIZE);
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(digest, SRP_MAX_DIGEST_SIZE);
+#endif
 
     return r;
 }
@@ -607,6 +617,11 @@ int wc_SrpGetPublic(Srp* srp, byte* pub, word32* size)
             if (((i = (mp_int *)XMALLOC(sizeof(*i), srp->heap, DYNAMIC_TYPE_TMP_BUFFER)) == NULL) ||
                 ((j = (mp_int *)XMALLOC(sizeof(*j), srp->heap, DYNAMIC_TYPE_TMP_BUFFER)) == NULL))
                 r = MEMORY_E;
+            /* zeroed so the cleanup below no-ops if the init is skipped */
+            if (i != NULL)
+                XMEMSET(i, 0, sizeof(*i));
+            if (j != NULL)
+                XMEMSET(j, 0, sizeof(*j));
             if (!r)
 #endif
             {
@@ -665,6 +680,16 @@ static int wc_SrpSetKey(Srp* srp, byte* secret, word32 size)
     if (srp->key == NULL)
         return MEMORY_E;
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* digest and hash will hold derived session-key K material. Register now
+     * (immediately past the last bypassing return, MEMORY_E) so any later path
+     * that skips the ForceZero is caught. digest was already zeroed above;
+     * baseline the hash struct. */
+    XMEMSET(&hash, 0, sizeof(SrpHash));
+    wc_MemZero_Add("wc_SrpSetKey digest", digest, sizeof(digest));
+    wc_MemZero_Add("wc_SrpSetKey hash", &hash, sizeof(SrpHash));
+#endif
+
     srp->keySz = 2 * (word32)digestSz;
 
     for (i = j = 0; j < srp->keySz; i++) {
@@ -696,6 +721,10 @@ static int wc_SrpSetKey(Srp* srp, byte* secret, word32 size)
 
     ForceZero(digest, sizeof(digest));
     ForceZero(&hash, sizeof(SrpHash));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(digest, sizeof(digest));
+    wc_MemZero_Check(&hash, sizeof(SrpHash));
+#endif
 
     return r;
 }
@@ -721,6 +750,7 @@ int wc_SrpComputeKey(Srp* srp, byte* clientPubKey, word32 clientPubKeySz,
     byte pad = 0;
     int r;
     int hashInited = 0;
+    int mpInited = 0;
 
     /* validating params */
 
@@ -737,6 +767,16 @@ int wc_SrpComputeKey(Srp* srp, byte* clientPubKey, word32 clientPubKeySz,
     temp1 = (mp_int *)XMALLOC(sizeof *temp1, srp->heap, DYNAMIC_TYPE_SRP);
     temp2 = (mp_int *)XMALLOC(sizeof *temp2, srp->heap, DYNAMIC_TYPE_SRP);
 
+    /* zeroed so the cleanup below no-ops if the init is skipped */
+    if (u != NULL)
+        XMEMSET(u, 0, sizeof *u);
+    if (s != NULL)
+        XMEMSET(s, 0, sizeof *s);
+    if (temp1 != NULL)
+        XMEMSET(temp1, 0, sizeof *temp1);
+    if (temp2 != NULL)
+        XMEMSET(temp2, 0, sizeof *temp2);
+
     if ((hash == NULL) ||
         (digest == NULL) ||
         (u == NULL) ||
@@ -752,6 +792,7 @@ int wc_SrpComputeKey(Srp* srp, byte* clientPubKey, word32 clientPubKeySz,
         r = MP_INIT_E;
         goto out;
     }
+    mpInited = 1;
 
     if (mp_iszero(&srp->priv) == MP_YES) {
         r = SRP_CALL_ORDER_E;
@@ -919,27 +960,27 @@ int wc_SrpComputeKey(Srp* srp, byte* clientPubKey, word32 clientPubKeySz,
     XFREE(hash, srp->heap, DYNAMIC_TYPE_SRP);
     XFREE(digest, srp->heap, DYNAMIC_TYPE_SRP);
     if (u) {
-        if (r != WC_NO_ERR_TRACE(MP_INIT_E))
+        if (mpInited)
             mp_forcezero(u);
         XFREE(u, srp->heap, DYNAMIC_TYPE_SRP);
     }
     if (s) {
-        if (r != WC_NO_ERR_TRACE(MP_INIT_E))
+        if (mpInited)
             mp_forcezero(s);
         XFREE(s, srp->heap, DYNAMIC_TYPE_SRP);
     }
     if (temp1) {
-        if (r != WC_NO_ERR_TRACE(MP_INIT_E))
+        if (mpInited)
             mp_forcezero(temp1);
         XFREE(temp1, srp->heap, DYNAMIC_TYPE_SRP);
     }
     if (temp2) {
-        if (r != WC_NO_ERR_TRACE(MP_INIT_E))
+        if (mpInited)
             mp_forcezero(temp2);
         XFREE(temp2, srp->heap, DYNAMIC_TYPE_SRP);
     }
 #else
-    if (r != WC_NO_ERR_TRACE(MP_INIT_E)) {
+    if (mpInited) {
         mp_forcezero(u);
         mp_forcezero(s);
         mp_forcezero(temp1);
@@ -997,6 +1038,13 @@ int wc_SrpVerifyPeersProof(Srp* srp, byte* proof, word32 size)
     if (size != (word32)hashSize || size > INT_MAX)
         return BUFFER_E;
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* digest will hold the expected peer proof derived from session key K.
+     * Register early so any future path that skips the ForceZero is caught. */
+    XMEMSET(digest, 0, sizeof(digest));
+    wc_MemZero_Add("wc_SrpVerifyPeersProof digest", digest, sizeof(digest));
+#endif
+
     r = SrpHashFinal(srp->side == SRP_CLIENT_SIDE ? &srp->server_proof
                                                   : &srp->client_proof, digest);
 
@@ -1010,6 +1058,9 @@ int wc_SrpVerifyPeersProof(Srp* srp, byte* proof, word32 size)
         r = SRP_VERIFY_E;
 
     ForceZero(digest, sizeof(digest));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(digest, sizeof(digest));
+#endif
 
     return r;
 }

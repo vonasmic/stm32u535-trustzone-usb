@@ -2,6 +2,7 @@
     \defgroup 3DES Algorithms - 3DES
     \defgroup AES Algorithms - AES
     \defgroup ARC4 Algorithms - ARC4
+    \defgroup ARGON2 Algorithms - Argon2
     \defgroup BLAKE2 Algorithms - BLAKE2
     \defgroup Camellia Algorithms - Camellia
     \defgroup ChaCha Algorithms - ChaCha
@@ -15,6 +16,27 @@
     \defgroup ECC Algorithms - ECC
     \defgroup ED25519 Algorithms - ED25519
     \defgroup ED448 Algorithms - ED448
+    \defgroup Falcon Algorithms - Falcon
+    Falcon is a quantum-resistant lattice-based digital signature scheme
+    (NTRU / fast Fourier sampling). It has not been standardized by NIST yet;
+    because the algorithm is not yet standardized and its API name is subject
+    to change, wolfCrypt gates it behind --enable-experimental, and the
+    wc_falcon_* / falcon_key spelling is expected to follow the standardized
+    name once it is final. Two parameter sets are supported, selected with
+    wc_falcon_set_level(): level 1 (Falcon-512) and level 5 (Falcon-1024).
+    See <wolfssl/wolfcrypt/falcon.h>.
+    \defgroup HPKE Algorithms - HPKE (RFC 9180)
+    HPKE (Hybrid Public Key Encryption) is a single-shot public key
+    encryption scheme built from a KEM, a KDF and an AEAD. wolfCrypt
+    implements the RFC 9180 base mode (no pre-shared key, no sender
+    authentication) and is enabled with --enable-hpke; it is also pulled in
+    by the TLS 1.3 Encrypted Client Hello (ECH) support, its main in-tree
+    consumer. Supported ciphersuites are the DHKEM P-256/P-384/P-521 and
+    X25519 KEMs, HKDF-SHA256/384/512 and AES-128-GCM / AES-256-GCM. An Hpke
+    structure is bound to one ciphersuite triple with wc_HpkeInit(); a
+    one-shot wc_HpkeSealBase() / wc_HpkeOpenBase() pair and a streaming
+    context API (wc_HpkeInitSealContext() / wc_HpkeContextSealBase() and the
+    matching open calls) are provided. See <wolfssl/wolfcrypt/hpke.h>.
     \defgroup ML_DSA Algorithms - ML-DSA (FIPS 204)
     ML-DSA (Module-Lattice-based Digital Signature Algorithm) is a
     quantum-resistant digital signature scheme standardized by NIST as
@@ -38,6 +60,18 @@
     ML-KEM-768 (level 3) and ML-KEM-1024 (level 5). The variant is
     selected when the key is initialized via wc_MlKemKey_Init() or
     wc_MlKemKey_New().
+
+    \defgroup FRODO_KEM Algorithms - FrodoKEM
+    FrodoKEM is a conservative, unstructured-lattice (plain LWE) key
+    encapsulation mechanism. This is an experimental reference
+    implementation following the ISO/CFRG (salted) FrodoKEM and the
+    ephemeral eFrodoKEM (salt-less) variants. Three parameter sets are
+    provided - FrodoKEM-640 (NIST level 1), FrodoKEM-976 (level 3) and
+    FrodoKEM-1344 (level 5) - each with either SHAKE-128 or AES-128
+    generation of the public matrix A. The variant is selected by the
+    key type (a base parameter set optionally OR'd with FRODOKEM_AES
+    and/or FRODOKEM_EPHEMERAL) when the key is initialized via
+    wc_FrodoKemKey_Init() or wc_FrodoKemKey_New().
 
     \defgroup SLH_DSA Algorithms - SLH-DSA (FIPS 205)
     SLH-DSA (Stateless Hash-based Digital Signature Algorithm) is a
@@ -263,6 +297,7 @@
     \defgroup MD4 Algorithms - MD4
     \defgroup MD5 Algorithms - MD5
     \defgroup PKCS7 Algorithms - PKCS7
+    \defgroup TSP Time-Stamp Protocol (RFC 3161)
     \defgroup PKCS11 Algorithms - PKCS11
     \defgroup Password Algorithms - Password Based
     \defgroup Poly1305 Algorithms - Poly1305
@@ -300,6 +335,22 @@
     \defgroup Math Math API
     \defgroup Memory Memory Handling
     \defgroup Random Random Number Generation
+    Makes the unguessable numbers used for keys and other secrets.  It
+    takes a little true randomness from an entropy source and stretches
+    it into as much output as you ask for.
+
+    When that source is wolfEntropy, see \ref wolfEntropy.
+
+    \defgroup wolfEntropy Entropy Source - wolfEntropy (MemUse)
+    Randomness has to start somewhere.  wolfEntropy gets it by timing
+    memory reads: each one takes a slightly different, unpredictable
+    amount of time, and those tiny differences are the raw material.
+    It watches its own output and returns an error rather than hand
+    back randomness that looks broken.
+
+    Turn it on with --enable-wolfEntropy.  Most code never calls these
+    functions; the random number generator (\ref Random) does it for
+    you.
     \defgroup Signature Signature API
     \defgroup openSSL OpenSSL API
     \defgroup wolfCrypt wolfCrypt Init and Cleanup
@@ -308,4 +359,5 @@
     \defgroup Setup wolfSSL Context and Session Set Up
     \defgroup IO wolfSSL Connection, Session, and I/O
     \defgroup Debug wolfSSL Error Handling and Reporting
+    \defgroup STM32 STM32 Hardware Crypto Port
 */

@@ -19,6 +19,9 @@
 
 #include "libtropic.h"
 
+/** Last failing lt_ret_t from Tropic session / KEM INIT (0 = none). */
+extern volatile int se_tropic_die;
+
 void se_tropic_hw_init(void);
 uint32_t se_tropic_init_session(void);
 void se_tropic_deinit_session(void);
@@ -55,5 +58,7 @@ lt_handle_t *se_tropic_handle(void);
 
 /** Erase R-MEM 0–511 and ECC slot 0. Pairing slots unchanged. */
 uint32_t se_tropic_user_wipe(void);
+/** After OWNER SET succeeds: erase ML-KEM seed, PIN NVM, and ECC only. */
+uint32_t se_tropic_enroll_wipe(void);
 
 #endif /* SE_TROPIC_H */

@@ -44,9 +44,9 @@ _Min_Stack_Size = 0x400;	/* required amount of stack */
 /* Memories definition */
 MEMORY
 {
-  RAM     (xrw)	: ORIGIN = 0x30000000,	LENGTH = 192K - 512 /* Memory is divided. Actual start is 0x30000000 and actual length is 256K */
+  RAM     (xrw)	: ORIGIN = 0x30000000,	LENGTH = 224K - 512 /* SRAM1 192K + low 32K of SRAM2, minus the NSC window */
   SRAM4	  (xrw) : ORIGIN = 0x38000000,	LENGTH = 16K
-  RAM_NSC (xrw)	: ORIGIN = 0x3002FE00,	LENGTH = 512        /* Non-Secure Call-able region */
+  RAM_NSC (xrw)	: ORIGIN = 0x30037E00,	LENGTH = 512        /* Non-Secure Call-able region */
 }
 
 /* Sections */
@@ -149,6 +149,17 @@ SECTIONS
     _ebss = .;         /* define a global symbol at bss end */
     __bss_end__ = _ebss;
   } >RAM
+
+  /* Static buffers that do not fit on the TLS stack. See FLASH.ld. */
+  .sram4_bss (NOLOAD) :
+  {
+    . = ALIGN(16);
+    _ssram4 = .;
+    *(.sram4_bss)
+    *(.sram4_bss*)
+    . = ALIGN(16);
+    _esram4 = .;
+  } >SRAM4
 
   /* User_heap_stack section, used to check that there is enough "RAM" Ram type memory left */
   ._user_heap_stack :

@@ -4,8 +4,9 @@
  *
  * Starts after NonSecure arms a mode with a Unix timestamp. abort/reset clears
  * sync so the next command must include a fresh timestamp. PROVISION verifies
- * the SAE application CA from FLASH_CREDS, then sends the session uplink and
- * ingest pads. ENCRYPT / DECRYPT are mTLS and pin the peer to the enrolled
+ * the SAE application CA from FLASH_CREDS, then sends the session uplink,
+ * erases QKD pads, reports TROPIC_WIPE_FINISHED, and ingest pads.
+ * ENCRYPT / DECRYPT are mTLS and pin the peer to the enrolled
  * owner key, then wait for PIN + payload over TLS and reply with OTP. MANAGE
  * pins the same owner without a device client cert and streams one unsigned
  * command.
@@ -26,7 +27,13 @@ void se_tls_service_once(void);
  * @return 0 on success, -1 if already running, time not synced, or bad mode
  */
 int se_tls_arm(uint32_t mode);
-/** 1 while a mode is armed or a handshake/session is in progress. */
+/** 1 while a TLS mode is armed (handshake / app / shutdown). */
 int se_tls_session_active(void);
+/** 1 while TLS is armed or post-close TX (reply / close_notify) still drains. */
+int se_tls_pipe_busy(void);
+
+/** Last se_tls_abort(): 0 none, 1 connect, 2 wolfSSL_read, 3 manage accum, 4 rx overflow, 5 rx nsc, 6 pin, 8 wolfSSL_write, 11 uplink build, 12 tropic wipe. */
+extern volatile uint32_t se_tls_die;
+extern volatile int se_tls_die_err;
 
 #endif /* SE_TLS_CLIENT_H */

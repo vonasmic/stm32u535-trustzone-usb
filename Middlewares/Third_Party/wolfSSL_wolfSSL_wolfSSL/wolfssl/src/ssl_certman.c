@@ -23,6 +23,10 @@
 
 #include <wolfssl/internal.h>
 
+#if defined(WOLFSSL_RENESAS_TSIP_TLS) || defined(WOLFSSL_RENESAS_FSPSM_TLS)
+#include <wolfssl/wolfcrypt/port/Renesas/renesas_cmn.h>
+#endif
+
 #if !defined(WOLFSSL_SSL_CERTMAN_INCLUDED)
     #ifndef WOLFSSL_IGNORE_FILE_WARN
         #warning ssl_certman.c not to be compiled separately from ssl.c
@@ -748,6 +752,31 @@ void wolfSSL_CertManagerSetUnknownExtCallback(WOLFSSL_CERT_MANAGER* cm,
     }
 
 }
+
+#ifdef HAVE_CRL
+int wolfSSL_CertManagerSetCRLUnknownExtCallback(WOLFSSL_CERT_MANAGER* cm,
+        wc_UnknownExtCallback cb)
+{
+    WOLFSSL_ENTER("wolfSSL_CertManagerSetCRLUnknownExtCallback");
+    if (cm == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    cm->crlUnknownExtCallback = cb;
+    return WOLFSSL_SUCCESS;
+}
+
+int wolfSSL_CertManagerSetCRLUnknownExtCallbackEx(WOLFSSL_CERT_MANAGER* cm,
+        wc_UnknownExtCallbackEx cb, void* ctx)
+{
+    WOLFSSL_ENTER("wolfSSL_CertManagerSetCRLUnknownExtCallbackEx");
+    if (cm == NULL) {
+        return BAD_FUNC_ARG;
+    }
+    cm->crlUnknownExtCallbackEx = cb;
+    cm->crlUnknownExtCallbackExCtx = ctx;
+    return WOLFSSL_SUCCESS;
+}
+#endif /* HAVE_CRL */
 #endif /* WC_ASN_UNKNOWN_EXT_CB */
 
 #if (!defined(NO_WOLFSSL_CLIENT) || !defined(WOLFSSL_NO_CLIENT_AUTH)) || \
@@ -1719,6 +1748,7 @@ int CM_GetCertCacheMemSize(WOLFSSL_CERT_MANAGER* cm)
  * @return  WOLFSSL_SUCCESS on success.
  * @return  WOLFSSL_FAILURE when initializing the CRL object fails.
  * @return  BAD_FUNC_ARG when cm is NULL.
+ * @return  BAD_MUTEX_E when locking the certificate manager fails.
  * @return  MEMORY_E when dynamic memory allocation fails.
  * @return  NOT_COMPILED_IN when the CRL feature is disabled.
  */
@@ -1752,30 +1782,58 @@ int wolfSSL_CertManagerEnableCRL(WOLFSSL_CERT_MANAGER* cm, int options)
 #else
         /* Create CRL object if not present. */
         if (cm->crl == NULL) {
-            /* Allocate memory for CRL object. */
-            cm->crl = (WOLFSSL_CRL*)XMALLOC(sizeof(WOLFSSL_CRL), cm->heap,
-                                            DYNAMIC_TYPE_CRL);
-            if (cm->crl == NULL) {
-                ret = MEMORY_E;
+            WOLFSSL_CRL* crl;
+
+            /* Serialize creation so that concurrent callers cannot both
+             * allocate a CRL object. */
+            if (wc_LockMutex(&cm->caLock) != 0) {
+                WOLFSSL_MSG("wc_LockMutex on caLock failed");
+                ret = BAD_MUTEX_E;
             }
-            if (ret == WOLFSSL_SUCCESS) {
-                /* Reset fields of CRL object. */
-                XMEMSET(cm->crl, 0, sizeof(WOLFSSL_CRL));
-                /* Initialize CRL object. */
-                if (InitCRL(cm->crl, cm) != 0) {
-                    WOLFSSL_MSG("Init CRL failed");
-                    /* Dispose of CRL object - indicating dynamically allocated.
-                     */
-                    FreeCRL(cm->crl, 1);
-                    cm->crl = NULL;
-                    ret = WOLFSSL_FAILURE;
+            else {
+                /* Another thread may have created the object already. */
+                if (cm->crl == NULL) {
+                    /* Allocate memory for CRL object. */
+                    crl = (WOLFSSL_CRL*)XMALLOC(sizeof(WOLFSSL_CRL), cm->heap,
+                                                DYNAMIC_TYPE_CRL);
+                    if (crl == NULL) {
+                        ret = MEMORY_E;
+                    }
+                    else {
+                        /* Reset fields of CRL object. */
+                        XMEMSET(crl, 0, sizeof(WOLFSSL_CRL));
+                        /* Initialize CRL object. */
+                        if (InitCRL(crl, cm) != 0) {
+                            WOLFSSL_MSG("Init CRL failed");
+                            /* A failed InitCRL() has already released whatever
+                             * it managed to take, so only the memory is left
+                             * to dispose of. FreeCRL() would free the lock and
+                             * the condition variable a second time. */
+                            XFREE(crl, cm->heap, DYNAMIC_TYPE_CRL);
+                            ret = WOLFSSL_FAILURE;
+                        }
+                        else {
+                        #if defined(HAVE_CRL_IO) && defined(USE_WOLFSSL_IO)
+                            /* Set before publishing: a thread that picks the
+                             * object up must not find it without a lookup
+                             * callback and fall back to CRL_MISSING. */
+                            crl->crlIOCb = EmbedCrlLookup;
+                        #endif
+                            /* Publish only once fully initialized so that
+                             * other threads never see a half-built object. */
+                            cm->crl = crl;
+                        }
+                    }
                 }
+                wc_UnLockMutex(&cm->caLock);
             }
         }
 
         if (ret == WOLFSSL_SUCCESS) {
         #if defined(HAVE_CRL_IO) && defined(USE_WOLFSSL_IO)
-            /* Use built-in callback to lookup CRL from URL. */
+            /* Redundant for an object created above, but the CRL object can
+             * also have been published by wolfSSL_X509_STORE_add_crl(), which
+             * does not set the lookup callback. */
             cm->crl->crlIOCb = EmbedCrlLookup;
         #endif
         #if defined(OPENSSL_COMPATIBLE_DEFAULTS)
@@ -2137,10 +2195,12 @@ int wolfSSL_CertManagerLoadCRLFile(WOLFSSL_CERT_MANAGER* cm, const char* file,
  * @param [in] cm       Certificate manager.
  * @param [in] options  Options for using OCSP. Valid flags:
  *                        WOLFSSL_OCSP_URL_OVERRIDE, WOLFSSL_OCSP_NO_NONCE,
- *                        WOLFSSL_OCSP_CHECKALL.
+ *                        WOLFSSL_OCSP_CHECKALL,
+ *                        WOLFSSL_OCSP_FAIL_IF_NOT_SUPPORTED.
  * @return  WOLFSSL_SUCCESS on success.
- * @return  0 when initializing the OCSP object fails.
+ * @return  WOLFSSL_FAILURE when initializing the OCSP object fails.
  * @return  BAD_FUNC_ARG when cm is NULL.
+ * @return  BAD_MUTEX_E when locking the certificate manager fails.
  * @return  MEMORY_E when dynamic memory allocation fails.
  * @return  NOT_COMPILED_IN when the OCSP feature is disabled.
  */
@@ -2166,24 +2226,44 @@ int wolfSSL_CertManagerEnableOCSP(WOLFSSL_CERT_MANAGER* cm, int options)
     if (ret == WOLFSSL_SUCCESS) {
         /* Check whether OCSP object is available. */
         if (cm->ocsp == NULL) {
-            /* Allocate memory for OCSP object. */
-            cm->ocsp = (WOLFSSL_OCSP*)XMALLOC(sizeof(WOLFSSL_OCSP), cm->heap,
-                DYNAMIC_TYPE_OCSP);
-            if (cm->ocsp == NULL) {
-                ret = MEMORY_E;
+            WOLFSSL_OCSP* ocsp;
+
+            /* Serialize creation so that concurrent callers cannot both
+             * allocate an OCSP object. */
+            if (wc_LockMutex(&cm->caLock) != 0) {
+                WOLFSSL_MSG("wc_LockMutex on caLock failed");
+                ret = BAD_MUTEX_E;
             }
-            if (ret == WOLFSSL_SUCCESS) {
-                /* Reset the fields of the OCSP object. */
-                XMEMSET(cm->ocsp, 0, sizeof(WOLFSSL_OCSP));
-                /* Initialize the OCSP object. */
-                if (InitOCSP(cm->ocsp, cm) != 0) {
-                    WOLFSSL_MSG("Init OCSP failed");
-                    /* Dispose of OCSP object - indicating dynamically
-                     * allocated. */
-                    FreeOCSP(cm->ocsp, 1);
-                    cm->ocsp = NULL;
-                    ret = 0;
+            else {
+                /* Another thread may have created the object already. */
+                if (cm->ocsp == NULL) {
+                    /* Allocate memory for OCSP object. */
+                    ocsp = (WOLFSSL_OCSP*)XMALLOC(sizeof(WOLFSSL_OCSP),
+                        cm->heap, DYNAMIC_TYPE_OCSP);
+                    if (ocsp == NULL) {
+                        ret = MEMORY_E;
+                    }
+                    else {
+                        /* Reset the fields of the OCSP object. */
+                        XMEMSET(ocsp, 0, sizeof(WOLFSSL_OCSP));
+                        /* Initialize the OCSP object. */
+                        if (InitOCSP(ocsp, cm) != 0) {
+                            WOLFSSL_MSG("Init OCSP failed");
+                            /* InitOCSP() only fails when it could not create
+                             * the lock, so there is nothing to release but the
+                             * memory. FreeOCSP() would destroy a mutex that was
+                             * never initialized. */
+                            XFREE(ocsp, cm->heap, DYNAMIC_TYPE_OCSP);
+                            ret = WOLFSSL_FAILURE;
+                        }
+                        else {
+                            /* Publish only once fully initialized so that
+                             * other threads never see a half-built object. */
+                            cm->ocsp = ocsp;
+                        }
+                    }
                 }
+                wc_UnLockMutex(&cm->caLock);
             }
         }
     }
@@ -2200,6 +2280,10 @@ int wolfSSL_CertManagerEnableOCSP(WOLFSSL_CERT_MANAGER* cm, int options)
         /* Set all OCSP checks on if requested. */
         if (options & WOLFSSL_OCSP_CHECKALL) {
             cm->ocspCheckAll = 1;
+        }
+        /* Fail closed on certs that advertise no OCSP responder if requested. */
+        if (options & WOLFSSL_OCSP_FAIL_IF_NOT_SUPPORTED) {
+            cm->ocspFailIfNotSupported = 1;
         }
     #ifndef WOLFSSL_USER_IO
         /* Set built-in OCSP lookup. */
@@ -2244,8 +2328,9 @@ int wolfSSL_CertManagerDisableOCSP(WOLFSSL_CERT_MANAGER* cm)
  *                        WOLFSSL_OCSP_URL_OVERRIDE, WOLFSSL_OCSP_NO_NONCE,
  *                        WOLFSSL_OCSP_CHECKALL.
  * @return  WOLFSSL_SUCCESS on success.
- * @return  0 when initializing the OCSP stapling object fails.
+ * @return  WOLFSSL_FAILURE when initializing the OCSP stapling object fails.
  * @return  BAD_FUNC_ARG when cm is NULL.
+ * @return  BAD_MUTEX_E when locking the certificate manager fails.
  * @return  MEMORY_E when dynamic memory allocation fails.
  * @return  NOT_COMPILED_IN when the OCSP stapling feature is disabled.
  */
@@ -2271,24 +2356,44 @@ int wolfSSL_CertManagerEnableOCSPStapling(WOLFSSL_CERT_MANAGER* cm)
     if (ret == WOLFSSL_SUCCESS) {
         /* Check whether OCSP object is available. */
         if (cm->ocsp_stapling == NULL) {
-            /* Allocate memory for OCSP stapling object. */
-            cm->ocsp_stapling = (WOLFSSL_OCSP*)XMALLOC(sizeof(WOLFSSL_OCSP),
-                cm->heap, DYNAMIC_TYPE_OCSP);
-            if (cm->ocsp_stapling == NULL) {
-                ret = MEMORY_E;
+            WOLFSSL_OCSP* ocsp;
+
+            /* Serialize creation so that concurrent callers cannot both
+             * allocate an OCSP stapling object. */
+            if (wc_LockMutex(&cm->caLock) != 0) {
+                WOLFSSL_MSG("wc_LockMutex on caLock failed");
+                ret = BAD_MUTEX_E;
             }
-            if (ret == WOLFSSL_SUCCESS) {
-                /* Reset the fields of the OCSP object. */
-                XMEMSET(cm->ocsp_stapling, 0, sizeof(WOLFSSL_OCSP));
-                /* Initialize the OCSP stapling object. */
-                if (InitOCSP(cm->ocsp_stapling, cm) != 0) {
-                    WOLFSSL_MSG("Init OCSP failed");
-                    /* Dispose of OCSP stapling object - indicating dynamically
-                     * allocated. */
-                    FreeOCSP(cm->ocsp_stapling, 1);
-                    cm->ocsp_stapling = NULL;
-                    ret = 0;
+            else {
+                /* Another thread may have created the object already. */
+                if (cm->ocsp_stapling == NULL) {
+                    /* Allocate memory for OCSP stapling object. */
+                    ocsp = (WOLFSSL_OCSP*)XMALLOC(sizeof(WOLFSSL_OCSP),
+                        cm->heap, DYNAMIC_TYPE_OCSP);
+                    if (ocsp == NULL) {
+                        ret = MEMORY_E;
+                    }
+                    else {
+                        /* Reset the fields of the OCSP object. */
+                        XMEMSET(ocsp, 0, sizeof(WOLFSSL_OCSP));
+                        /* Initialize the OCSP stapling object. */
+                        if (InitOCSP(ocsp, cm) != 0) {
+                            WOLFSSL_MSG("Init OCSP failed");
+                            /* InitOCSP() only fails when it could not create
+                             * the lock, so there is nothing to release but the
+                             * memory. FreeOCSP() would destroy a mutex that was
+                             * never initialized. */
+                            XFREE(ocsp, cm->heap, DYNAMIC_TYPE_OCSP);
+                            ret = WOLFSSL_FAILURE;
+                        }
+                        else {
+                            /* Publish only once fully initialized so that
+                             * other threads never see a half-built object. */
+                            cm->ocsp_stapling = ocsp;
+                        }
+                    }
                 }
+                wc_UnLockMutex(&cm->caLock);
             }
         }
     }
@@ -2446,7 +2551,12 @@ int wolfSSL_CertManagerCheckOCSP(WOLFSSL_CERT_MANAGER* cm,
             }
             /* Do OCSP checks with decoded certificate. */
             else if ((ret = CheckCertOCSP(cm->ocsp, cert)) != 0) {
-                WOLFSSL_MSG("CheckCertOCSP failed");
+                /* Apply the caller's policy for a cert that advertises no
+                 * responder rather than reporting a lookup failure. */
+                if (ret == WC_NO_ERR_TRACE(OCSP_NO_URL))
+                    ret = OcspNoUrlPolicy(cm);
+                if (ret != 0)
+                    WOLFSSL_MSG("CheckCertOCSP failed");
             }
 
             /* Dispose of dynamically allocated memory. */
@@ -2485,7 +2595,7 @@ int wolfSSL_CertManagerCheckOCSPResponse(WOLFSSL_CERT_MANAGER *cm,
     if ((ret == 0) && cm->ocspEnabled) {
         /* Check OCSP response with OCSP object from certificate manager. */
         ret = CheckOcspResponse(cm->ocsp, response, responseSz, responseBuffer,
-            status, entry, ocspRequest, NULL);
+            status, entry, ocspRequest, NULL, NULL);
     }
 
     return (ret == 0) ? WOLFSSL_SUCCESS : ret;
@@ -2618,39 +2728,31 @@ int AlreadySigner(WOLFSSL_CERT_MANAGER* cm, byte* hash)
 }
 
 #ifdef WOLFSSL_TRUST_PEER_CERT
-/* hash is the SHA digest of name, just use first 32 bits as hash */
+/* use the first 32 bits of the digest as the table row */
 static WC_INLINE word32 TrustedPeerHashSigner(const byte* hash)
 {
     return MakeWordFromHash(hash) % TP_TABLE_SIZE;
 }
 
-/* does trusted peer already exist on signer list */
+/* does trusted peer already exist in the table */
 int AlreadyTrustedPeer(WOLFSSL_CERT_MANAGER* cm, DecodedCert* cert)
 {
     TrustedPeerCert* tp;
     int     ret = 0;
-    word32  row = TrustedPeerHashSigner(cert->subjectHash);
+    byte    certHash[KEYID_SIZE];
+    word32  row;
+
+    if (cert->source == NULL || cert->maxIdx == 0 ||
+            CalcHashId(cert->source, cert->maxIdx, certHash) != 0)
+        return ret;
+    row = TrustedPeerHashSigner(certHash);
 
     if (wc_LockMutex(&cm->tpLock) != 0)
         return  ret;
     tp = cm->tpTable[row];
     while (tp) {
-        if ((XMEMCMP(cert->subjectHash, tp->subjectNameHash,
-                SIGNER_DIGEST_SIZE) == 0)
-    #ifndef WOLFSSL_NO_ISSUERHASH_TDPEER
-         && (XMEMCMP(cert->issuerHash, tp->issuerHash,
-                SIGNER_DIGEST_SIZE) == 0)
-    #endif
-        )
+        if (XMEMCMP(tp->certHash, certHash, KEYID_SIZE) == 0)
             ret = 1;
-    #ifndef NO_SKID
-        if (cert->extSubjKeyIdSet) {
-            /* Compare SKID as well if available */
-            if (ret == 1 && XMEMCMP(cert->extSubjKeyId, tp->subjectKeyIdHash,
-                    SIGNER_DIGEST_SIZE) != 0)
-                ret = 0;
-        }
-    #endif
         if (ret == 1)
             break;
         tp = tp->next;
@@ -2668,34 +2770,27 @@ TrustedPeerCert* GetTrustedPeer(void* vp, DecodedCert* cert)
     WOLFSSL_CERT_MANAGER* cm = (WOLFSSL_CERT_MANAGER*)vp;
     TrustedPeerCert* ret = NULL;
     TrustedPeerCert* tp  = NULL;
+    byte    certHash[KEYID_SIZE];
     word32  row;
 
     if (cm == NULL || cert == NULL)
         return NULL;
 
-    row = TrustedPeerHashSigner(cert->subjectHash);
+    /* whole-certificate identity test: index the table by the hash of the
+     * presented certificate's exact bytes and compare the full digest */
+    if (cert->source == NULL || cert->maxIdx == 0 ||
+            CalcHashId(cert->source, cert->maxIdx, certHash) != 0)
+        return NULL;
+
+    row = TrustedPeerHashSigner(certHash);
 
     if (wc_LockMutex(&cm->tpLock) != 0)
         return ret;
 
     tp = cm->tpTable[row];
     while (tp) {
-        if ((XMEMCMP(cert->subjectHash, tp->subjectNameHash,
-                SIGNER_DIGEST_SIZE) == 0)
-        #ifndef WOLFSSL_NO_ISSUERHASH_TDPEER
-             && (XMEMCMP(cert->issuerHash, tp->issuerHash,
-                SIGNER_DIGEST_SIZE) == 0)
-        #endif
-            )
+        if (XMEMCMP(tp->certHash, certHash, KEYID_SIZE) == 0)
             ret = tp;
-    #ifndef NO_SKID
-        if (cert->extSubjKeyIdSet) {
-            /* Compare SKID as well if available */
-            if (ret != NULL && XMEMCMP(cert->extSubjKeyId, tp->subjectKeyIdHash,
-                    SIGNER_DIGEST_SIZE) != 0)
-                ret = NULL;
-        }
-    #endif
         if (ret != NULL)
             break;
         tp = tp->next;
@@ -2703,28 +2798,6 @@ TrustedPeerCert* GetTrustedPeer(void* vp, DecodedCert* cert)
     wc_UnLockMutex(&cm->tpLock);
 
     return ret;
-}
-
-
-int MatchTrustedPeer(TrustedPeerCert* tp, DecodedCert* cert)
-{
-    if (tp == NULL || cert == NULL)
-        return BAD_FUNC_ARG;
-
-    /* subject key id or subject hash has been compared when searching
-       tpTable for the cert from function GetTrustedPeer */
-
-    /* compare signatures */
-    if (tp->sigLen == cert->sigLength) {
-        if (XMEMCMP(tp->sig, cert->signature, cert->sigLength)) {
-            return WOLFSSL_FAILURE;
-        }
-    }
-    else {
-        return WOLFSSL_FAILURE;
-    }
-
-    return WOLFSSL_SUCCESS;
 }
 #endif /* WOLFSSL_TRUST_PEER_CERT */
 
@@ -2909,68 +2982,39 @@ int AddTrustedPeer(WOLFSSL_CERT_MANAGER* cm, DerBuffer** pDer, int verify)
     }
     XMEMSET(peerCert, 0, sizeof(TrustedPeerCert));
 
+    /* hash of the whole certificate DER: table index and identity test */
+    ret = CalcHashId(der->buffer, der->length, peerCert->certHash);
+    if (ret != 0) {
+        FreeDecodedCert(cert);
+        XFREE(cert, cm->heap, DYNAMIC_TYPE_DCERT);
+        FreeTrustedPeer(peerCert, cm->heap);
+        FreeDer(&der);
+        return ret;
+    }
+
     if (AlreadyTrustedPeer(cm, cert)) {
         WOLFSSL_MSG("\tAlready have this CA, not adding again");
         FreeTrustedPeer(peerCert, cm->heap);
         (void)ret;
     }
     else {
-        /* add trusted peer signature */
-        peerCert->sigLen = cert->sigLength;
-        peerCert->sig = (byte *)XMALLOC(cert->sigLength, cm->heap,
-                                                        DYNAMIC_TYPE_SIGNATURE);
-        if (peerCert->sig == NULL) {
+        peerCert->next = NULL;
+        row = (int)TrustedPeerHashSigner(peerCert->certHash);
+
+        if (wc_LockMutex(&cm->tpLock) == 0) {
+            peerCert->next = cm->tpTable[row];
+            cm->tpTable[row] = peerCert;   /* takes ownership */
+            wc_UnLockMutex(&cm->tpLock);
+        }
+        else {
+            WOLFSSL_MSG("\tTrusted Peer Cert Mutex Lock failed");
             FreeDecodedCert(cert);
             XFREE(cert, cm->heap, DYNAMIC_TYPE_DCERT);
             FreeTrustedPeer(peerCert, cm->heap);
             FreeDer(&der);
-            return MEMORY_E;
+            return BAD_MUTEX_E;
         }
-        XMEMCPY(peerCert->sig, cert->signature, cert->sigLength);
-
-        /* add trusted peer name */
-        peerCert->nameLen = cert->subjectCNLen;
-        peerCert->name    = cert->subjectCN;
-        #ifndef IGNORE_NAME_CONSTRAINTS
-            peerCert->permittedNames = cert->permittedNames;
-            peerCert->excludedNames  = cert->excludedNames;
-        #endif
-
-        /* add SKID when available and hash of name */
-        #ifndef NO_SKID
-            XMEMCPY(peerCert->subjectKeyIdHash, cert->extSubjKeyId,
-                   SIGNER_DIGEST_SIZE);
-        #endif
-            XMEMCPY(peerCert->subjectNameHash, cert->subjectHash,
-                    SIGNER_DIGEST_SIZE);
-        #ifndef WOLFSSL_NO_ISSUERHASH_TDPEER
-            XMEMCPY(peerCert->issuerHash, cert->issuerHash,
-                    SIGNER_DIGEST_SIZE);
-        #endif
-            /* If Key Usage not set, all uses valid. */
-            peerCert->next    = NULL;
-            cert->subjectCN = 0;
-        #ifndef IGNORE_NAME_CONSTRAINTS
-            cert->permittedNames = NULL;
-            cert->excludedNames = NULL;
-        #endif
-
-            row = (int)TrustedPeerHashSigner(peerCert->subjectNameHash);
-
-            if (wc_LockMutex(&cm->tpLock) == 0) {
-                peerCert->next = cm->tpTable[row];
-                cm->tpTable[row] = peerCert;   /* takes ownership */
-                wc_UnLockMutex(&cm->tpLock);
-            }
-            else {
-                WOLFSSL_MSG("\tTrusted Peer Cert Mutex Lock failed");
-                FreeDecodedCert(cert);
-                XFREE(cert, cm->heap, DYNAMIC_TYPE_DCERT);
-                FreeTrustedPeer(peerCert, cm->heap);
-                FreeDer(&der);
-                return BAD_MUTEX_E;
-            }
-        }
+    }
 
     WOLFSSL_MSG("\tFreeing parsed trusted peer cert");
     FreeDecodedCert(cert);
@@ -3203,6 +3247,10 @@ int AddCA(WOLFSSL_CERT_MANAGER* cm, DerBuffer** pDer, int type, int verify)
         WOLFSSL_MSG("\tCan't add as CA if not actually one");
         ret = NOT_CA_ERROR;
     }
+    /* Enforced by default. ALLOW_INVALID_CERTSIGN is a deliberate,
+     * RFC-non-conformant opt-out for interop with deployed certs that carry
+     * malformed keyUsage; see the macro list at the top of
+     * wolfcrypt/src/asn.c. */
 #ifndef ALLOW_INVALID_CERTSIGN
     else if (ret == 0 && cert->isCA == 1 && type != WOLFSSL_USER_CA &&
         !cert->selfSigned && cert->extKeyUsageSet &&

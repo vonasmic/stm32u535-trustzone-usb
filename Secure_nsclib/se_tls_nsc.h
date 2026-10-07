@@ -20,6 +20,14 @@ extern "C" {
 
 #define SECURE_USB_PKT_MAX 64u
 
+/** CDC frame: magic u16le, type u8, length u16le, payload. */
+#define USB_FRAME_MAGIC    0x6767u
+#define USB_FRAME_TYPE_CMD 0x00u
+#define USB_FRAME_TYPE_SEC 0x01u
+#define USB_FRAME_HDR_LEN  5u
+#define USB_FRAME_MAX      1024u
+#define USB_CMD_QUEUE_MAX  4u
+
 #define SECURE_USB_OK        0u
 #define SECURE_USB_BUSY      1u
 #define SECURE_USB_LINK_DOWN 2u
@@ -33,7 +41,12 @@ extern "C" {
 #define SECURE_USB_EVT_DTR_OFF    3u
 
 uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len);
-uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t *out_len);
+/**
+ * Pop the next TX span. @p out_type is USB_FRAME_TYPE_CMD or USB_FRAME_TYPE_SEC
+ * for these bytes. A pop does not cross from plain into TLS or the other way.
+ */
+uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t *out_len,
+                                            uint32_t *out_type);
 uint32_t CSME_NSE_API SECURE_UsbEvent_nsc_call(uint32_t event);
 /** Run one TLS step if a session is armed; returns IDLE when none is active. */
 uint32_t CSME_NSE_API SECURE_UsbService_nsc_call(void);
@@ -80,10 +93,10 @@ uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64);
 /** SHA-384 client hash, 48 bytes. */
 uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(uint8_t *out48);
-/** Raw ML-DSA-44 pub. @p len_inout in: cap; out: actual length. */
-uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(uint8_t *out, uint32_t *len_inout);
-/** ML-KEM-768 pk. @p len_inout in: cap; out: actual length. */
-uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(uint8_t *out, uint32_t *len_inout);
+/** Raw ML-DSA-44 pub, hex on the USB TX ring. */
+uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(void);
+/** ML-KEM-768 pk, hex on the USB TX ring. EMPTY when no key is stored. */
+uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
 /** Four u32le: enc left, enc cap, dec left, dec cap. */
 uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4]);
 

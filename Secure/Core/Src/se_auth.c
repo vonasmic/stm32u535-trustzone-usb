@@ -10,6 +10,8 @@
 #include "se_manage.h"
 #include "se_nv.h"
 #include "se_owner.h"
+#include "se_ram.h"
+#include "se_tropic.h"
 #include "se_usb_tls.h"
 
 static uint8_t s_armed;
@@ -30,10 +32,16 @@ void se_auth_abort(void)
 
 uint32_t se_auth_begin_owner(void)
 {
+    se_owner_die = 0U;
+    se_owner_die_err = 0;
     if (s_armed != 0U) {
+        se_owner_die = 1U;
         return SE_AUTH_ERR;
     }
-    if (se_nv_has_owner() != 0) {
+    /* A failed keygen still leaves the owner record. Retry must reach the id step. */
+    if ((se_nv_has_owner() != 0) && (se_nv_has_device_sk() != 0)) {
+        se_owner_die = 1U;
+        se_owner_die_err = 1;
         return SE_AUTH_ERR;
     }
     se_usb_tls_clear_rx();
@@ -54,32 +62,59 @@ static void run_owner_set(const uint8_t *f, uint32_t len)
 
     if (se_manage_owner_set_parse(f, len, &pw, &pw_len, &spki, &spki_len, &ca, &ca_len) !=
         SE_MANAGE_OK) {
+        se_owner_die = 2U;
+        se_ram_sample();
         se_usb_debug_puts("failed parse");
         return;
     }
-    if (se_owner_set(pw, pw_len, spki, spki_len) != LT_OK) {
-        se_usb_debug_puts("failed owner");
-        return;
+    if (se_nv_has_owner() == 0) {
+        if (se_owner_set(pw, pw_len, spki, spki_len) != LT_OK) {
+            se_ram_sample();
+            se_usb_debug_puts("failed owner");
+            return;
+        }
     }
+    /* Drop a leftover Tropic L3 session so ML-DSA keygen can use the heap. */
+    se_tropic_deinit_session();
     if (se_device_id_ensure() != LT_OK) {
+        if (se_owner_die == 0U) {
+            se_owner_die = 6U;
+        }
+        se_ram_sample();
         se_usb_debug_puts("failed id");
         return;
     }
     if ((ca_len != 0U) && (se_creds_set_sae_ca(ca, ca_len) != LT_OK)) {
+        se_owner_die = 7U;
+        se_ram_sample();
         se_usb_debug_puts("failed ca");
         return;
     }
     se_usb_debug_puts("ok");
+    /* After the host has "ok": leftover seed/PIN/ECC from a prior enroll. */
+    if (se_tropic_enroll_wipe() != SE_TROPIC_OK) {
+        se_owner_die = 4U;
+        se_owner_die_err = se_tropic_die;
+    }
+    se_tropic_deinit_session();
+    se_ram_sample();
 }
 
 void se_auth_service(void)
 {
-    uint8_t *frame = se_manage_buf();
-    uint32_t cap = se_manage_buf_cap();
+    uint8_t *frame;
+    uint32_t cap;
     int n;
     int st;
 
     if (s_armed == 0U) {
+        return;
+    }
+    frame = se_manage_buf();
+    cap = se_manage_buf_cap();
+    if (frame == NULL) {
+        se_usb_debug_puts("failed ram");
+        se_auth_abort();
         return;
     }
     if (se_usb_tls_rx_overflow() != 0U) {

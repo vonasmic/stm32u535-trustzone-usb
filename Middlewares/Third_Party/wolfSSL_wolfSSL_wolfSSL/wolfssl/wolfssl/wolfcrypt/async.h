@@ -391,6 +391,10 @@ typedef struct WC_ASYNC_DEV {
 #elif defined(WOLFSSL_ASYNC_CRYPT_SW)
     WC_ASYNC_SW         sw;
 #endif
+#if defined(WOLF_CRYPTO_CB) && defined(WOLF_CRYPTO_CB_ASYNC_POLL)
+    /* Crypto callback to re-enter at poll time. INVALID_DEVID: none. */
+    int cryptocbDevId;
+#endif
 } WC_ASYNC_DEV;
 
 
@@ -427,6 +431,10 @@ WOLFSSL_API int wc_AsyncSleep(word32 ms);
 
 #ifdef WOLFSSL_ASYNC_CRYPT_SW
     WOLFSSL_API int wc_AsyncSwInit(WC_ASYNC_DEV* dev, int type);
+    /* Test hook: force the given WC_ASYNC_SW_TYPE to complete synchronously
+     * (do not suspend) so the software simulator can reproduce a specific
+     * suspend ordering. Pass ASYNC_SW_NONE to disable. */
+    WOLFSSL_TEST_VIS void wolfAsync_SwForceSyncType(int type);
 #endif
 
 /* Pthread Helpers */

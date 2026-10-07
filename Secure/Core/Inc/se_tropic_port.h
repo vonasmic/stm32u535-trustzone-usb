@@ -84,7 +84,9 @@ lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE]);
 lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE]);
 
 /**
- * 32-byte Tropic-seal root. Generate-once when the NV header is erased.
+ * 32-byte Tropic-seal root. A programmed header is read in place from flash.
+ * The 8 KB page is loaded only when the header is still erased, so the
+ * generate-once program does not wipe the rest of the record.
  * Not used to encrypt NV. STM32 R-MEM AEAD HKDF uses this; host AEAD stays a test key.
  */
 lt_ret_t se_tropic_port_dwk(uint8_t out[SE_NV_DWK_LEN]);

@@ -382,6 +382,8 @@ typedef union {
 #define WC_NID_ffdhe2048                   1126
 #define WC_NID_ffdhe3072                   1127
 #define WC_NID_ffdhe4096                   1128
+#define WC_NID_ffdhe6144                   1129
+#define WC_NID_ffdhe8192                   1130
 #define WC_NID_rc4                         5
 #define WC_NID_bf_cbc                      91
 #define WC_NID_bf_ecb                      92
@@ -664,6 +666,8 @@ enum {
 #define NID_ffdhe2048 WC_NID_ffdhe2048
 #define NID_ffdhe3072 WC_NID_ffdhe3072
 #define NID_ffdhe4096 WC_NID_ffdhe4096
+#define NID_ffdhe6144 WC_NID_ffdhe6144
+#define NID_ffdhe8192 WC_NID_ffdhe8192
 #define NID_rc4 WC_NID_rc4
 #define NID_bf_cbc WC_NID_bf_cbc
 #define NID_bf_ecb WC_NID_bf_ecb
@@ -958,6 +962,10 @@ WOLFSSL_API int wolfSSL_EVP_PKEY_set1_RSA(WOLFSSL_EVP_PKEY *pkey, WOLFSSL_RSA *k
 WOLFSSL_API int wolfSSL_EVP_PKEY_set1_DSA(WOLFSSL_EVP_PKEY *pkey, WOLFSSL_DSA *key);
 WOLFSSL_API int wolfSSL_EVP_PKEY_set1_DH(WOLFSSL_EVP_PKEY *pkey, WOLFSSL_DH *key);
 WOLFSSL_API int wolfSSL_EVP_PKEY_set1_EC_KEY(WOLFSSL_EVP_PKEY *pkey, WOLFSSL_EC_KEY *key);
+WOLFSSL_API int wolfSSL_EVP_PKEY_set1_encoded_public_key(WOLFSSL_EVP_PKEY *pkey,
+    const unsigned char *pub, size_t publen);
+WOLFSSL_API size_t wolfSSL_EVP_PKEY_get1_encoded_public_key(WOLFSSL_EVP_PKEY *pkey,
+    unsigned char **ppub);
 WOLFSSL_API int wolfSSL_EVP_PKEY_assign(WOLFSSL_EVP_PKEY *pkey, int type, void *key);
 
 WOLFSSL_API const unsigned char* wolfSSL_EVP_PKEY_get0_hmac(const WOLFSSL_EVP_PKEY* pkey,
@@ -1392,6 +1400,12 @@ WOLFSSL_API int wolfSSL_EVP_SignInit_ex(WOLFSSL_EVP_MD_CTX* ctx,
 #define EVP_PKEY_get0_DH               wolfSSL_EVP_PKEY_get0_DH
 #define EVP_PKEY_get1_DH               wolfSSL_EVP_PKEY_get1_DH
 #define EVP_PKEY_get0_EC_KEY           wolfSSL_EVP_PKEY_get0_EC_KEY
+/* New (OpenSSL 3.0+) names and the deprecated tls_encodedpoint names map to the
+ * same implementations. */
+#define EVP_PKEY_set1_encoded_public_key wolfSSL_EVP_PKEY_set1_encoded_public_key
+#define EVP_PKEY_get1_encoded_public_key wolfSSL_EVP_PKEY_get1_encoded_public_key
+#define EVP_PKEY_set1_tls_encodedpoint   wolfSSL_EVP_PKEY_set1_encoded_public_key
+#define EVP_PKEY_get1_tls_encodedpoint   wolfSSL_EVP_PKEY_get1_encoded_public_key
 #define EVP_PKEY_get0_hmac             wolfSSL_EVP_PKEY_get0_hmac
 #define EVP_PKEY_new_mac_key           wolfSSL_EVP_PKEY_new_mac_key
 #define EVP_PKEY_new_CMAC_key          wolfSSL_EVP_PKEY_new_CMAC_key

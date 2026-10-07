@@ -316,6 +316,8 @@ void wc_ecc_key_free(ecc_key* key);
     shared key
     \return MP_MEM may be returned if there is an error while computing the
     shared key
+    \return ECC_INF_E returned when the computed shared secret is the point at
+    infinity
 
     \param private_key pointer to the ecc_key structure containing the local
     private key
@@ -680,7 +682,8 @@ int wc_ecc_init(ecc_key* key);
 
     \param key pointer to the ecc_key object to initialize
     \param heap pointer to a heap identifier
-    \param devId ID to use with crypto callbacks or async hardware. Set to INVALID_DEVID (-2) if not used
+    \param devId ID to use with crypto callbacks or async hardware. Set to
+    INVALID_DEVID if not used
 
     _Example_
     \code
@@ -701,8 +704,11 @@ int wc_ecc_init_ex(ecc_key* key, void* heap, int devId);
     \brief This function uses a user defined heap and allocates space for the
     key structure.
 
-    \return 0 Returned upon successfully initializing the ecc_key object
-    \return MEMORY_E Returned if there is an error allocating memory
+    \param heap pointer to a heap identifier
+
+    \return Non-null returned upon successfully allocating and initializing the
+    ecc_key object
+    \return NULL returned if there is an error allocating memory
 
 
     _Example_
@@ -710,12 +716,41 @@ int wc_ecc_init_ex(ecc_key* key, void* heap, int devId);
     wc_ecc_key_new(&heap);
     \endcode
 
+    \sa wc_ecc_key_new_ex
     \sa wc_ecc_make_key
     \sa wc_ecc_key_free
     \sa wc_ecc_init
 */
 
 ecc_key* wc_ecc_key_new(void* heap);
+
+/*!
+    \ingroup ECC
+
+    \brief This function uses a user defined heap and allocates space for the
+    key structure.
+
+    \param heap pointer to a heap identifier
+    \param devId ID to use with crypto callbacks or async hardware. Set to
+    INVALID_DEVID if not used
+
+    \return Non-null returned upon successfully allocating and initializing the
+    ecc_key object
+    \return NULL returned if there is an error allocating memory
+
+
+    _Example_
+    \code
+    wc_ecc_key_new_ex(&heap, MY_DEVID);
+    \endcode
+
+    \sa wc_ecc_key_new
+    \sa wc_ecc_make_key
+    \sa wc_ecc_key_free
+    \sa wc_ecc_init
+*/
+
+ecc_key* wc_ecc_key_new_ex(void* heap, int devId);
 
 /*!
     \ingroup ECC
@@ -1286,6 +1321,110 @@ int wc_ecc_import_private_key(const byte* priv, word32 privSz, const byte* pub,
 /*!
     \ingroup ECC
 
+    \brief This function imports an STM32 DHUK-protected private key onto an
+    ecc_key for transparent hardware signing. The private scalar is supplied as
+    a chip-bound wrapped blob together with the 256-bit derivation seed; the
+    plaintext scalar is never imported. The key must be bound to the STM32 DHUK
+    crypto-callback device (init with wc_ecc_init_ex(&key, heap, WC_DHUK_DEVID)
+    after registering the device with wc_Stm32_DhukRegister). The curve is set
+    from curve_id, so the key is ready to sign on return. Available only on
+    STM32 builds with WOLFSSL_DHUK and a DHUK-capable SAES (WC_STM32_HAS_DHUK).
+
+    \return 0 Returned on success.
+    \return BAD_FUNC_ARG Returned if key, seed, or wrapped is NULL; if seedSz is
+    not 32; if wrappedLen is zero or not a multiple of the AES block size; if
+    wrappedLen exceeds the on-key blob buffer; if plainLen is zero or larger
+    than wrappedLen; if wrappedLen is larger than plainLen padded to a full
+    AES block; or if plainLen does not match the scalar size of curve_id.
+    \return <0 An error from the curve lookup if curve_id is not supported.
+
+    \param key pointer to the ecc_key (bound to WC_DHUK_DEVID) to import into.
+    \param curve_id curve the scalar belongs to, e.g. ECC_SECP256R1.
+    \param seed pointer to the 256-bit (32-byte) per-key DHUK derivation seed.
+    \param seedSz length of seed in bytes; must be 32.
+    \param wrapped pointer to the DHUK-wrapped private scalar blob.
+    \param wrappedLen length of the wrapped blob; a non-zero multiple of the AES
+    block size, no larger than the on-key buffer.
+    \param plainLen length in bytes of the plaintext scalar inside the blob;
+    must equal the scalar size of curve_id (32 for P-256, 48 for P-384).
+
+    _Example_
+    \code
+    ecc_key key;
+    wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    wc_ecc_init_ex(&key, NULL, WC_DHUK_DEVID);
+    if (wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32, wrapped,
+            wrappedLen, plainLen) == 0) {
+        wc_ecc_sign_hash(hash, hashLen, sig, &sigLen, &rng, &key);
+    }
+    wc_ecc_free(&key);
+    \endcode
+
+    \sa wc_ecc_import_wrapped_private_ex
+    \sa wc_ecc_sign_hash
+    \sa wc_ecc_init_ex
+*/
+int wc_ecc_import_wrapped_private(ecc_key* key, int curve_id,
+                                  const byte* seed, word32 seedSz,
+                                  const byte* wrapped, word32 wrappedLen,
+                                  word32 plainLen);
+
+/*!
+    \ingroup ECC
+
+    \brief This function restores a previously provisioned STM32 CCB-protected
+    ECDSA key onto an ecc_key. The device-bound key is supplied as the wrapped
+    scalar blob plus its AES-GCM iv/tag and the in-clear public key; signing is
+    performed transparently with the scalar unwrapped SAES->PKA in hardware. The
+    key must be bound to the STM32 DHUK/CCB crypto-callback device (init with
+    wc_ecc_init_ex(&key, heap, WC_DHUK_DEVID)). Available only on STM32 builds
+    with WOLFSSL_DHUK and WOLFSSL_STM32_CCB.
+
+    \return 0 Returned on success.
+    \return BAD_FUNC_ARG Returned if key, wrapped, iv, tag, or pub is NULL; if
+    ivLen or tagLen is not 16; if curve_id is not a supported curve; if
+    wrappedLen is zero or exceeds the on-key blob buffer; or if pubLen is not
+    twice the curve modulus size.
+    \return <0 A negative error code may be returned if importing the public key
+    fails.
+
+    \param key pointer to the ecc_key (bound to WC_DHUK_DEVID) to import into.
+    \param curve_id the ECC curve id of the wrapped key (e.g. ECC_SECP256R1).
+    \param wrapped pointer to the CCB wrapped private scalar blob.
+    \param wrappedLen length of the wrapped blob, no larger than the on-key
+    buffer.
+    \param iv pointer to the 16-byte AES-GCM iv of the blob.
+    \param ivLen length of iv in bytes; must be 16.
+    \param tag pointer to the 16-byte AES-GCM authentication tag of the blob.
+    \param tagLen length of tag in bytes; must be 16.
+    \param pub pointer to the public key in uncompressed qx||qy form.
+    \param pubLen length of pub in bytes; must be twice the curve modulus size.
+
+    _Example_
+    \code
+    ecc_key key;
+    wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    wc_ecc_init_ex(&key, NULL, WC_DHUK_DEVID);
+    if (wc_ecc_import_wrapped_private_ex(&key, ECC_SECP256R1, wrapped,
+            wrappedLen, iv, 16, tag, 16, pub, pubLen) == 0) {
+        wc_ecc_sign_hash(hash, hashLen, sig, &sigLen, &rng, &key);
+    }
+    wc_ecc_free(&key);
+    \endcode
+
+    \sa wc_ecc_import_wrapped_private
+    \sa wc_ecc_make_key_ex
+    \sa wc_ecc_sign_hash
+*/
+int wc_ecc_import_wrapped_private_ex(ecc_key* key, int curve_id,
+                           const byte* wrapped, word32 wrappedLen,
+                           const byte* iv, word32 ivLen,
+                           const byte* tag, word32 tagLen,
+                           const byte* pub, word32 pubLen);
+
+/*!
+    \ingroup ECC
+
     \brief This function converts the R and S portions of an ECC signature
     into a DER-encoded ECDSA signature. This function also stores the length
     written to the output buffer, out, in outlen.
@@ -1352,7 +1491,11 @@ int wc_ecc_rs_to_sig(const char* r, const char* s, byte* out, word32* outlen);
     \ingroup ECC
 
     \brief This function fills an ecc_key structure with the raw components
-    of an ECC signature.
+    of an ECC key.
+
+    \note This function does not check that the imported public point lies on
+    the curve. Define WOLFSSL_VALIDATE_ECC_IMPORT to validate the point on
+    import, or call wc_ecc_check_key before the key is used.
 
     \return 0 Returned upon successfully importing into the ecc_key structure
     \return ECC_BAD_ARG_E Returned if any of the input values evaluate to NULL
@@ -1713,7 +1856,11 @@ void wc_ecc_ctx_free(ecEncCtx* ctx);
     // do more secure communication
     \endcode
 
+    \note The device id set with wc_ecc_ctx_set_dev_id() (WOLF_CRYPTO_CB
+    builds) is kept across the reset, like the heap hint.
+
     \sa wc_ecc_ctx_new
+    \sa wc_ecc_ctx_set_dev_id
 */
 
 int wc_ecc_ctx_reset(ecEncCtx* ctx, WC_RNG* rng);  /* reset for use again w/o alloc/free */
@@ -1749,6 +1896,70 @@ int wc_ecc_ctx_reset(ecEncCtx* ctx, WC_RNG* rng);  /* reset for use again w/o al
 
 int wc_ecc_ctx_set_algo(ecEncCtx* ctx, byte encAlgo, byte kdfAlgo,
     byte macAlgo);
+
+/*!
+    \ingroup ECC
+
+    \brief This function picks the device that ECIES operations using this
+    context run on. Only available when WOLF_CRYPTO_CB is defined. A context
+    starts at INVALID_DEVID, meaning software: ECIES does not copy the
+    device from the private key, so this must be called for a crypto
+    callback to be reached. The value is used both for the whole-operation
+    ECIES callback and for the KDF, AES and HMAC steps of the software path.
+    Passing a NULL context to wc_ecc_encrypt() or wc_ecc_decrypt() always
+    means software. When WOLF_CRYPTO_CB_FIND is defined, an unset device id
+    still goes through the registered finder, as it does for every other
+    wolfCrypt operation. The setting is kept across wc_ecc_ctx_reset().
+
+    \return 0 Returned upon successfully setting the device id.
+    \return BAD_FUNC_ARG Returned if the given context is NULL.
+
+    \param ctx pointer to the ecEncCtx for which to set the device id
+    \param devId device id to use, or INVALID_DEVID for software
+
+    _Example_
+    \code
+    ecEncCtx* ctx = wc_ecc_ctx_new(REQ_RESP_CLIENT, &rng);
+    if (wc_ecc_ctx_set_dev_id(ctx, myDevId) != 0) {
+	    // error setting device id
+    }
+    \endcode
+
+    \sa wc_ecc_ctx_get_dev_id
+    \sa wc_ecc_ctx_new
+    \sa wc_ecc_ctx_reset
+*/
+
+int wc_ecc_ctx_set_dev_id(ecEncCtx* ctx, int devId);
+
+/*!
+    \ingroup ECC
+
+    \brief This function reads back the device id set with
+    wc_ecc_ctx_set_dev_id(). Crypto callback code can use it to learn which
+    device it was called for. Only available when WOLF_CRYPTO_CB is defined.
+    A context that was never given a device reads back INVALID_DEVID.
+
+    \return 0 Returned upon successfully reading the device id.
+    \return BAD_FUNC_ARG Returned if the given context or output pointer
+    is NULL.
+
+    \param ctx pointer to the ecEncCtx to read the device id from
+    \param devId pointer that receives the device id
+
+    _Example_
+    \code
+    int devId;
+    if (wc_ecc_ctx_get_dev_id(ctx, &devId) != 0) {
+	    // error reading device id
+    }
+    \endcode
+
+    \sa wc_ecc_ctx_set_dev_id
+    \sa wc_ecc_ctx_new
+*/
+
+int wc_ecc_ctx_get_dev_id(ecEncCtx* ctx, int* devId);
 
 /*!
     \ingroup ECC
@@ -1926,6 +2137,11 @@ int wc_ecc_ctx_set_info(ecEncCtx* ctx, const byte* info, int sz);
     \param ctx Optional: pointer to an ecEncCtx object specifying different
     encryption algorithms to use
 
+    \note Selecting an AES-GCM DEM algorithm (ecAES_128_GCM, ecAES_256_GCM) in
+    the default IV mode requires the WOLFSSL_ECIES_STATIC_GCM_NONCE build macro;
+    otherwise this function returns NOT_COMPILED_IN. See wc_ecc_encrypt_ex for
+    the full rationale.
+
     _Example_
     \code
     byte msg[] = { initialize with msg to encrypt. Ensure padded to block size };
@@ -1945,8 +2161,13 @@ int wc_ecc_ctx_set_info(ecEncCtx* ctx, const byte* info, int sz);
     }
     \endcode
 
+    \note The device this runs on comes from the context
+    (wc_ecc_ctx_set_dev_id), not from privKey->devId. A NULL context, or one
+    that was never given a device, runs in software.
+
     \sa wc_ecc_encrypt_ex
     \sa wc_ecc_decrypt
+    \sa wc_ecc_ctx_set_dev_id
 */
 
 int wc_ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
@@ -1973,6 +2194,9 @@ int wc_ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     small to store the encrypted ciphertext
     \return MEMORY_E Returned if there is an error allocating memory
     for the shared secret key
+    \return NOT_COMPILED_IN Returned if an AES-GCM DEM algorithm
+    (ecAES_128_GCM or ecAES_256_GCM) is requested in the default IV mode
+    without the WOLFSSL_ECIES_STATIC_GCM_NONCE build macro defined
 
     \param privKey pointer to the ecc_key object containing the
     private key to use for encryption
@@ -1988,6 +2212,16 @@ int wc_ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     \param ctx Optional: pointer to an ecEncCtx object specifying different
     encryption algorithms to use
     \param compressed Public key field is to be output in compressed format.
+
+    \note The AES-GCM DEM algorithms (ecAES_128_GCM, ecAES_256_GCM) in the
+    default IV mode use a fixed all-zero GCM nonce. That is safe only because
+    ECIES derives a fresh symmetric key from a fresh ephemeral key on every
+    encryption, so the (key, nonce) pair never repeats; reusing the ephemeral
+    key is catastrophic for AES-GCM. For that reason the fixed-nonce GCM DEM is
+    off by default and must be enabled with the WOLFSSL_ECIES_STATIC_GCM_NONCE
+    build macro, otherwise this function returns NOT_COMPILED_IN for a GCM
+    algorithm. The macro is not needed with WOLFSSL_ECIES_GEN_IV (random
+    per-message nonce) or WOLFSSL_ECIES_OLD (nonce derived from the KDF output).
 
     _Example_
     \code
@@ -2009,8 +2243,13 @@ int wc_ecc_encrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     }
     \endcode
 
+    \note The device this runs on comes from the context
+    (wc_ecc_ctx_set_dev_id), not from privKey->devId. A NULL context, or one
+    that was never given a device, runs in software.
+
     \sa wc_ecc_encrypt
     \sa wc_ecc_decrypt
+    \sa wc_ecc_ctx_set_dev_id
 */
 
 int wc_ecc_encrypt_ex(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
@@ -2037,6 +2276,9 @@ int wc_ecc_encrypt_ex(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     small to store the decrypted plaintext
     \return MEMORY_E Returned if there is an error allocating memory
     for the shared secret key
+    \return NOT_COMPILED_IN Returned if an AES-GCM DEM algorithm
+    (ecAES_128_GCM or ecAES_256_GCM) is requested in the default IV mode
+    without the WOLFSSL_ECIES_STATIC_GCM_NONCE build macro defined
 
     \param privKey pointer to the ecc_key object containing the private
     key to use for decryption
@@ -2050,6 +2292,11 @@ int wc_ecc_encrypt_ex(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     ciphertext, holds the number of bytes written to the output buffer
     \param ctx Optional: pointer to an ecEncCtx object specifying
     different decryption algorithms to use
+
+    \note Selecting an AES-GCM DEM algorithm (ecAES_128_GCM, ecAES_256_GCM) in
+    the default IV mode requires the WOLFSSL_ECIES_STATIC_GCM_NONCE build macro;
+    otherwise this function returns NOT_COMPILED_IN. See wc_ecc_encrypt_ex for
+    the full rationale.
 
     _Example_
     \code
@@ -2072,8 +2319,13 @@ int wc_ecc_encrypt_ex(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
     }
     \endcode
 
+    \note The device this runs on comes from the context
+    (wc_ecc_ctx_set_dev_id), not from privKey->devId. A NULL context, or one
+    that was never given a device, runs in software.
+
     \sa wc_ecc_encrypt
     \sa wc_ecc_encrypt_ex
+    \sa wc_ecc_ctx_set_dev_id
 */
 
 int wc_ecc_decrypt(ecc_key* privKey, ecc_key* pubKey, const byte* msg,
@@ -2166,28 +2418,6 @@ int wc_ecc_set_curve(ecc_key *key, int keysize, int curve_id);
     \sa wc_ecc_init
 */
 mp_int* wc_ecc_key_get_priv(ecc_key* key);
-
-/*!
-    \ingroup ECC
-    \brief Allocates and initializes new ECC key.
-
-    \return ecc_key pointer on success
-    \return NULL on failure
-
-    \param heap Heap hint for memory allocation
-
-    _Example_
-    \code
-    ecc_key* key = wc_ecc_key_new(NULL);
-    if (key != NULL) {
-        // use key
-        wc_ecc_key_free(key);
-    }
-    \endcode
-
-    \sa wc_ecc_key_free
-*/
-ecc_key* wc_ecc_key_new(void* heap);
 
 /*!
     \ingroup ECC
@@ -2911,6 +3141,10 @@ int wc_ecc_sig_to_rs(const byte* sig, word32 sigLen, byte* r,
     \ingroup ECC
     \brief Imports raw key with curve ID.
 
+    \note This function does not check that the imported public point lies on
+    the curve. Define WOLFSSL_VALIDATE_ECC_IMPORT to validate the point on
+    import, or call wc_ecc_check_key before the key is used.
+
     \return 0 on success
     \return negative on error
 
@@ -2935,6 +3169,10 @@ int wc_ecc_import_raw_ex(ecc_key* key, const char* qx,
 /*!
     \ingroup ECC
     \brief Imports unsigned key with curve ID.
+
+    \note This function does not check that the imported public point lies on
+    the curve. Define WOLFSSL_VALIDATE_ECC_IMPORT to validate the point on
+    import, or call wc_ecc_check_key before the key is used.
 
     \return 0 on success
     \return negative on error

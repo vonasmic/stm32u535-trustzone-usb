@@ -31,7 +31,10 @@ the error status.
 #ifndef WOLF_CRYPT_ERROR_H
 #define WOLF_CRYPT_ERROR_H
 
-#include <wolfssl/wolfcrypt/types.h>
+/* Avoid wolfcrypt/types.h here, to mitigate circular dependencies via
+ * wc_compat.h.
+ */
+#include <wolfssl/wolfcrypt/wc_port.h>
 
 #ifdef __cplusplus
     extern "C" {
@@ -328,8 +331,34 @@ enum wolfCrypt_ErrorCodes {
     DRBG_SHA512_KAT_FIPS_E = -1017, /* SHA-512 DRBG KAT failure */
     SLH_DSA_KAT_FIPS_E  = -1018, /* SLH-DSA CAST KAT failure */
 
-    WC_SPAN2_LAST_E     = -1018, /* Update to indicate last used error code */
-    WC_LAST_E           = -1018, /* the last code used either here or in
+    TSP_VERIFY_E        = -1019, /* TSP token invalid or response doesn't
+                                  * match request */
+
+    SLH_DSA_PCT_E       = -1020, /* SLH-DSA Pairwise Consistency Test failure */
+    CMAC_KAT_FIPS_E     = -1021, /* AES-CMAC KAT failure */
+    SHAKE_KAT_FIPS_E    = -1022, /* SHAKE KAT failure */
+    DH_PCT_E            = -1023, /* DH Pairwise Consistency Test failure.
+                                  * Retired in FIPS v7+ (classic DH left the
+                                  * module boundary); the code stays allocated
+                                  * so fips.c can report it as retired rather
+                                  * than unknown. */
+    AES_KW_KAT_FIPS_E   = -1024, /* AES Key Wrap KAT failure */
+    FIPS_WRONG_API_E    = -1025, /* Requested API is not allowed in FIPS mode */
+    KMAC_MIN_KEYLEN_E   = -1026, /* FIPS Mode KMAC Minimum Key Length error */
+    FIPS_BAD_VALUE_E    = -1027, /* Supplied value was rejected by FIPS policy */
+    FIPS_UNAPPROVED_E   = -1028, /* Requested operation succeeded, but supplied */
+                                 /* parameters are unapproved for FIPS */
+    NO_DEFAULT_FOUND_E  = -1029, /* No default object registered for request
+                                  * type */
+    NOT_READY_E         = -1030, /* Resource not yet ready (retry) */
+    OBJECT_NOT_LOCKED_E = -1031, /* Required lock on object is not held */
+    WRONG_TYPE_OBJECT_E = -1032, /* Object is wrong type for requested */
+                                 /* operation */
+    NEEDS_RECOVERY_E    = -1033, /* Object needs recovery before use */
+    UNEXPECTED_STATE_E  = -1034, /* Object has unexpected state */
+
+    WC_SPAN2_LAST_E     = -1034, /* Update to indicate last used error code */
+    WC_LAST_E           = -1034, /* the last code used either here or in
                                   * error-ssl.h */
 
     WC_SPAN2_MIN_CODE_E = -1999, /* Last usable code in span 2 */
@@ -340,10 +369,6 @@ enum wolfCrypt_ErrorCodes {
     /* add new companion error id strings for any new error codes
        wolfcrypt/src/error.c !!! */
 };
-
-wc_static_assert((int)WC_LAST_E <= (int)WC_SPAN2_LAST_E);
-wc_static_assert((int)MIN_CODE_E <= (int)WC_LAST_E);
-wc_static_assert((int)MIN_CODE_E <= (int)WC_SPAN2_MIN_CODE_E);
 
 #ifdef NO_ERROR_STRINGS
     #define wc_GetErrorString(error) "no support for error strings built in"
@@ -360,9 +385,13 @@ WOLFSSL_ABI WOLFSSL_API const char* wc_GetErrorString(int error);
     WOLFSSL_API extern int wc_backtrace_render(void);
 #endif
 
-#if defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES) && \
-        (defined(BUILDING_WOLFSSL) || \
-         defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES_ALWAYS))
+#if defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES) &&              \
+    (defined(BUILDING_WOLFSSL) ||                            \
+     defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES_ALWAYS)) &&     \
+    (!defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES_PER_FILE) ||   \
+     defined(WOLFSSL_DEBUG_TRACE_ERROR_CODES_THIS_FILE))
+
+    #include <wolfssl/wolfcrypt/logging.h>
     #define WC_NO_ERR_TRACE(label) (CONST_NUM_ERR_ ## label)
     #ifndef WOLFSSL_DEBUG_BACKTRACE_RENDER_CLAUSE
         #ifdef WOLFSSL_DEBUG_BACKTRACE_ERROR_CODES
@@ -376,9 +405,9 @@ WOLFSSL_ABI WOLFSSL_API const char* wc_GetErrorString(int error);
             #define WC_ERR_TRACE(label) __extension__                     \
                 ({ if (wc_debug_trace_error_codes_enabled()) {            \
                     (void)WOLFSSL_DEBUG_PRINTF_FN(                        \
-                                          WOLFSSL_DEBUG_PRINTF_FIRST_ARGS \
-                                          "ERR TRACE: %s L %d %s (%d)\n", \
-                                      __FILE__, __LINE__, #label, label); \
+                            WOLFSSL_DEBUG_PRINTF_FIRST_ARGS               \
+                            "ERR TRACE: %s %s() L %d %s (%d)\n",          \
+                            __FILE__, __func__, __LINE__, #label, label); \
                     (void)WOLFSSL_DEBUG_BACKTRACE_RENDER_CLAUSE; }        \
                   (label);                                                \
                 })

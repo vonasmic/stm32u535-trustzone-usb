@@ -41,7 +41,8 @@
 
 #ifndef WOLFSSL_HAVE_ECC_KEY_GET_PRIV
     /* FIPS build has replaced ecc.h. */
-    #define wc_ecc_key_get_priv(key) (&((key)->k))
+    #define wc_ecc_key_get_priv(key)  (&((key)->k))
+    #define ecc_forcezero_k(key)      mp_forcezero(&((key)->k))
     #define WOLFSSL_HAVE_ECC_KEY_GET_PRIV
 #endif
 
@@ -2186,7 +2187,7 @@ int wc_Pkcs11StoreKey(Pkcs11Token* token, int type, int clear, void* key)
                         ret = ret2;
                 }
                 if (ret == 0 && clear)
-                    mp_forcezero(wc_ecc_key_get_priv(eccKey));
+                    ecc_forcezero_k(eccKey);
                 break;
             }
     #endif
@@ -2513,6 +2514,13 @@ static int Pkcs11GetRsaPublicKey(RsaKey* key, Pkcs11Session* session,
     if (ret == 0) {
         modSz = (int)tmpl[0].ulValueLen;
         expSz = (int)tmpl[1].ulValueLen;
+        /* reject token lengths that do not fit in a positive int */
+        if (modSz <= 0 || (CK_ULONG)modSz != tmpl[0].ulValueLen ||
+                expSz <= 0 || (CK_ULONG)expSz != tmpl[1].ulValueLen) {
+            ret = WC_HW_E;
+        }
+    }
+    if (ret == 0) {
         mod = (unsigned char*)XMALLOC(modSz, key->heap,
                                                        DYNAMIC_TYPE_TMP_BUFFER);
         if (mod == NULL)
@@ -2526,7 +2534,9 @@ static int Pkcs11GetRsaPublicKey(RsaKey* key, Pkcs11Session* session,
     }
     if (ret == 0) {
         tmpl[0].pValue = mod;
+        tmpl[0].ulValueLen = (CK_ULONG)modSz;
         tmpl[1].pValue = exp;
+        tmpl[1].ulValueLen = (CK_ULONG)expSz;
 
         PKCS11_DUMP_TEMPLATE("Get RSA Public Key", tmpl, tmplCnt);
         rv = session->func->C_GetAttributeValue(session->handle, pubKey,
@@ -3272,12 +3282,19 @@ static int Pkcs11GetEccPublicKey(ecc_key* key, Pkcs11Session* session,
 
     if (ret == 0) {
         pointSz = (int)tmpl[0].ulValueLen;
+        /* reject a token length that does not fit in a positive int */
+        if (pointSz <= 0 || (CK_ULONG)pointSz != tmpl[0].ulValueLen) {
+            ret = WC_HW_E;
+        }
+    }
+    if (ret == 0) {
         point = (unsigned char*)XMALLOC(pointSz, key->heap, DYNAMIC_TYPE_ECC);
         if (point == NULL)
             ret = MEMORY_E;
     }
     if (ret == 0) {
         tmpl[0].pValue = point;
+        tmpl[0].ulValueLen = (CK_ULONG)pointSz;
 
         PKCS11_DUMP_TEMPLATE("Get Ec Public Key", tmpl, tmplCnt);
         rv = session->func->C_GetAttributeValue(session->handle, pubKey,
@@ -3358,8 +3375,22 @@ static int Pkcs11EcKeyGen(Pkcs11Session* session, wc_CryptoInfo* info)
         { 0,           NULL,    0              },
         { 0,           NULL,    0              },
     };
+    /* As above but the key may derive as well. PKCS#11 leaves the defaults for
+     * CKA_SIGN and CKA_DERIVE up to the token, so a token that grants only what
+     * was asked for will refuse whichever operation was not requested. A TLS
+     * key generally needs both. Empty entries for optional label/ID. */
+    CK_ATTRIBUTE      privKeyTmplEncSignDerive[] = {
+        { CKA_SIGN,    &ckTrue, sizeof(ckTrue) },
+        { CKA_DECRYPT, &ckTrue, sizeof(ckTrue) },
+        { CKA_DERIVE,  &ckTrue, sizeof(ckTrue) },
+        { 0,           NULL,    0              },
+        { 0,           NULL,    0              },
+    };
     CK_ATTRIBUTE*     privKeyTmpl = privKeyTmplDerive;
-    /* Mandatory entries + 2 optional. */
+    /* Number of mandatory entries in whichever template is selected below:
+     * 1 for derive-only, 2 for sign+decrypt, 3 when derive is added to those.
+     * Every template also carries 2 trailing slots for the optional label
+     * and ID, which are filled in later if the key has them. */
     int               privTmplCnt = 1;
 
     ret = Pkcs11MechAvail(session, CKM_EC_KEY_PAIR_GEN, NULL);
@@ -3371,8 +3402,14 @@ static int Pkcs11EcKeyGen(Pkcs11Session* session, wc_CryptoInfo* info)
     if (ret == 0) {
         /* Default is to use for derivation. */
         if ((key->flags & WC_ECC_FLAG_DEC_SIGN) == WC_ECC_FLAG_DEC_SIGN) {
-            privKeyTmpl = privKeyTmplEncSign;
-            privTmplCnt = 2;
+            if ((key->flags & WC_ECC_FLAG_DERIVE) == WC_ECC_FLAG_DERIVE) {
+                privKeyTmpl = privKeyTmplEncSignDerive;
+                privTmplCnt = 3;
+            }
+            else {
+                privKeyTmpl = privKeyTmplEncSign;
+                privTmplCnt = 2;
+            }
             pubTmplCnt = 2;
         }
         if (key->labelLen != 0) {
@@ -3933,7 +3970,7 @@ static int Pkcs11ECDSA_Verify(Pkcs11Session* session, wc_CryptoInfo* info)
                 ret = Pkcs11GetEccParams(session, publicKey, key);
             }
         }
-        else if (!mp_iszero(key->pubkey.x)) {
+        else if (!mp_iszero(key->pubkey.x) || !mp_iszero(key->pubkey.y)) {
             ret = Pkcs11CreateEccPublicKey(&publicKey, session, key,
                                            CKA_VERIFY);
             sessionKey = 1;
@@ -3941,6 +3978,14 @@ static int Pkcs11ECDSA_Verify(Pkcs11Session* session, wc_CryptoInfo* info)
         else
             ret = Pkcs11FindEccKey(&publicKey, CKO_PUBLIC_KEY, session,
                                    info->pk.eccsign.key, CKA_VERIFY);
+
+        /* keygen destroys the token public key, so fall back to the point. */
+        if (ret != 0 && (key->labelLen > 0 || key->idLen > 0) &&
+                (!mp_iszero(key->pubkey.x) || !mp_iszero(key->pubkey.y))) {
+            ret = Pkcs11CreateEccPublicKey(&publicKey, session, key,
+                                           CKA_VERIFY);
+            sessionKey = 1;
+        }
     }
 
     if (ret == 0) {
@@ -6223,6 +6268,7 @@ static int Pkcs11GetCert(Pkcs11Session* session, wc_CryptoInfo* info) {
     CK_ULONG            count = 0;
     CK_OBJECT_HANDLE    certHandle = CK_INVALID_HANDLE;
     byte               *certData = NULL;
+    int                 certDataSz = 0;
     CK_ATTRIBUTE    certTemplate[2] = {
         { CKA_CLASS,           &certClass, sizeof(certClass)   }
     };
@@ -6264,19 +6310,21 @@ static int Pkcs11GetCert(Pkcs11Session* session, wc_CryptoInfo* info) {
         goto exit;
     }
 
-    if (tmpl[0].ulValueLen <= 0) {
+    certDataSz = (int)tmpl[0].ulValueLen;
+    /* reject a token length that does not fit in a positive int */
+    if (certDataSz <= 0 || (CK_ULONG)certDataSz != tmpl[0].ulValueLen) {
         ret = WC_HW_E;
         goto exit;
     }
 
-    certData = (byte *)XMALLOC(
-        (int)tmpl[0].ulValueLen, info->cert.heap, DYNAMIC_TYPE_CERT);
+    certData = (byte *)XMALLOC(certDataSz, info->cert.heap, DYNAMIC_TYPE_CERT);
     if (certData == NULL) {
         ret = MEMORY_E;
         goto exit;
     }
 
     tmpl[0].pValue = certData;
+    tmpl[0].ulValueLen = (CK_ULONG)certDataSz;
     rv = session->func->C_GetAttributeValue(
         session->handle, certHandle, tmpl, tmplCnt);
     PKCS11_RV("C_GetAttributeValue", rv);
@@ -6286,7 +6334,7 @@ static int Pkcs11GetCert(Pkcs11Session* session, wc_CryptoInfo* info) {
     }
 
     *info->cert.certDataOut = certData;
-    *info->cert.certSz = (word32)tmpl[0].ulValueLen;
+    *info->cert.certSz = (word32)certDataSz;
     if (info->cert.certFormatOut != NULL) {
         *info->cert.certFormatOut = CTC_FILETYPE_ASN1;
     }

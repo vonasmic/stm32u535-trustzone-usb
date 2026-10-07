@@ -101,6 +101,10 @@ uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
             return SECURE_USB_ERR;
         }
         if (se_usb_tls_rx_push(ns_buf, len) < 0) {
+            if (se_tls_session_active() != 0) {
+                return SECURE_USB_BUSY;
+            }
+            se_tls_die = 5U;
             se_tls_abort();
             return SECURE_USB_ERR;
         }
@@ -108,21 +112,28 @@ uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
     return SECURE_USB_OK;
 }
 
-uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t *out_len)
+uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t *out_len,
+                                              uint32_t *out_type)
 {
     uint8_t *ns_buf;
     uint32_t *ns_out_len = NULL;
+    uint32_t *ns_out_type;
     uint32_t got = 0U;
+    uint8_t typ = USB_FRAME_TYPE_CMD;
     int st;
 
     if (max > SECURE_USB_PKT_MAX) {
         max = SECURE_USB_PKT_MAX;
     }
-    if (max == 0U) {
+    if (max == 0U || out_type == NULL) {
         return SECURE_USB_ERR;
     }
     ns_buf = (uint8_t *)ns_sanitize_out(buf, max);
     if (ns_buf == NULL) {
+        return SECURE_USB_ERR;
+    }
+    ns_out_type = (uint32_t *)ns_sanitize_out(out_type, (uint32_t)sizeof(uint32_t));
+    if (ns_out_type == NULL) {
         return SECURE_USB_ERR;
     }
     if (out_len != NULL) {
@@ -132,7 +143,7 @@ uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t
         }
     }
 
-    st = se_usb_tls_tx_pop(ns_buf, max, &got);
+    st = se_usb_tls_tx_pop(ns_buf, max, &got, &typ);
     if (st < 0) {
         return SECURE_USB_LINK_DOWN;
     }
@@ -145,6 +156,7 @@ uint32_t CSME_NSE_API SECURE_UsbTx_nsc_call(uint8_t *buf, uint32_t max, uint32_t
     if (ns_out_len != NULL) {
         *ns_out_len = got;
     }
+    *ns_out_type = (uint32_t)typ;
     return SECURE_USB_OK;
 }
 
@@ -179,7 +191,8 @@ uint32_t CSME_NSE_API SECURE_UsbService_nsc_call(void)
         return (se_auth_active() != 0) ? SECURE_USB_OK : SECURE_USB_IDLE;
     }
     se_usb_tls_service_once();
-    if (se_tls_session_active() == 0) {
+    /* Stay armed while close_notify drains so those bytes are still type 0x01. */
+    if (se_tls_pipe_busy() == 0) {
         return SECURE_USB_IDLE;
     }
     return SECURE_USB_OK;
@@ -189,6 +202,10 @@ uint32_t CSME_NSE_API SECURE_OwnerBegin_nsc_call(void)
 {
     if (se_tls_session_active() != 0) {
         return SECURE_USB_ERR;
+    }
+    /* Stale close_notify left wire==2 and made every OWNER SET look refused. */
+    if (se_usb_tls_tx_draining() != 0) {
+        se_usb_tls_end_tls_wire();
     }
     return (se_auth_begin_owner() == SE_AUTH_OK) ? SECURE_USB_OK : SECURE_USB_ERR;
 }
@@ -242,8 +259,7 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len)
     }
     (void)memcpy(tmp, ns_msg, len);
     tmp[len] = '\0';
-    se_usb_debug_puts(tmp);
-    return SECURE_USB_OK;
+    return (se_usb_debug_puts(tmp) == 0) ? SECURE_USB_OK : SECURE_USB_ERR;
 }
 
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void)
@@ -278,67 +294,61 @@ uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(uint8_t *out48)
     return tropic_nsc_ok_err(se_tropic_client_hash_read(ns_out));
 }
 
-uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(uint8_t *out, uint32_t *len_inout)
+static void nsc_log_hex(const uint8_t *data, uint32_t len)
 {
-    uint8_t *ns_out;
-    uint32_t *ns_len;
+    char line[97];
+    uint32_t i;
+    uint32_t pos = 0U;
+    static const char hex[] = "0123456789abcdef";
+
+    if ((data == NULL) || (len == 0U)) {
+        return;
+    }
+    for (i = 0U; i < len; i++) {
+        if (pos + 2U >= sizeof(line)) {
+            line[pos] = '\0';
+            se_usb_debug_puts(line);
+            pos = 0U;
+        }
+        line[pos++] = hex[(data[i] >> 4) & 0x0FU];
+        line[pos++] = hex[data[i] & 0x0FU];
+    }
+    if (pos > 0U) {
+        line[pos] = '\0';
+        se_usb_debug_puts(line);
+    }
+}
+
+uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(void)
+{
+    const uint8_t *pub = NULL;
     uint16_t n = 0U;
-    uint32_t cap;
     lt_ret_t ret;
 
-    ns_len = (uint32_t *)ns_sanitize_out(len_inout, (uint32_t)sizeof(uint32_t));
-    if (ns_len == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
-    cap = *ns_len;
-    if ((cap < 1U) || (cap > SECURE_USB_REPLY_BODY_MAX)) {
-        return SECURE_TROPIC_ERR;
-    }
-    ns_out = (uint8_t *)ns_sanitize_out(out, cap);
-    if (ns_out == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
     if (se_device_id_ensure() != LT_OK) {
         return SECURE_TROPIC_ERR;
     }
-    n = (uint16_t)cap;
-    ret = se_device_id_export_pub(ns_out, &n, (uint16_t)cap);
+    ret = se_device_id_open_pub(&pub, &n);
     if (ret != LT_OK) {
         return SECURE_TROPIC_ERR;
     }
-    *ns_len = (uint32_t)n;
+    nsc_log_hex(pub, (uint32_t)n);
+    se_device_id_close_pub();
     return SECURE_TROPIC_OK;
 }
 
-uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(uint8_t *out, uint32_t *len_inout)
+uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void)
 {
-    uint8_t *ns_out;
-    uint32_t *ns_len;
+    const uint8_t *pk = NULL;
     uint16_t n = 0U;
-    uint32_t cap;
+    uint32_t st;
 
-    ns_len = (uint32_t *)ns_sanitize_out(len_inout, (uint32_t)sizeof(uint32_t));
-    if (ns_len == NULL) {
-        return SECURE_TROPIC_ERR;
+    st = tropic_nsc_dump(se_tropic_mlkem_pub_view(&pk, &n));
+    if (st != SECURE_TROPIC_OK) {
+        return st;
     }
-    cap = *ns_len;
-    if ((cap < 1U) || (cap > SE_TROPIC_MLKEM_PK_LEN)) {
-        return SECURE_TROPIC_ERR;
-    }
-    ns_out = (uint8_t *)ns_sanitize_out(out, cap);
-    if (ns_out == NULL) {
-        return SECURE_TROPIC_ERR;
-    }
-    n = 0U;
-    {
-        uint32_t st = tropic_nsc_dump(se_tropic_mlkem_pub_read(ns_out, (uint16_t)cap, &n));
-
-        if (st != SECURE_TROPIC_OK) {
-            return st;
-        }
-        *ns_len = (uint32_t)n;
-        return SECURE_TROPIC_OK;
-    }
+    nsc_log_hex(pk, (uint32_t)n);
+    return SECURE_TROPIC_OK;
 }
 
 uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4])

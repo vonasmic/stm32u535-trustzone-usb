@@ -88,7 +88,7 @@ int wc_CheckCertOcspResponse(WOLFSSL_OCSP *ocsp, DecodedCert *cert,
     if (InitOcspRequest(ocspRequest, cert, ocsp->cm->ocspSendNonce,
                                                          ocsp->cm->heap) == 0) {
         ret = CheckOcspResponse(ocsp, response, responseSz, NULL, NULL, NULL,
-                ocspRequest, heap);
+                ocspRequest, heap, NULL);
         FreeOcspRequest(ocspRequest);
     }
 
@@ -212,8 +212,7 @@ int CheckCertOCSP_ex(WOLFSSL_OCSP* ocsp, DecodedCert* cert, WOLFSSL* ssl)
 
     if (InitOcspRequest(ocspRequest, cert, ocsp->cm->ocspSendNonce,
                                                          ocsp->cm->heap) == 0) {
-        ocspRequest->ssl = ssl;
-        ret = CheckOcspRequest(ocsp, ocspRequest, NULL, NULL);
+        ret = CheckOcspRequest(ocsp, ocspRequest, NULL, ssl);
 
         FreeOcspRequest(ocspRequest);
     }
@@ -333,11 +332,13 @@ static int GetOcspStatus(WOLFSSL_OCSP* ocsp, OcspRequest* request,
  * entry          The OCSP entry for this certificate.
  * ocspRequest    Request corresponding to response.
  * heap           Heap hint used for responseBuffer
+ * ssl            Connection the request belongs to, may be NULL.
  * returns OCSP_LOOKUP_FAIL when the response is bad and 0 otherwise.
  */
 int CheckOcspResponse(WOLFSSL_OCSP *ocsp, byte *response, int responseSz,
                       WOLFSSL_BUFFER_INFO *responseBuffer, CertStatus *status,
-                      OcspEntry *entry, OcspRequest *ocspRequest, void* heap)
+                      OcspEntry *entry, OcspRequest *ocspRequest, void* heap,
+                      WOLFSSL* ssl)
 {
 #ifdef WOLFSSL_SMALL_STACK
     CertStatus*   newStatus;
@@ -373,10 +374,11 @@ int CheckOcspResponse(WOLFSSL_OCSP *ocsp, byte *response, int responseSz,
     InitOcspResponse(ocspResponse, newSingle, newStatus, response,
                      (word32)responseSz, ocsp->cm->heap);
 #if defined(HAVE_CERTIFICATE_STATUS_REQUEST_V2) && !defined(NO_TLS)
-    if (ocspRequest != NULL && ocspRequest->ssl != NULL &&
-           TLSX_CSR2_IsMulti(((WOLFSSL*)ocspRequest->ssl)->extensions)) {
-        ocspResponse->pendingCAs = TLSX_CSR2_GetPendingSigners(((WOLFSSL*)ocspRequest->ssl)->extensions);
+    if (ssl != NULL && TLSX_CSR2_IsMulti(ssl->extensions)) {
+        ocspResponse->pendingCAs = TLSX_CSR2_GetPendingSigners(ssl->extensions);
     }
+#else
+    (void)ssl;
 #endif
     ret = OcspResponseDecode(ocspResponse, ocsp->cm, ocsp->cm->heap, 0, 0);
     if (ret != 0) {
@@ -480,7 +482,7 @@ end:
 #define OCSP_MAX_REQUEST_SZ 2048
 #endif
 int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
-                     buffer* responseBuffer, void* heap)
+                     buffer* responseBuffer, WOLFSSL* ssl)
 {
     OcspEntry*  entry          = NULL;
     CertStatus* status         = NULL;
@@ -491,8 +493,11 @@ int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
     const char* url            = NULL;
     int         urlSz          = 0;
     int         ret            = -1;
-    WOLFSSL*    ssl;
     void*       ioCtx;
+    /* Hint for responseBuffer only, which the caller frees against the same
+     * connection, so take it from there rather than have every caller pass a
+     * heap it has to keep in step with its own free. */
+    void*       heap           = (ssl != NULL) ? ssl->heap : NULL;
 
     WOLFSSL_ENTER("CheckOcspRequest");
 
@@ -518,8 +523,7 @@ int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
         responseBuffer->buffer = NULL;
     }
 
-    /* get SSL and IOCtx */
-    ssl = (WOLFSSL*)ocspRequest->ssl;
+    /* get IOCtx */
     ioCtx = (ssl && ssl->ocspIOCtx != NULL) ?
                                         ssl->ocspIOCtx : ocsp->cm->ocspIOCtx;
 
@@ -535,16 +539,12 @@ int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
         urlSz = ocspRequest->urlSz;
     }
     else {
-        /* No AIA URL and no override. ocspCheckAll asks for strict chain
-         * checking, so fail closed - but only on the client verification
-         * instance (cm->ocsp); stapling (cm->ocsp_stapling) shares the cm
-         * flag and must stay best-effort. */
-        if (ocsp->cm->ocspCheckAll && ocsp == ocsp->cm->ocsp) {
-            WOLFSSL_MSG("Cert has no OCSP URL and ocspCheckAll is set");
-            return OCSP_NEED_URL;
-        }
-        WOLFSSL_MSG("Cert has no OCSP URL, assuming CERT_GOOD");
-        return 0;
+        /* Cert advertises no OCSP responder and no override URL is set, so
+         * OCSP has no opinion on this cert. Report that distinctly from a
+         * failed lookup; the caller owns the policy decision. Callers wanting
+         * the historical soft-fail run this through OcspNoUrlPolicy(). */
+        WOLFSSL_MSG("Cert has no OCSP URL");
+        return OCSP_NO_URL;
     }
 
     request = (byte*)XMALLOC((size_t)requestSz, ocsp->cm->heap, DYNAMIC_TYPE_OCSP);
@@ -569,7 +569,7 @@ int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
 
     if (responseSz >= 0 && response) {
         ret = CheckOcspResponse(ocsp, response, responseSz, responseBuffer, status,
-                            entry, ocspRequest, heap);
+                            entry, ocspRequest, heap, ssl);
     }
 
     if (response != NULL && ocsp->cm->ocspRespFreeCb)
@@ -579,6 +579,28 @@ int CheckOcspRequest(WOLFSSL_OCSP* ocsp, OcspRequest* ocspRequest,
      * should free responseBuffer after checking OCSP return value in "ret" */
     WOLFSSL_LEAVE("CheckOcspRequest", ret);
     return ret;
+}
+
+/* Map OCSP_NO_URL - "this cert advertises no OCSP responder" - to a
+ * verification result.
+ *
+ * WOLFSSL_OCSP_CHECKALL selects which certificates get checked, not how hard
+ * to fail when one cannot be checked, so it deliberately has no say here.
+ * Refuse the cert only when the user explicitly asked for that with
+ * WOLFSSL_OCSP_FAIL_IF_NOT_SUPPORTED.
+ *
+ * Returns OCSP_NEED_URL to refuse the cert, or 0 for the historical
+ * soft-fail. */
+int OcspNoUrlPolicy(WOLFSSL_CERT_MANAGER* cm)
+{
+    if (cm != NULL && cm->ocspFailIfNotSupported) {
+        WOLFSSL_MSG("Cert has no OCSP URL and OCSP is required for every cert");
+        WOLFSSL_ERROR_VERBOSE(OCSP_NEED_URL);
+        return OCSP_NEED_URL;
+    }
+
+    WOLFSSL_MSG("Cert has no OCSP URL, assuming CERT_GOOD");
+    return 0;
 }
 
 /* Enforce https://www.rfc-editor.org/rfc/rfc6960#section-4.2.2.2. Both halves
@@ -1159,7 +1181,7 @@ OcspResponse* wolfSSL_d2i_OCSP_RESPONSE_bio(WOLFSSL_BIO* bio,
             return NULL;
         dataAlloced = 1;
 
-        len = wolfSSL_BIO_read(bio, (char *)data, (int)flen);
+        len = wolfSSL_BIO_read(bio, (char *)data, (int)fcur);
     }
 #endif
     else
@@ -1187,10 +1209,6 @@ OcspResponse* wolfSSL_d2i_OCSP_RESPONSE(OcspResponse** response,
     int ret;
 
     if (data == NULL || *data == NULL || len <= 0)
-        return NULL;
-    if (*data == NULL)
-        return NULL;
-    if (len <= 0)
         return NULL;
 
     if (response != NULL)
@@ -1756,6 +1774,20 @@ error:
     return NULL;
 }
 
+/* Returns 0 if the string has no CR or LF, -1 if it does. */
+static int OCSP_REQ_CTX_no_crlf(const char* value)
+{
+    if (value != NULL) {
+        const char* c;
+        for (c = value; *c != '\0'; c++) {
+            if (*c == '\r' || *c == '\n')
+                return -1;
+        }
+    }
+
+    return 0;
+}
+
 int wolfSSL_OCSP_REQ_CTX_add1_header(WOLFSSL_OCSP_REQ_CTX *ctx,
                              const char *name, const char *value)
 {
@@ -1763,6 +1795,16 @@ int wolfSSL_OCSP_REQ_CTX_add1_header(WOLFSSL_OCSP_REQ_CTX *ctx,
 
     if (ctx == NULL || name == NULL) {
         WOLFSSL_MSG("Bad parameter");
+        return WOLFSSL_FAILURE;
+    }
+    if (OCSP_REQ_CTX_no_crlf(name) != 0 || OCSP_REQ_CTX_no_crlf(value) != 0) {
+        WOLFSSL_MSG("CR/LF in header name or value");
+        return WOLFSSL_FAILURE;
+    }
+    /* A name starting with whitespace is an obs-fold continuation line
+     * (RFC 7230 Section 3.2.4) appending to the previous header's value. */
+    if (*name == ' ' || *name == '\t') {
+        WOLFSSL_MSG("Leading whitespace in header name");
         return WOLFSSL_FAILURE;
     }
     if (wolfSSL_BIO_puts(ctx->reqResp, name) <= 0) {
@@ -1803,6 +1845,11 @@ int wolfSSL_OCSP_REQ_CTX_http(WOLFSSL_OCSP_REQ_CTX *ctx, const char *op,
 
     if (path == NULL)
         path = "/";
+
+    if (OCSP_REQ_CTX_no_crlf(op) != 0 || OCSP_REQ_CTX_no_crlf(path) != 0) {
+        WOLFSSL_MSG("CR/LF in HTTP op or path");
+        return WOLFSSL_FAILURE;
+    }
 
     if (wolfSSL_BIO_printf(ctx->reqResp, http_hdr, op, path) <= 0) {
         WOLFSSL_MSG("WOLFSSL_OCSP_REQ_CTX: wolfSSL_BIO_printf error");

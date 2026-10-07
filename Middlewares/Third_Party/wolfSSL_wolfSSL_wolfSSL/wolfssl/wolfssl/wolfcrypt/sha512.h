@@ -36,6 +36,10 @@
     #include <wolfssl/wolfcrypt/fips.h>
 #endif /* HAVE_FIPS_VERSION >= 2 */
 
+#ifndef WC_HAVE_SHA2_NO_SMALL_STACK
+    #define WC_HAVE_SHA2_NO_SMALL_STACK
+#endif
+
 #ifdef __cplusplus
     extern "C" {
 #endif
@@ -159,13 +163,10 @@ struct wc_Sha512 {
 #ifdef USE_INTEL_SPEEDUP
     const byte* data;
 #endif
-#ifdef WC_C_DYNAMIC_FALLBACK
-    int sha_method;
-#endif
 #ifdef WOLFSSL_ASYNC_CRYPT
     WC_ASYNC_DEV asyncDev;
 #endif /* WOLFSSL_ASYNC_CRYPT */
-#ifdef WOLFSSL_SMALL_STACK_CACHE
+#if defined(WOLFSSL_SMALL_STACK_CACHE) && !defined(WC_SHA2_NO_SMALL_STACK)
     word64* W;
 #endif
 
@@ -224,7 +225,9 @@ struct wc_Sha512 {
 
 #endif /* HAVE_FIPS */
 
-#if defined(WOLFSSL_SHA512)
+/* SHA-384 reuses the SHA-512 transform, so these internal functions are
+ * needed whenever either algorithm is enabled. */
+#if defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)
 
 #ifdef WOLFSSL_ARMASM
 #if !defined(WOLFSSL_ARMASM_NO_NEON)
@@ -239,8 +242,19 @@ WOLFSSL_LOCAL void Transform_Sha512_Len_crypto(wc_Sha512* sha512,
 WOLFSSL_LOCAL void Transform_Sha512_Len_base(wc_Sha512* sha512,
     const byte* data, word32 len);
 #endif
-#endif
+#endif /* WOLFSSL_ARMASM */
 
+#if defined(WOLFSSL_RISCV_ASM)
+WOLFSSL_LOCAL void Transform_Sha512_Len_riscv(wc_Sha512* sha512,
+    const byte* data, word32 len);
+WOLFSSL_LOCAL void Transform_Sha512_Len_riscv_crypto(wc_Sha512* sha512,
+    const byte* data, word32 len);
+WOLFSSL_LOCAL void Transform_Sha512_Len_riscv_vector(wc_Sha512* sha512,
+    const byte* data, word32 len);
+#endif
+#endif /* WOLFSSL_SHA512 || WOLFSSL_SHA384 */
+
+#if defined(WOLFSSL_SHA512)
 WOLFSSL_API int wc_InitSha512(wc_Sha512* sha);
 WOLFSSL_API int wc_InitSha512_ex(wc_Sha512* sha, void* heap, int devId);
 WOLFSSL_API int wc_Sha512Update(wc_Sha512* sha, const byte* data, word32 len);
@@ -249,6 +263,7 @@ WOLFSSL_API int wc_Sha512FinalRaw(wc_Sha512* sha512, byte* hash);
 #endif
 WOLFSSL_API int wc_Sha512Final(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API void wc_Sha512Free(wc_Sha512* sha);
+WOLFSSL_API int wc_Sha512Reset(wc_Sha512* sha);
 
 WOLFSSL_API int wc_Sha512GetHash(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API int wc_Sha512Copy(wc_Sha512* src, wc_Sha512* dst);
@@ -276,6 +291,7 @@ WOLFSSL_API int wc_Sha512_224FinalRaw(wc_Sha512* sha512, byte* hash);
 #endif
 WOLFSSL_API int wc_Sha512_224Final(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API void wc_Sha512_224Free(wc_Sha512* sha);
+WOLFSSL_API int wc_Sha512_224Reset(wc_Sha512* sha);
 WOLFSSL_API int wc_Sha512_224GetHash(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API int wc_Sha512_224Copy(wc_Sha512* src, wc_Sha512* dst);
 #ifdef WOLFSSL_HASH_FLAGS
@@ -300,6 +316,7 @@ WOLFSSL_API int wc_Sha512_256FinalRaw(wc_Sha512* sha512, byte* hash);
 #endif
 WOLFSSL_API int wc_Sha512_256Final(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API void wc_Sha512_256Free(wc_Sha512* sha);
+WOLFSSL_API int wc_Sha512_256Reset(wc_Sha512* sha);
 WOLFSSL_API int wc_Sha512_256GetHash(wc_Sha512* sha512, byte* hash);
 WOLFSSL_API int wc_Sha512_256Copy(wc_Sha512* src, wc_Sha512* dst);
 #ifdef WOLFSSL_HASH_FLAGS
@@ -354,6 +371,7 @@ WOLFSSL_API int wc_Sha384FinalRaw(wc_Sha384* sha384, byte* hash);
 #endif
 WOLFSSL_API int wc_Sha384Final(wc_Sha384* sha384, byte* hash);
 WOLFSSL_API void wc_Sha384Free(wc_Sha384* sha);
+WOLFSSL_API int wc_Sha384Reset(wc_Sha384* sha);
 
 WOLFSSL_API int wc_Sha384GetHash(wc_Sha384* sha384, byte* hash);
 WOLFSSL_API int wc_Sha384Copy(wc_Sha384* src, wc_Sha384* dst);

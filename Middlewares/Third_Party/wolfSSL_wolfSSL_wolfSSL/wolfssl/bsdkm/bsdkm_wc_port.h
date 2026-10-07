@@ -63,10 +63,11 @@ static inline time_t wolfkmod_time(time_t * tloc) {
 
 /* str and char utility functions */
 #define XATOI(s) ({                                                          \
-      char * endptr = NULL;                                                  \
-      long   _xatoi_ret = strtol(s, &endptr, 10);                            \
-      if ((s) == endptr || *endptr != '\0') {                                \
-        _xatoi_ret = 0;                                                      \
+      const char * _str = (s);                                               \
+      char *       _endptr = NULL;                                           \
+      long         _xatoi_ret = strtol(_str, &_endptr, 10);                  \
+      if ((_str) == _endptr || *_endptr != '\0') {                           \
+          _xatoi_ret = 0;                                                    \
       }                                                                      \
       (int)_xatoi_ret;                                                       \
 })
@@ -79,26 +80,53 @@ static inline time_t wolfkmod_time(time_t * tloc) {
 extern struct malloc_type M_WOLFSSL[1];
 
 #if defined(WOLFSSL_BSDKM_MEMORY_DEBUG)
-    #define XMALLOC(s, h, t) ({                                              \
-        (void)(h); (void)(t);                                                \
-        int _wait_flag = curthread->td_critnest == 0 ? M_WAITOK : M_NOWAIT;  \
-        void * _ptr = malloc((s), M_WOLFSSL, _wait_flag | M_ZERO);           \
-        printf("info: malloc: %p, M_WOLFSSL, %zu\n", _ptr, (size_t) s);      \
-        (void *)_ptr;                                                        \
-    })
+    #if defined(BSDKM_CRYPTO_REGISTER)
+        /* cryptodev work functions must not sleep.see man CRYPTO_DRIVER(9) */
+        #define XMALLOC(s, h, t) ({                                          \
+            (void)(h); (void)(t);                                            \
+            size_t _sz; void * _ptr;                                         \
+            _sz = (size_t)(s);                                               \
+            _ptr = malloc(_sz, M_WOLFSSL, M_NOWAIT | M_ZERO);                \
+            printf("info: malloc: %p, M_WOLFSSL, %zu, 0x%02x\n", _ptr, _sz,  \
+                   M_NOWAIT | M_ZERO);                                       \
+            (void *)_ptr;                                                    \
+        })
+    #else
+        #define XMALLOC(s, h, t) ({                                          \
+            (void)(h); (void)(t);                                            \
+            size_t _sz; int _wait_flag; void * _ptr;                         \
+            _sz = (size_t)(s);                                               \
+            _wait_flag = curthread->td_critnest == 0 ? M_WAITOK : M_NOWAIT;  \
+            _ptr = malloc(_sz, M_WOLFSSL, _wait_flag | M_ZERO);              \
+            printf("info: malloc: %p, M_WOLFSSL, %zu, 0x%02x\n", _ptr, _sz,  \
+                   _wait_flag);                                              \
+            (void *)_ptr;                                                    \
+        })
+    #endif /* BSDKM_CRYPTO_REGISTER */
 
-    #define XFREE(p, h, t) ({                                                \
-        void* _xp; (void)(h); (void)(t); _xp = (p);                          \
-        printf("info: free: %p, M_WOLFSSL\n", _xp);                          \
-        if(_xp) free(_xp, M_WOLFSSL);                                        \
+    #define XFREE(p, h, t) ({                                            \
+        void* _xp; (void)(h); (void)(t); _xp = (p);                      \
+        printf("info: free: %p, M_WOLFSSL\n", _xp);                      \
+        if(_xp) free(_xp, M_WOLFSSL);                                    \
     })
 #else
-    #define XMALLOC(s, h, t) ({                                              \
-        (void)(h); (void)(t);                                                \
-        int _wait_flag = curthread->td_critnest == 0 ? M_WAITOK : M_NOWAIT;  \
-        void * _ptr = malloc((s), M_WOLFSSL, _wait_flag | M_ZERO);           \
-        (void *)_ptr;                                                        \
-    })
+    #if defined(BSDKM_CRYPTO_REGISTER)
+        /* cryptodev work functions must not sleep.see man CRYPTO_DRIVER(9) */
+        #define XMALLOC(s, h, t) ({                                          \
+            (void)(h); (void)(t);                                            \
+            void * _ptr;                                                     \
+            _ptr = malloc((s), M_WOLFSSL, M_NOWAIT | M_ZERO);                \
+            (void *)_ptr;                                                    \
+        })
+    #else
+        #define XMALLOC(s, h, t) ({                                          \
+            (void)(h); (void)(t);                                            \
+            int _wait_flag; void * _ptr;                                     \
+            _wait_flag = curthread->td_critnest == 0 ? M_WAITOK : M_NOWAIT;  \
+            _ptr = malloc((s), M_WOLFSSL, _wait_flag | M_ZERO);              \
+            (void *)_ptr;                                                    \
+        })
+    #endif /* BSDKM_CRYPTO_REGISTER */
 
     #define XFREE(p, h, t) ({                                                \
         void* _xp; (void)(h); (void)(t); _xp = (p);                          \
@@ -179,9 +207,33 @@ extern struct malloc_type M_WOLFSSL[1];
     typedef volatile int          wolfSSL_Atomic_Int;
     typedef volatile unsigned int wolfSSL_Atomic_Uint;
     #define WOLFSSL_ATOMIC_INITIALIZER(x) (x)
-    #define WOLFSSL_ATOMIC_LOAD(x) (int)atomic_load_acq_int(&(x))
-    #define WOLFSSL_ATOMIC_LOAD_UINT(x) atomic_load_acq_int(&(x))
-    #define WOLFSSL_ATOMIC_STORE(x, v)  atomic_store_rel_int(&(x), (v))
+
+    /* _Generic selectors dispatch on (x) + 0 so that qualifier handling is
+     * identical across pre- and post-DR 481 compilers (C17 settled that
+     * lvalue conversion strips qualifiers from the controlling expression;
+     * earlier GCC/clang did not) -- the typedefs are volatile-qualified, so
+     * bare (x) would match no arm on one compiler generation or the other.
+     * LOAD's result cast uses the same expression to yield the unqualified
+     * promoted type.  The LOAD and STORE tables must stay member-congruent:
+     * extend both, in pairs, with each new width's own _acq/_rel primitive;
+     * no default arm -- an unlisted type is a deliberate compile error.
+     */
+    #define WOLFSSL_ATOMIC_LOAD(x) ((__typeof__((x) + 0))                \
+            _Generic((__typeof__((x) + 0))0,                             \
+            int:           atomic_load_acq_int((volatile u_int *)&(x)),  \
+            unsigned int:  atomic_load_acq_int((volatile u_int *)&(x)),  \
+            long:          atomic_load_acq_long((volatile u_long *)&(x)),\
+            unsigned long: atomic_load_acq_long((volatile u_long *)&(x))))
+    #define WOLFSSL_ATOMIC_STORE(x, v) _Generic((__typeof__((x) + 0))0,  \
+            int:           atomic_store_rel_int((volatile u_int *)&(x),  \
+                                                (u_int)(v)),             \
+            unsigned int:  atomic_store_rel_int((volatile u_int *)&(x),  \
+                                                (u_int)(v)),             \
+            long:          atomic_store_rel_long((volatile u_long *)&(x),\
+                                                 (u_long)(v)),           \
+            unsigned long: atomic_store_rel_long((volatile u_long *)&(x),\
+                                                 (u_long)(v))            \
+            )
     #define WOLFSSL_ATOMIC_OPS
 
     #if defined(HAVE_FIPS)

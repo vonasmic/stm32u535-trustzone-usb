@@ -126,6 +126,46 @@ void wc_Sha256Free(wc_Sha256* sha256);
 /*!
     \ingroup SHA
 
+    \brief Resets the sha256 structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha256Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha256 is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha256 Pointer to the sha256 structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha256 sha256;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA256_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha256(&sha256)) == 0) {
+        wc_Sha256Update(&sha256, data, sizeof(data));
+        wc_Sha256Reset(&sha256); /* discard the partially hashed message */
+        wc_Sha256Update(&sha256, data2, sizeof(data2));
+        wc_Sha256Final(&sha256, hash);
+        wc_Sha256Free(&sha256);
+    }
+    \endcode
+
+    \sa wc_InitSha256
+    \sa wc_Sha256Final
+    \sa wc_Sha256Free
+*/
+int wc_Sha256Reset(wc_Sha256* sha256);
+
+/*!
+    \ingroup SHA
+
     \brief Gets hash data. Result is placed into hash.  Does not
     reset state of sha256 struct.
 
@@ -366,12 +406,16 @@ int wc_Sha256_Grow(wc_Sha256* sha256, const byte* in, int inSz);
     \return negative on error
 
     \param src Source SHA256 structure
-    \param dst Destination SHA256 structure
+    \param dst Destination SHA256 structure;
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha256 src, dst;
-    int ret = wc_Sha256Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha256(&src);
+    if (ret == 0)
+        ret = wc_Sha256Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha256
@@ -480,6 +524,46 @@ void wc_Sha224Free(wc_Sha224* sha224);
 
 /*!
     \ingroup SHA
+
+    \brief Resets the sha224 structure to its freshly initialized state,
+    continuing with its established allocations, heap hint, and device
+    association.  Equivalent to a fresh init for all
+    subsequent operations; useful for abandoning a partially hashed message,
+    including after a failed Update or Final.  Like the Final functions,
+    Reset does not destroy sensitive internal state; use wc_Sha224Free for
+    teardown at end of life.
+
+    \return 0 Returned upon successfully resetting the structure.
+    \return BAD_FUNC_ARG Returned if sha224 is NULL.
+    \return negative Other values may be returned on reinitialization
+    failure in fallback (non-plain-software) configurations.
+
+    \param sha224 Pointer to the sha224 structure to be reset.
+
+    _Example_
+    \code
+    wc_Sha224 sha224;
+    byte data[] = { Data to be discarded };
+    byte data2[] = { Data to be hashed };
+    byte hash[WC_SHA224_DIGEST_SIZE];
+
+    if ((ret = wc_InitSha224(&sha224)) == 0) {
+        wc_Sha224Update(&sha224, data, sizeof(data));
+        wc_Sha224Reset(&sha224); /* discard the partially hashed message */
+        wc_Sha224Update(&sha224, data2, sizeof(data2));
+        wc_Sha224Final(&sha224, hash);
+        wc_Sha224Free(&sha224);
+    }
+    \endcode
+
+    \sa wc_InitSha224
+    \sa wc_Sha224Final
+    \sa wc_Sha224Free
+*/
+int wc_Sha224Reset(wc_Sha224* sha224);
+
+/*!
+    \ingroup SHA
     \brief Grows SHA224 buffer with input data. This function is only
     available when WOLFSSL_HASH_KEEP is defined. It is used for keeping an
     internal buffer to hold all data to be hashed rather than iterating
@@ -534,11 +618,15 @@ int wc_Sha224GetHash(wc_Sha224* sha224, byte* hash);
 
     \param src Source SHA224 structure
     \param dst Destination SHA224 structure
+    (must be zeroed or previously initialized)
 
     _Example_
     \code
     wc_Sha224 src, dst;
-    int ret = wc_Sha224Copy(&src, &dst);
+    memset(&dst, 0, sizeof(dst));
+    int ret = wc_InitSha224(&src);
+    if (ret == 0)
+        ret = wc_Sha224Copy(&src, &dst);
     \endcode
 
     \sa wc_InitSha224

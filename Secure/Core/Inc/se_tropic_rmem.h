@@ -195,9 +195,16 @@ lt_ret_t se_tropic_get_pad_encryption_key(const uint8_t ss[SE_TROPIC_MLKEM_SS_LE
                                           uint8_t key[SE_TROPIC_RMEM_AES_KEY_LEN]);
 
 /**
- * Erase every QKD R-MEM slot (0..509). Leaves PIN NVM (511) and the wrapped
- * ML-KEM seed (510) alone. Does not arm OTP cursors.
- * Called from kem_ct_write after committing fill_id to MCU NV.
+ * 1 = the current provision already erased slots 0..509. The next
+ * se_tropic_qkd_provision_begin then skips the bulk erase (and clears this).
+ * 0 = kem_ct_write must erase. Cleared on TLS teardown.
+ */
+void se_tropic_qkd_set_wiped(uint8_t wiped);
+
+/**
+ * Erase every QKD R-MEM slot (0..509) unless se_tropic_qkd_set_wiped(1) ran.
+ * Leaves PIN NVM (511) and the wrapped ML-KEM seed (510) alone. Does not arm
+ * OTP cursors. Called from kem_ct_write after committing fill_id to MCU NV.
  */
 lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h);
 
@@ -219,8 +226,9 @@ lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image
 
 /**
  * Write the fill's 1088-byte ML-KEM ciphertext across slots 0..2.
- * Commits fill_id (pending TLS id or fresh random), wipes QKD slots.
- * Does not arm OTP cursors — call se_tropic_qkd_arm_halves after decrypt_half.
+ * Commits fill_id (pending TLS id or fresh random). Wipes QKD slots unless
+ * an early provision wipe already finished. Does not arm OTP cursors —
+ * call se_tropic_qkd_arm_halves after decrypt_half.
  */
 lt_ret_t se_tropic_kem_ct_write(lt_handle_t *h, const uint8_t ct[SE_TROPIC_KEM_CT_LEN]);
 

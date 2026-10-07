@@ -368,6 +368,17 @@ int  wc_AesGcmSetKey(Aes* aes, const byte* key, word32 len);
     It also encodes the input authentication vector, authIn, into the
     authentication tag, authTag.
 
+    \note When built with WOLFSSL_AFALG_XILINX_AES, the Xilinx AF_ALG kernel
+    interface operates on a combined cipher text + tag buffer, so this function
+    does not honor the exact-size buffer contract described below. Both in and
+    out must be allocated with WC_AES_BLOCK_SIZE (16) bytes of room beyond sz:
+    sz + 16 bytes are sent to the kernel from in (the trailing 16 bytes are
+    scratch space for the tag and their contents are irrelevant), and sz + 16
+    bytes are read back into out. The tag is additionally copied out to authTag
+    as usual. Both buffers should also be aligned to WOLFSSL_XILINX_ALIGN; an
+    unaligned in is staged through a temporary allocation, or rejected with
+    BAD_ALIGN_E if NO_WOLFSSL_ALLOC_ALIGN is defined.
+
     \return 0 On successfully encrypting the input message
 
     \param aes - pointer to the AES object used to encrypt data
@@ -419,6 +430,17 @@ int  wc_AesGcmEncrypt(Aes* aes, byte* out,
     supplied authentication tag, authTag.  If a nonzero error code is returned,
     the output data is undefined.  However, callers must unconditionally zeroize
     the output buffer to guard against leakage of cleartext data.
+
+    \note When built with WOLFSSL_AFALG_XILINX_AES, the Xilinx AF_ALG kernel
+    interface operates on a combined cipher text + tag buffer, so this function
+    does not honor the exact-size buffer contract described below. Both in and
+    out must be allocated with WC_AES_BLOCK_SIZE (16) bytes of room beyond sz.
+    The tag to check against is written into in + sz by this function, which
+    means the in buffer is modified even though it is declared const, and
+    sz + 16 bytes are read back into out. Both buffers should also be aligned
+    to WOLFSSL_XILINX_ALIGN; an unaligned in is staged through a temporary
+    allocation, or rejected with BAD_ALIGN_E if NO_WOLFSSL_ALLOC_ALIGN is
+    defined.
 
     \return 0 On successfully decrypting and authenticating the input message
     \return AES_GCM_AUTH_E If the authentication tag does not match the
@@ -2751,8 +2773,24 @@ int wc_AesGcmSetIV(Aes* aes, word32 ivSz, const byte* ivFixed,
     parameters, including IV output. This is a one-shot encryption
     function that outputs the generated IV.
 
+    The IV is taken from an internal counter that is advanced whenever an IV
+    is consumed - on success, and on submission to an asynchronous device - so
+    no two encryptions under one key use the same IV. A call that fails before
+    the cipher consumes the IV leaves the counter where it was. ivOut must not
+    overlap out, in, authTag or authIn: the buffer is the working copy of the
+    IV that was consumed, and overwriting it corrupts the counter for the next
+    call. ivOut may be written even when the function returns an error.
+
+    When the Aes carries an asynchronous device, a return of WC_PENDING_E
+    means the operation was submitted, not that it finished. ivOut - like out,
+    in, authTag and authIn - must stay allocated and unmodified until the
+    operation completes, because the backend reads the IV from it at
+    completion time.
+
     \return 0 On success.
     \return BAD_FUNC_ARG If parameters are invalid.
+    \return WC_PENDING_E If submitted to an asynchronous device and still
+    in progress.
     \return Other negative values on error.
 
     \param aes pointer to the AES structure
@@ -2914,6 +2952,15 @@ int wc_AesCcmSetNonce(Aes* aes, const byte* nonce, word32 nonceSz);
     \brief This function performs AES CCM encryption with extended
     parameters, including nonce output. This is useful when part of the
     nonce is generated internally.
+
+    The nonce is taken from an internal counter that is advanced whenever a
+    nonce is consumed - on success, and on submission to an asynchronous
+    device - so no two encryptions under one key use the same nonce. A call
+    that fails before the cipher consumes the nonce leaves the counter where
+    it was. ivOut must not overlap out, in, authTag or authIn: the buffer is
+    the working copy of the nonce that was consumed, and overwriting it
+    corrupts the counter for the next call. ivOut may be written even when the
+    function returns an error - earlier releases left it untouched on failure.
 
     \return 0 On success.
     \return BAD_FUNC_ARG If parameters are invalid.
@@ -3463,7 +3510,9 @@ int wc_AesGetKeySize(Aes* aes, word32* keySize);
     which is set for PKCS11 support.
 
     \return 0 On success.
-    \return BAD_FUNC_ARG If aes or id is NULL, or if len is invalid.
+    \return BAD_FUNC_ARG If aes is NULL, or if id is NULL while len is
+    positive.
+    \return BUFFER_E If len is negative or greater than AES_MAX_ID_LEN.
 
     \param aes pointer to the AES structure to initialize
     \param id pointer to the ID buffer

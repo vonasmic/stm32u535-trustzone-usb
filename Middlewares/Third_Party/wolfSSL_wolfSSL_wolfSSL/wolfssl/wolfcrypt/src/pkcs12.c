@@ -290,7 +290,9 @@ static int GetSafeContent(WC_PKCS12* pkcs12, const byte* input,
             return ret;
         }
 
+        /* parse the DER conversion with its own size, not the BER size */
         input = pkcs12->safeDer;
+        size  = (int)pkcs12->safeDersz;
      }
 #endif /* ASN_BER_TO_DER */
 
@@ -320,8 +322,8 @@ static int GetSafeContent(WC_PKCS12* pkcs12, const byte* input,
                 return ret;
             }
 
-            if (curSz > CISz) {
-                /* subset should not be larger than universe */
+            if (localIdx + (word32)curSz > (word32)CISz) {
+                /* ContentInfo must lie inside the AuthenticatedSafe SEQUENCE */
                 freeSafe(safe, pkcs12->heap);
                 return ASN_PARSE_E;
             }
@@ -557,6 +559,19 @@ static int wc_PKCS12_create_mac(WC_PKCS12* pkcs12, byte* data, word32 dataSz,
                                      DYNAMIC_TYPE_TMP_BUFFER);
                       return MEMORY_E; });
 
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    /* Register both secret buffers from allocation, poisoned non-zero so a
+     * future path that reaches exit_mac without ForceZero is caught by the
+     * Check. unicodePasswd holds the (unicode-expanded) password; key holds
+     * the PBKDF-derived HMAC key. Every exit below is a 'goto exit_mac'
+     * which ForceZero+Checks both. */
+    XMEMSET(unicodePasswd, 0xff, MAX_UNICODE_SZ);
+    wc_MemZero_Add("wc_PKCS12_create_mac unicodePasswd", unicodePasswd,
+                   MAX_UNICODE_SZ);
+    XMEMSET(key, 0xff, sizeof(key));
+    wc_MemZero_Add("wc_PKCS12_create_mac key", key, sizeof(key));
+#endif
+
     /* unicode set up from asn.c */
     if (pswSz >= MAX_UNICODE_SZ ||
        (pswSz * 2 + 2) > MAX_UNICODE_SZ) {
@@ -610,7 +625,16 @@ static int wc_PKCS12_create_mac(WC_PKCS12* pkcs12, byte* data, word32 dataSz,
         ret = kLen; /* same as digest size */
 
 exit_mac:
+    ForceZero(key, sizeof(key));
+#ifdef WOLFSSL_CHECK_MEM_ZERO
+    wc_MemZero_Check(key, sizeof(key));
+#endif
     ForceZero(unicodePasswd, MAX_UNICODE_SZ);
+    /* Stack build only: under WOLFSSL_SMALL_STACK unicodePasswd is heap and
+     * WC_FREE_VAR_EX (XFREE) auto-runs wc_MemZero_Check over the block. */
+#if !defined(WOLFSSL_SMALL_STACK) && defined(WOLFSSL_CHECK_MEM_ZERO)
+    wc_MemZero_Check(unicodePasswd, MAX_UNICODE_SZ);
+#endif
     WC_FREE_VAR_EX(unicodePasswd, pkcs12->heap, DYNAMIC_TYPE_TMP_BUFFER);
     WC_FREE_VAR_EX(hmac, pkcs12->heap, DYNAMIC_TYPE_HMAC);
     return ret;
@@ -1355,6 +1379,7 @@ int wc_PKCS12_parse_ex(WC_PKCS12* pkcs12, const char* psw,
     WC_DerCertList* certList = NULL;
     WC_DerCertList* tailList = NULL;
     byte* buf             = NULL;
+    word32 bufSz          = 0;
     word32 i, oid;
     word32 algId;
     word32 contentSz = 0;
@@ -1466,6 +1491,7 @@ int wc_PKCS12_parse_ex(WC_PKCS12* pkcs12, const char* psw,
             if (buf == NULL) {
                 ERROR_OUT(MEMORY_E, exit_pk12par);
             }
+            bufSz = (word32)size;
             XMEMCPY(buf, data + idx, (size_t)size);
 
             if ((ret = DecryptContent(buf, (word32)size, psw, pswSz)) < 0) {
@@ -1780,8 +1806,12 @@ int wc_PKCS12_parse_ex(WC_PKCS12* pkcs12, const char* psw,
         }
 
         /* free temporary buffer */
-        XFREE(buf, pkcs12->heap, DYNAMIC_TYPE_PKCS);
-        buf = NULL;
+        if (buf != NULL) {
+            ForceZero(buf, bufSz);
+            XFREE(buf, pkcs12->heap, DYNAMIC_TYPE_PKCS);
+            buf = NULL;
+            bufSz = 0;
+        }
 
         ci = ci->next;
         WOLFSSL_MSG("Done Parsing PKCS12 Content Info Container");
@@ -1816,8 +1846,11 @@ exit_pk12par:
             XFREE(*pkey, pkcs12->heap, DYNAMIC_TYPE_PUBLIC_KEY);
             *pkey = NULL;
         }
-        XFREE(buf, pkcs12->heap, DYNAMIC_TYPE_PKCS);
-        buf = NULL;
+        if (buf != NULL) {
+            ForceZero(buf, bufSz);
+            XFREE(buf, pkcs12->heap, DYNAMIC_TYPE_PKCS);
+            buf = NULL;
+        }
 
         wc_FreeCertList(certList, pkcs12->heap);
     }
@@ -2713,9 +2746,11 @@ static int PKCS12_create_safe(WC_PKCS12* pkcs12, byte* certCi, word32 certCiSz,
 
     ret = wc_PKCS12_encrypt_content(pkcs12, rng, safeData, &safeDataSz,
             innerData, innerDataSz, 0, pass, (int)passSz, iter, WC_PKCS12_DATA);
+    ForceZero(innerData, innerDataSz);
     XFREE(innerData, pkcs12->heap, DYNAMIC_TYPE_PKCS);
     if (ret < 0 ) {
         WOLFSSL_MSG("Error setting data type for safe contents");
+        ForceZero(safeData, safeDataSz);
         XFREE(safeData, pkcs12->heap, DYNAMIC_TYPE_TMP_BUFFER);
         return ret;
     }
@@ -2724,11 +2759,13 @@ static int PKCS12_create_safe(WC_PKCS12* pkcs12, byte* certCi, word32 certCiSz,
     ret = GetSequence(safeData, &idx, &length, safeDataSz);
     if (ret < 0) {
         WOLFSSL_MSG("Error getting first sequence of safe");
+        ForceZero(safeData, safeDataSz);
         XFREE(safeData, pkcs12->heap, DYNAMIC_TYPE_TMP_BUFFER);
         return ret;
     }
 
     ret = GetSafeContent(pkcs12, safeData, &idx, safeDataSz);
+    ForceZero(safeData, safeDataSz);
     XFREE(safeData, pkcs12->heap, DYNAMIC_TYPE_TMP_BUFFER);
     if (ret < 0) {
         WOLFSSL_MSG("Unable to create safe contents");
@@ -2799,6 +2836,7 @@ WC_PKCS12* wc_PKCS12_create(char* pass, word32 passSz, char* name,
     certCi = PKCS12_create_cert_content(pkcs12, nidCert, ca, cert, certSz,
             &certCiSz, &rng, pass, passSz, iter);
     if (certCi == NULL) {
+        ForceZero(keyCi, keyCiSz);
         XFREE(keyCi, heap, DYNAMIC_TYPE_TMP_BUFFER);
         wc_PKCS12_free(pkcs12);
         wc_FreeRng(&rng);
@@ -2808,6 +2846,7 @@ WC_PKCS12* wc_PKCS12_create(char* pass, word32 passSz, char* name,
     /**** create safe and Content Info ****/
     ret = PKCS12_create_safe(pkcs12, certCi, certCiSz, keyCi, keyCiSz, &rng,
             pass, passSz, iter);
+    ForceZero(keyCi, keyCiSz);
     XFREE(keyCi,  heap, DYNAMIC_TYPE_TMP_BUFFER);
     XFREE(certCi, heap, DYNAMIC_TYPE_TMP_BUFFER);
     if (ret != 0) {

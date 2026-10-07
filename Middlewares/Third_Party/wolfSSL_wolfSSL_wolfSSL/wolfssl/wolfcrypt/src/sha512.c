@@ -54,6 +54,9 @@
  * WOLFSSL_RENESAS_RSIP:     Renesas RSIP SHA acceleration        default: off
  */
 
+#define WC_FIPS_LL_CRYPTO
+#define _WC_BUILDING_SHA512_C
+
 #include <wolfssl/wolfcrypt/libwolfssl_sources.h>
 
 #if (defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)) && \
@@ -62,8 +65,7 @@
            " acceleration backends"
 #endif
 
-#if (defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384)) && \
-    !defined(WOLFSSL_RISCV_ASM)
+#if (defined(WOLFSSL_SHA512) || defined(WOLFSSL_SHA384))
 
 /* determine if we are using Espressif SHA hardware acceleration */
 #undef WOLFSSL_USE_ESP32_CRYPT_HASH_HW
@@ -81,9 +83,6 @@
 #endif
 
 #if defined(HAVE_FIPS) && defined(HAVE_FIPS_VERSION) && (HAVE_FIPS_VERSION >= 2)
-    /* set NO_WRAPPERS before headers, use direct internal f()s not wrappers */
-    #define FIPS_NO_WRAPPERS
-
     #ifdef USE_WINDOWS_API
         #pragma code_seg(".fipsA$m")
         #pragma const_seg(".fipsB$m")
@@ -137,6 +136,15 @@
     #include <wolfssl/wolfcrypt/port/cypress/psoc6_crypto.h>
 #endif
 
+#if defined(WC_C_DYNAMIC_FALLBACK) && \
+        defined(WOLFSSL_AESNI) && !defined(USE_INTEL_SPEEDUP)
+    /* AES-NI can be enabled with WC_C_DYNAMIC_FALLBACK, but without the rest of
+     * USE_INTEL_SPEEDUP, in which case we need to disable the dynamic
+     * fallback.
+     */
+    #undef WC_C_DYNAMIC_FALLBACK
+#endif
+
 #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP)
     #if defined(__GNUC__) && ((__GNUC__ < 4) || \
                               (__GNUC__ == 4 && __GNUC_MINOR__ <= 8))
@@ -186,6 +194,7 @@
     defined(PSOC6_HASH_SHA2) || \
     defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW) || \
     defined(WOLFSSL_ARMASM) || \
+    defined(WOLFSSL_RISCV_ASM) || \
     (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
         (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2)))
     #error "WOLF_CRYPTO_CB_ONLY_SHA512 is incompatible with SHA-512 hardware" \
@@ -908,12 +917,7 @@ int wc_Sha384GetFlags(wc_Sha384* sha384, word32* flags)
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))) || \
     defined(WOLFSSL_ARMASM)
-#ifdef WC_C_DYNAMIC_FALLBACK
-    #define SHA512_SETTRANSFORM_ARGS int *sha_method
-#else
-    #define SHA512_SETTRANSFORM_ARGS void
-#endif
-static void Sha512_SetTransform(SHA512_SETTRANSFORM_ARGS);
+static void Sha512_SetTransform(void);
 #endif
 
 static int InitSha512(wc_Sha512* sha512)
@@ -938,12 +942,7 @@ static int InitSha512(wc_Sha512* sha512)
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))) || \
     defined(WOLFSSL_ARMASM)
-#ifdef WC_C_DYNAMIC_FALLBACK
-    sha512->sha_method = 0;
-    Sha512_SetTransform(&sha512->sha_method);
-#else
     Sha512_SetTransform();
-#endif
 #endif
 
 #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW) && \
@@ -962,6 +961,33 @@ static int InitSha512(wc_Sha512* sha512)
 #endif /* WOLFSSL_SHA512_HASHTYPE */
     return 0;
 }
+
+#if !defined(WOLFSSL_HASH_KEEP)
+
+/* Reset a hash context to its freshly initialized state, reusing its existing
+ * allocations.  Like the Final functions, Reset does not destroy sensitive
+ * internal state; use the matching Free function for teardown at end of life.
+ */
+int wc_Sha512Reset(wc_Sha512* sha512) {
+    if (sha512 == NULL)
+        return BAD_FUNC_ARG;
+#ifdef WOLF_CRYPTO_CB
+    /* A device may hang state off devCtx that InitSha512() cannot restart.
+     * Free and re-init so the callback gets its teardown and setup. */
+    #ifndef WOLF_CRYPTO_CB_FIND
+    if (sha512->devId != INVALID_DEVID)
+    #endif
+    {
+        void* heap = sha512->heap;
+        int devId = sha512->devId;
+        wc_Sha512Free(sha512);
+        return wc_InitSha512_ex(sha512, heap, devId);
+    }
+#endif
+    return InitSha512(sha512);
+}
+#define WC_SHA512RESET_DEFINED
+#endif /* !WOLFSSL_HASH_KEEP */
 
 #if !defined(WOLFSSL_NOSHA512_224) && \
    (!defined(HAVE_FIPS) || FIPS_VERSION_GE(5, 3)) && !defined(HAVE_SELFTEST)
@@ -994,12 +1020,7 @@ static int InitSha512_224(wc_Sha512* sha512)
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))) || \
     defined(WOLFSSL_ARMASM)
-#ifdef WC_C_DYNAMIC_FALLBACK
-    sha512->sha_method = 0;
-    Sha512_SetTransform(&sha512->sha_method);
-#else
     Sha512_SetTransform();
-#endif
 #endif
 
 #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW) && \
@@ -1020,6 +1041,28 @@ static int InitSha512_224(wc_Sha512* sha512)
 #endif /* WOLFSSL_SHA512_HASHTYPE */
     return 0;
 }
+
+#if !defined(WOLFSSL_HASH_KEEP)
+int wc_Sha512_224Reset(wc_Sha512* sha512) {
+    if (sha512 == NULL)
+        return BAD_FUNC_ARG;
+#ifdef WOLF_CRYPTO_CB
+    /* A device may hang state off devCtx that InitSha512_224() cannot restart.
+     * Free and re-init so the callback gets its teardown and setup. */
+    #ifndef WOLF_CRYPTO_CB_FIND
+    if (sha512->devId != INVALID_DEVID)
+    #endif
+    {
+        void* heap = sha512->heap;
+        int devId = sha512->devId;
+        wc_Sha512_224Free(sha512);
+        return wc_InitSha512_224_ex(sha512, heap, devId);
+    }
+#endif
+    return InitSha512_224(sha512);
+}
+#define WC_SHA512_224RESET_DEFINED
+#endif /* !WOLFSSL_HASH_KEEP */
 #endif /* !WOLFSSL_NOSHA512_224 && !FIPS ... */
 
 #if !defined(WOLFSSL_NOSHA512_256) && \
@@ -1052,12 +1095,7 @@ static int InitSha512_256(wc_Sha512* sha512)
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))) || \
     defined(WOLFSSL_ARMASM)
-#ifdef WC_C_DYNAMIC_FALLBACK
-    sha512->sha_method = 0;
-    Sha512_SetTransform(&sha512->sha_method);
-#else
     Sha512_SetTransform();
-#endif
 #endif
 
 #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW) && \
@@ -1078,6 +1116,28 @@ static int InitSha512_256(wc_Sha512* sha512)
 #endif /* WOLFSSL_SHA512_HASHTYPE */
     return 0;
 }
+
+#if !defined(WOLFSSL_HASH_KEEP)
+int wc_Sha512_256Reset(wc_Sha512* sha512) {
+    if (sha512 == NULL)
+        return BAD_FUNC_ARG;
+#ifdef WOLF_CRYPTO_CB
+    /* A device may hang state off devCtx that InitSha512_256() cannot restart.
+     * Free and re-init so the callback gets its teardown and setup. */
+    #ifndef WOLF_CRYPTO_CB_FIND
+    if (sha512->devId != INVALID_DEVID)
+    #endif
+    {
+        void* heap = sha512->heap;
+        int devId = sha512->devId;
+        wc_Sha512_256Free(sha512);
+        return wc_InitSha512_256_ex(sha512, heap, devId);
+    }
+#endif
+    return InitSha512_256(sha512);
+}
+#define WC_SHA512_256RESET_DEFINED
+#endif /* !WOLFSSL_HASH_KEEP */
 #endif /* !WOLFSSL_NOSHA512_256 && !FIPS... */
 
 #endif /* WOLFSSL_SHA512 */
@@ -1180,7 +1240,7 @@ static int InitSha512_256(wc_Sha512* sha512)
     }  /* extern "C" */
 #endif
 
-    static cpuid_flags_t intel_flags = WC_CPUID_INITIALIZER;
+    static cpuid_flags_atomic_t intel_flags = WC_CPUID_ATOMIC_INITIALIZER;
 
 #if defined(WC_C_DYNAMIC_FALLBACK) && !defined(WC_NO_INTERNAL_FUNCTION_POINTERS)
     #define WC_NO_INTERNAL_FUNCTION_POINTERS
@@ -1193,43 +1253,84 @@ static int InitSha512_256(wc_Sha512* sha512)
     enum sha_methods { SHA512_UNSET = 0, SHA512_AVX1, SHA512_AVX2,
                        SHA512_AVX1_RORX, SHA512_AVX2_RORX, SHA512_C };
 
-#ifndef WC_C_DYNAMIC_FALLBACK
     /* note that all write access to this static variable must be idempotent,
      * as arranged by Sha512_SetTransform(), else it will be susceptible to
      * data races.
      */
     static enum sha_methods sha_method = SHA512_UNSET;
-#endif
 
-    static void Sha512_SetTransform(SHA512_SETTRANSFORM_ARGS)
+    #ifdef WC_C_DYNAMIC_FALLBACK
+        /* With the AVX backend, wc_Sha512.buffer is in big endian even though
+         * the host is little endian.  For WC_C_DYNAMIC_FALLBACK, which requires
+         * alternating between AVX and C, we activate WC_SHA512_RAW_BE_BUFFER,
+         * which brings in the below shims for just-in-time byte swapping on
+         * each call to the C back end.  This keeps the buffers big endian at
+         * all times.
+         *
+         * Callers test WC_SHA512_RAW_BE_BUFFER rather than
+         * WC_C_DYNAMIC_FALLBACK directly: the latter is a global setting whose
+         * only prerequisite is WC_HAVE_VECTOR_SPEEDUPS, so it can be set in
+         * configurations that never compile these adapters (WOLFSSL_SP_ASM
+         * only, 32-bit x86 --enable-intelasm, ...), and suppressing the
+         * caller-side byte-reversal there would leave nothing to compensate.
+         */
+        #define WC_SHA512_RAW_BE_BUFFER
+    #endif
+
+    #ifdef WC_SHA512_RAW_BE_BUFFER
+
+    static WC_INLINE int Transform_Sha512_C_from_raw(wc_Sha512 *sha512)
     {
-    #ifdef WC_C_DYNAMIC_FALLBACK
-        #define SHA_METHOD (*sha_method)
-    #else
-        #define SHA_METHOD sha_method
+    #ifdef LITTLE_ENDIAN_ORDER
+        ByteReverseWords64(sha512->buffer, sha512->buffer,
+                           WC_SHA512_BLOCK_SIZE);
     #endif
-        if (SHA_METHOD != SHA512_UNSET)
-            return;
+        return _Transform_Sha512(sha512);
+    }
 
-    #ifdef WC_C_DYNAMIC_FALLBACK
-        if (! CAN_SAVE_VECTOR_REGISTERS()) {
-            SHA_METHOD = SHA512_C;
-            return;
+    static WC_INLINE int Transform_Sha512_Len_C_from_raw(wc_Sha512 *sha512,
+                                                         word32 len)
+    {
+        const byte* data = sha512->data;
+        int ret = 0;
+
+        while (len >= WC_SHA512_BLOCK_SIZE) {
+            XMEMCPY(sha512->buffer, data, WC_SHA512_BLOCK_SIZE);
+            ret = Transform_Sha512_C_from_raw(sha512);
+            if (ret != 0)
+                break;
+            data += WC_SHA512_BLOCK_SIZE;
+            len  -= WC_SHA512_BLOCK_SIZE;
         }
-    #endif
 
-        cpuid_get_flags_ex(&intel_flags);
+        return ret;
+    }
+    #endif /* WC_SHA512_RAW_BE_BUFFER */
+
+    static void Sha512_SetTransform(void)
+    {
+        if (sha_method != SHA512_UNSET)
+            return;
+
+        /* Note that, with WC_C_DYNAMIC_FALLBACK, sha_method records CPU
+         * capability only.  Whether vector registers are actually usable is
+         * determined independently at each transform via
+         * SAVE_VECTOR_REGISTERS2(), allowing a context to move freely between
+         * vectorized and C transforms call by call.
+         */
+
+        cpuid_get_flags_atomic(&intel_flags);
 
     #if defined(HAVE_INTEL_AVX2)
         if (IS_INTEL_AVX2(intel_flags)) {
         #ifdef HAVE_INTEL_RORX
             if (IS_INTEL_BMI2(intel_flags)) {
-                SHA_METHOD = SHA512_AVX2_RORX;
+                sha_method = SHA512_AVX2_RORX;
             }
             else
         #endif
             {
-                SHA_METHOD = SHA512_AVX2;
+                sha_method = SHA512_AVX2;
             }
         }
         else
@@ -1238,33 +1339,41 @@ static int InitSha512_256(wc_Sha512* sha512)
         if (IS_INTEL_AVX1(intel_flags)) {
         #ifdef HAVE_INTEL_RORX
             if (IS_INTEL_BMI2(intel_flags)) {
-                SHA_METHOD = SHA512_AVX1_RORX;
+                sha_method = SHA512_AVX1_RORX;
             }
             else
         #endif
             {
-                SHA_METHOD = SHA512_AVX1;
+                sha_method = SHA512_AVX1;
             }
         }
         else
     #endif
         {
-            SHA_METHOD = SHA512_C;
+            sha_method = SHA512_C;
         }
-    #undef SHA_METHOD
     }
 
     static WC_INLINE int Transform_Sha512(wc_Sha512 *sha512) {
-    #ifdef WC_C_DYNAMIC_FALLBACK
-        #define SHA_METHOD (sha512->sha_method)
-    #else
-        #define SHA_METHOD sha_method
-    #endif
         int ret;
-        if (SHA_METHOD == SHA512_C)
+    #ifdef WC_C_DYNAMIC_FALLBACK
+        if ((sha_method == SHA512_C) ||
+            (SAVE_VECTOR_REGISTERS2() != 0))
+        {
+            return Transform_Sha512_C_from_raw(sha512);
+        }
+    #else
+        if (sha_method == SHA512_C) {
+            #ifdef WC_SHA512_RAW_BE_BUFFER
+            /* not currently reachable */
+            return Transform_Sha512_C_from_raw(sha512);
+            #else
             return _Transform_Sha512(sha512);
+            #endif
+        }
         SAVE_VECTOR_REGISTERS(return _svr_ret;);
-        switch (SHA_METHOD) {
+    #endif
+        switch (sha_method) {
         case SHA512_AVX2:
             ret = Transform_Sha512_AVX2(sha512);
             break;
@@ -1280,23 +1389,31 @@ static int InitSha512_256(wc_Sha512* sha512)
         case SHA512_C:
         case SHA512_UNSET:
         default:
+            #ifdef WC_SHA512_RAW_BE_BUFFER
+            /* not reachable -- the C path exits above, before vector register
+             * save -- but must stay layout-correct. */
+            ret = Transform_Sha512_C_from_raw(sha512);
+            #else
             ret = _Transform_Sha512(sha512);
+            #endif
             break;
         }
         RESTORE_VECTOR_REGISTERS();
         return ret;
-    #undef SHA_METHOD
     }
 
     static WC_INLINE int Transform_Sha512_Len(wc_Sha512 *sha512, word32 len) {
-    #ifdef WC_C_DYNAMIC_FALLBACK
-        #define SHA_METHOD (sha512->sha_method)
-    #else
-        #define SHA_METHOD sha_method
-    #endif
         int ret;
+    #ifdef WC_C_DYNAMIC_FALLBACK
+        if ((sha_method == SHA512_C) ||
+            (SAVE_VECTOR_REGISTERS2() != 0))
+        {
+            return Transform_Sha512_Len_C_from_raw(sha512, len);
+        }
+    #else
         SAVE_VECTOR_REGISTERS(return _svr_ret;);
-        switch (SHA_METHOD) {
+    #endif
+        switch (sha_method) {
         case SHA512_AVX2:
             ret = Transform_Sha512_AVX2_Len(sha512, len);
             break;
@@ -1312,12 +1429,17 @@ static int InitSha512_256(wc_Sha512* sha512)
         case SHA512_C:
         case SHA512_UNSET:
         default:
+            #ifdef WC_SHA512_RAW_BE_BUFFER
+            /* not reachable -- the C path exits above, before vector register
+             * save -- but must stay correct. */
+            ret = Transform_Sha512_Len_C_from_raw(sha512, len);
+            #else
             ret = 0;
+            #endif
             break;
         }
         RESTORE_VECTOR_REGISTERS();
         return ret;
-    #undef SHA_METHOD
     }
 
 #else /* !WC_NO_INTERNAL_FUNCTION_POINTERS */
@@ -1361,7 +1483,7 @@ static int InitSha512_256(wc_Sha512* sha512)
         if (transform_check)
             return;
 
-        cpuid_get_flags_ex(&intel_flags);
+        cpuid_get_flags_atomic(&intel_flags);
 
     #if defined(HAVE_INTEL_AVX2)
         if (IS_INTEL_AVX2(intel_flags)) {
@@ -1422,22 +1544,130 @@ static int InitSha512_256(wc_Sha512* sha512)
 
 #elif defined(WOLFSSL_ARMASM)
 
-#if defined(__aarch64__) && defined(WOLFSSL_ARMASM_NO_NEON)
-#error "No SHA-512 implementation."
-#endif
+#ifdef __aarch64__
+
+/* AArch64: choose the SHA-512 crypto extension, NEON or the software
+ * implementation at runtime based on CPU features, so a core that lacks the
+ * crypto extension and/or NEON still has a working SHA-512. */
+#define NEED_SOFT_SHA512
 
 static int transform_check = 0;
-#if defined(__aarch64__) && defined(WOLFSSL_ARMASM_CRYPTO_SHA512)
-static word32 cpuid_flags = 0;
-static int cpuid_flags_set = 0;
-#endif
+static cpuid_flags_atomic_t cpuid_flags = WC_CPUID_ATOMIC_INITIALIZER;
 
-#if defined(__aarch64__) && defined(WOLFSSL_ARMASM_CRYPTO_SHA512)
-static void Transform_Sha512_crypto(wc_Sha512* sha512, const byte* data)
+static int _Transform_Sha512(wc_Sha512* sha512);
+static int Transform_Sha512_C(wc_Sha512* sha512, const byte* data);
+static int Transform_Sha512_Len_C(wc_Sha512* sha512, const byte* data,
+    word32 len);
+
+/* Initialize to the software fallback so the pointers are never NULL if they
+ * are read before Sha512_SetTransform() has published the selected variant. */
+static int (*Transform_Sha512_p)(wc_Sha512* sha512, const byte* data)
+    = Transform_Sha512_C;
+static int (*Transform_Sha512_Len_p)(wc_Sha512* sha512, const byte* data,
+    word32 len) = Transform_Sha512_Len_C;
+
+/* Software fallback adapters in the asm (sha512, data[, len]) form. The asm
+ * transforms consume raw big-endian input and byte-reverse internally, so the
+ * software path mirrors that by reversing the block before _Transform_Sha512()
+ * (which reads host-endian words from sha512->buffer). */
+static int Transform_Sha512_C(wc_Sha512* sha512, const byte* data)
+{
+    if (data != (const byte*)sha512->buffer)
+        XMEMCPY(sha512->buffer, data, WC_SHA512_BLOCK_SIZE);
+#ifdef LITTLE_ENDIAN_ORDER
+    ByteReverseWords64(sha512->buffer, sha512->buffer, WC_SHA512_BLOCK_SIZE);
+#endif
+    return _Transform_Sha512(sha512);
+}
+static int Transform_Sha512_Len_C(wc_Sha512* sha512, const byte* data,
+    word32 len)
+{
+    int ret = 0;
+
+    while (len >= WC_SHA512_BLOCK_SIZE) {
+        ret = Transform_Sha512_C(sha512, data);
+        if (ret != 0)
+            break;
+        data += WC_SHA512_BLOCK_SIZE;
+        len  -= WC_SHA512_BLOCK_SIZE;
+    }
+
+    return ret;
+}
+
+/* The SHA-512 crypto instructions operate on SIMD registers, so the assembly
+ * only defines these when NEON is available - see armv8-sha512-asm.S and the
+ * prototype guard in sha512.h. */
+#if defined(WOLFSSL_ARMASM_CRYPTO_SHA512) && !defined(WOLFSSL_ARMASM_NO_NEON)
+static int Transform_Sha512_crypto_aarch64(wc_Sha512* sha512, const byte* data)
 {
     Transform_Sha512_Len_crypto(sha512, data, WC_SHA512_BLOCK_SIZE);
+    return 0;
+}
+static int Transform_Sha512_Len_crypto_aarch64(wc_Sha512* sha512,
+    const byte* data, word32 len)
+{
+    Transform_Sha512_Len_crypto(sha512, data, len);
+    return 0;
 }
 #endif
+#ifndef WOLFSSL_ARMASM_NO_NEON
+static int Transform_Sha512_neon_aarch64(wc_Sha512* sha512, const byte* data)
+{
+    Transform_Sha512_Len_neon(sha512, data, WC_SHA512_BLOCK_SIZE);
+    return 0;
+}
+static int Transform_Sha512_Len_neon_aarch64(wc_Sha512* sha512,
+    const byte* data, word32 len)
+{
+    Transform_Sha512_Len_neon(sha512, data, len);
+    return 0;
+}
+#endif
+
+static WC_INLINE int Transform_Sha512(wc_Sha512 *sha512, const byte* data)
+{
+    return (*Transform_Sha512_p)(sha512, data);
+}
+static WC_INLINE int Transform_Sha512_Len(wc_Sha512 *sha512, const byte* data,
+    word32 len)
+{
+    return (*Transform_Sha512_Len_p)(sha512, data, len);
+}
+
+static void Sha512_SetTransform(void)
+{
+    if (transform_check)
+        return;
+
+    cpuid_get_flags_atomic(&cpuid_flags);
+
+#if defined(WOLFSSL_ARMASM_CRYPTO_SHA512) && !defined(WOLFSSL_ARMASM_NO_NEON)
+    if (IS_AARCH64_SHA512(cpuid_flags)) {
+        Transform_Sha512_p     = Transform_Sha512_crypto_aarch64;
+        Transform_Sha512_Len_p = Transform_Sha512_Len_crypto_aarch64;
+    }
+    else
+#endif
+#ifndef WOLFSSL_ARMASM_NO_NEON
+    if (IS_AARCH64_ASIMD(cpuid_flags)) {
+        Transform_Sha512_p     = Transform_Sha512_neon_aarch64;
+        Transform_Sha512_Len_p = Transform_Sha512_Len_neon_aarch64;
+    }
+    else
+#endif
+    {
+        Transform_Sha512_p     = Transform_Sha512_C;
+        Transform_Sha512_Len_p = Transform_Sha512_Len_C;
+    }
+
+    transform_check = 1;
+}
+
+#else /* !__aarch64__ : 32-bit Arm (Thumb2 / ARMv7) */
+
+static int transform_check = 0;
+
 #if !defined(WOLFSSL_ARMASM_THUMB2) && !defined(WOLFSSL_ARMASM_NO_NEON)
 static void Transform_Sha512_neon(wc_Sha512* sha512, const byte* data)
 {
@@ -1472,20 +1702,6 @@ static void Sha512_SetTransform(void)
     if (transform_check)
         return;
 
-#if defined(__aarch64__) && defined(WOLFSSL_ARMASM_CRYPTO_SHA512)
-    if (!cpuid_flags_set) {
-        cpuid_flags = cpuid_get_flags();
-        cpuid_flags_set = 1;
-    }
-#endif
-
-#if defined(__aarch64__) && defined(WOLFSSL_ARMASM_CRYPTO_SHA512)
-    if (IS_AARCH64_SHA512(cpuid_flags)) {
-        Transform_Sha512_p = Transform_Sha512_crypto;
-        Transform_Sha512_Len_p = Transform_Sha512_Len_crypto;
-    }
-    else
-#endif
 #if !defined(WOLFSSL_ARMASM_THUMB2) && !defined(WOLFSSL_ARMASM_NO_NEON)
     {
         Transform_Sha512_p = Transform_Sha512_neon;
@@ -1501,9 +1717,105 @@ static void Sha512_SetTransform(void)
     transform_check = 1;
 }
 
+#endif /* __aarch64__ */
+
+#elif defined(WOLFSSL_PPC64_ASM) || defined(WOLFSSL_PPC32_ASM)
+
+/* Scalar (base instruction) SHA-512 transform for big-endian PowerPC (32- and
+ * 64-bit).  The asm loads the message words directly, so no byte reversal is
+ * needed and the (sha512, data, len) form is used just like the ARM assembly. */
+extern void Transform_Sha512_Len(wc_Sha512* sha512, const byte* data,
+    word32 len);
+
+#if defined(WOLFSSL_PPC64_ASM) && defined(WOLFSSL_PPC64_ASM_CRYPTO)
+/* POWER8+ has a vector SHA-512 sigma instruction (vshasigmad).  When built
+ * in, select that implementation at run time if the CPU supports it.
+ *
+ * A run-time flag with direct calls is used rather than a function pointer:
+ * an indirect call would require an ELFv1 function descriptor, whereas direct
+ * calls work under both the ELFv1 and ELFv2 ABIs. */
+extern void Transform_Sha512_Len_crypto(wc_Sha512* sha512, const byte* data,
+    word32 len);
+
+/* Resolved dispatch decision, accessed with the wolfSSL atomic APIs so the
+ * lazy one-time detection is free of data races.  WC_CPUID_INITIALIZER means
+ * "not yet determined"; the write is idempotent (all callers compute the same
+ * value from the atomic master flags), so a benign concurrent double-write is
+ * harmless. */
+static wolfSSL_Atomic_Uint sha512_use_crypto =
+    WOLFSSL_ATOMIC_INITIALIZER(WC_CPUID_INITIALIZER);
+
+/* Detect CPU support via the central cpuid module on first use. */
+static WC_INLINE void SHA512_TRANSFORM_LEN(wc_Sha512* sha512, const byte* data,
+    word32 len)
+{
+    unsigned int use_crypto = WOLFSSL_ATOMIC_LOAD(sha512_use_crypto);
+
+    if (use_crypto == WC_CPUID_INITIALIZER) {
+        use_crypto = (unsigned int)(IS_PPC64_VEC_CRYPTO(cpuid_get_flags()) != 0);
+        WOLFSSL_ATOMIC_STORE(sha512_use_crypto, use_crypto);
+    }
+
+    if (use_crypto)
+        Transform_Sha512_Len_crypto(sha512, data, len);
+    else
+        Transform_Sha512_Len(sha512, data, len);
+}
+/* SHA512_TRANSFORM_LEN is a function here, not a macro, so signal that a
+ * dispatcher is provided - otherwise the generic fallback below sees
+ * !defined(SHA512_TRANSFORM_LEN) and shadows it with a base-only macro. */
+#define SHA512_HAVE_TRANSFORM_LEN
+#else
+#define SHA512_TRANSFORM_LEN(s, d, l)   Transform_Sha512_Len((s), (d), (l))
+#define SHA512_HAVE_TRANSFORM_LEN
+#endif
+
+static WC_INLINE int Transform_Sha512(wc_Sha512* sha512, const byte* data)
+{
+    SHA512_TRANSFORM_LEN(sha512, data, WC_SHA512_BLOCK_SIZE);
+    return 0;
+}
+
+#define Sha512_SetTransform()   WC_DO_NOTHING
+
+#elif defined(WOLFSSL_RISCV_ASM)
+
+static WC_INLINE int Transform_Sha512(wc_Sha512* sha512, const byte* data)
+{
+#if defined(WOLFSSL_RISCV_VECTOR_CRYPTO_ASM)
+    Transform_Sha512_Len_riscv_vector(sha512, data, WC_SHA512_BLOCK_SIZE);
+#elif defined(WOLFSSL_RISCV_SCALAR_CRYPTO_ASM)
+    Transform_Sha512_Len_riscv_crypto(sha512, data, WC_SHA512_BLOCK_SIZE);
+#else
+    Transform_Sha512_Len_riscv(sha512, data, WC_SHA512_BLOCK_SIZE);
+#endif
+    return 0;
+}
+static WC_INLINE int Transform_Sha512_Len(wc_Sha512* sha512, const byte* data,
+    word32 len)
+{
+#if defined(WOLFSSL_RISCV_VECTOR_CRYPTO_ASM)
+    Transform_Sha512_Len_riscv_vector(sha512, data, len);
+#elif defined(WOLFSSL_RISCV_SCALAR_CRYPTO_ASM)
+    Transform_Sha512_Len_riscv_crypto(sha512, data, len);
+#else
+    Transform_Sha512_Len_riscv(sha512, data, len);
+#endif
+    return 0;
+}
+
 #else
     #define Transform_Sha512(sha512) _Transform_Sha512(sha512)
 
+#endif
+
+/* For platforms that share the (sha512, data, len) block-loop call below but
+ * don't provide their own dispatcher (e.g. ARM), call the length transform
+ * directly. */
+#if (defined(WOLFSSL_ARMASM) || defined(WOLFSSL_PPC64_ASM) || \
+     defined(WOLFSSL_PPC32_ASM)) && \
+    !defined(SHA512_TRANSFORM_LEN) && !defined(SHA512_HAVE_TRANSFORM_LEN)
+#define SHA512_TRANSFORM_LEN(s, d, l)   Transform_Sha512_Len((s), (d), (l))
 #endif
 
 #ifdef WOLFSSL_SHA512
@@ -1611,7 +1923,9 @@ int wc_InitSha512_256_ex(wc_Sha512* sha512, void* heap, int devId)
 
 #endif /* WOLFSSL_SHA512 */
 
-#ifndef WOLFSSL_ARMASM
+#if (!defined(WOLFSSL_ARMASM) && !defined(WOLFSSL_PPC64_ASM) && \
+     !defined(WOLFSSL_PPC32_ASM) && !defined(WOLFSSL_RISCV_ASM)) || \
+    defined(NEED_SOFT_SHA512)
 
 static const word64 K512[80] = {
     W64LIT(0x428a2f98d728ae22), W64LIT(0x7137449123ef65cd),
@@ -1784,27 +2098,30 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
         }
 
         if (sha512->buffLen == WC_SHA512_BLOCK_SIZE) {
-    #if defined(LITTLE_ENDIAN_ORDER)
+    #if defined(LITTLE_ENDIAN_ORDER) && \
+            !defined(WC_SHA512_RAW_BE_BUFFER) && \
+            (!defined(WOLFSSL_ESP32_CRYPT) || \
+             defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
+             defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)) && \
+            !defined(WOLFSSL_ARMASM) && !defined(WOLFSSL_PPC64_ASM) && \
+            !defined(WOLFSSL_RISCV_ASM)
         #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
-            (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-            #ifdef WC_C_DYNAMIC_FALLBACK
-            if (sha512->sha_method == SHA512_C)
-            #else
+                (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
             if (!IS_INTEL_AVX1(intel_flags) && !IS_INTEL_AVX2(intel_flags))
-            #endif
         #endif
             {
-        #if (!defined(WOLFSSL_ESP32_CRYPT) || \
-              defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
-              defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)) && \
-             !defined(WOLFSSL_ARMASM)
+        #ifdef WOLFSSL_WIDE_BYTE
+                WordsFromBytesBE64(sha512->buffer,
+                    (const byte*)sha512->buffer, WC_SHA512_BLOCK_SIZE / 8);
+        #else
                 ByteReverseWords64(sha512->buffer, sha512->buffer,
                                                          WC_SHA512_BLOCK_SIZE);
         #endif
             }
     #endif
-    #ifdef WOLFSSL_ARMASM
-            Transform_Sha512(sha512, (const byte*)sha512->buffer);
+    #if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_PPC64_ASM) || \
+        defined(WOLFSSL_PPC32_ASM) || defined(WOLFSSL_RISCV_ASM)
+            ret = Transform_Sha512(sha512, (const byte*)sha512->buffer);
     #elif !defined(WOLFSSL_ESP32_CRYPT) || \
            defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
            defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)
@@ -1829,11 +2146,18 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
         }
     }
 
-#if defined(WOLFSSL_ARMASM)
+#if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_PPC64_ASM) || \
+    defined(WOLFSSL_PPC32_ASM) || defined(WOLFSSL_RISCV_ASM)
     if (len >= WC_SHA512_BLOCK_SIZE) {
         word32 blocksLen = len & ~((word32)WC_SHA512_BLOCK_SIZE-1);
 
-        Transform_Sha512_Len(sha512, data, blocksLen);
+#if defined(WOLFSSL_PPC64_ASM) || defined(WOLFSSL_PPC32_ASM)
+        SHA512_TRANSFORM_LEN(sha512, data, blocksLen);
+#else
+        ret = Transform_Sha512_Len(sha512, data, blocksLen);
+        if (ret != 0)
+            return ret;
+#endif
         data += blocksLen;
         len  -= blocksLen;
     }
@@ -1841,9 +2165,7 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2)))
 
-    #ifdef WC_C_DYNAMIC_FALLBACK
-    if (sha512->sha_method != SHA512_C)
-    #elif defined(WC_NO_INTERNAL_FUNCTION_POINTERS)
+    #ifdef WC_NO_INTERNAL_FUNCTION_POINTERS
     if (sha_method != SHA512_C)
     #else
     if (Transform_Sha512_Len_p != NULL)
@@ -1855,9 +2177,11 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
         if (blocksLen > 0) {
             sha512->data = data;
             /* Byte reversal performed in function if required. */
-            Transform_Sha512_Len(sha512, blocksLen);
-            data += blocksLen;
-            len  -= blocksLen;
+            ret = Transform_Sha512_Len(sha512, blocksLen);
+            if (ret == 0) {
+                data += blocksLen;
+                len  -= blocksLen;
+            }
         }
     }
     else
@@ -1873,12 +2197,9 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
             len  -= WC_SHA512_BLOCK_SIZE;
 
         #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
-            (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-            #ifdef WC_C_DYNAMIC_FALLBACK
-            if (sha512->sha_method == SHA512_C)
-            #else
+            (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2)) && \
+            !defined(WC_SHA512_RAW_BE_BUFFER)
             if (!IS_INTEL_AVX1(intel_flags) && !IS_INTEL_AVX2(intel_flags))
-            #endif
             {
                 ByteReverseWords64(sha512->buffer, sha512->buffer,
                                                           WC_SHA512_BLOCK_SIZE);
@@ -1900,8 +2221,13 @@ static WC_INLINE int Sha512Update(wc_Sha512* sha512, const byte* data, word32 le
     #if !defined(WOLFSSL_ESP32_CRYPT) || \
          defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
          defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)
+        #ifdef WOLFSSL_WIDE_BYTE
+            WordsFromBytesBE64(sha512->buffer, (const byte*)sha512->buffer,
+                WC_SHA512_BLOCK_SIZE / 8);
+        #else
             ByteReverseWords64(sha512->buffer, sha512->buffer,
                                                        WC_SHA512_BLOCK_SIZE);
+        #endif
     #endif
     #if !defined(WOLFSSL_ESP32_CRYPT) || \
          defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
@@ -1993,9 +2319,7 @@ int wc_Sha512Update(wc_Sha512* sha512, const byte* data, word32 len)
 
 static WC_INLINE int Sha512Final(wc_Sha512* sha512)
 {
-#ifndef WOLFSSL_ARMASM
-    int ret;
-#endif
+    int ret = 0;
     byte* local;
 
     if (sha512 == NULL) {
@@ -2020,29 +2344,34 @@ static WC_INLINE int Sha512Final(wc_Sha512* sha512)
         }
 
         sha512->buffLen += WC_SHA512_BLOCK_SIZE - sha512->buffLen;
-#if defined(LITTLE_ENDIAN_ORDER)
+#if defined(LITTLE_ENDIAN_ORDER) && !defined(WC_SHA512_RAW_BE_BUFFER)
     #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
         (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-        #ifdef WC_C_DYNAMIC_FALLBACK
-        if (sha512->sha_method == SHA512_C)
-        #else
         if (!IS_INTEL_AVX1(intel_flags) && !IS_INTEL_AVX2(intel_flags))
-        #endif
     #endif
         {
 
         #if (!defined(WOLFSSL_ESP32_CRYPT) || \
               defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
               defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)) && \
-             !defined(WOLFSSL_ARMASM)
+             !defined(WOLFSSL_ARMASM) && !defined(WOLFSSL_PPC64_ASM) && \
+             !defined(WOLFSSL_RISCV_ASM)
+            #ifdef WOLFSSL_WIDE_BYTE
+            WordsFromBytesBE64(sha512->buffer, (const byte*)sha512->buffer,
+                WC_SHA512_BLOCK_SIZE / 8);
+            #else
             ByteReverseWords64(sha512->buffer,sha512->buffer,
                                                          WC_SHA512_BLOCK_SIZE);
+            #endif
         #endif
         }
 
 #endif /* LITTLE_ENDIAN_ORDER */
-#ifdef WOLFSSL_ARMASM
-        Transform_Sha512(sha512, (const byte*)sha512->buffer);
+#if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_PPC64_ASM) || \
+    defined(WOLFSSL_PPC32_ASM) || defined(WOLFSSL_RISCV_ASM)
+        ret = Transform_Sha512(sha512, (const byte*)sha512->buffer);
+        if (ret != 0)
+            return ret;
 #else
     #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW) && \
        !defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)
@@ -2071,24 +2400,47 @@ static WC_INLINE int Sha512Final(wc_Sha512* sha512)
     XMEMSET(&local[sha512->buffLen], 0, WC_SHA512_PAD_SIZE - sha512->buffLen);
 
     /* put lengths in bits */
-    sha512->hiLen = (sha512->loLen >> (8 * sizeof(sha512->loLen) - 3)) +
+    sha512->hiLen = (sha512->loLen >>
+                        (CHAR_BIT * sizeof(sha512->loLen) - 3)) +
                                                          (sha512->hiLen << 3);
     sha512->loLen = sha512->loLen << 3;
 
     /* store lengths */
-#if defined(LITTLE_ENDIAN_ORDER)
+#ifdef WOLFSSL_WIDE_BYTE
+    /* CHAR_BIT != 8: 'local' indexes octet cells, not the word64 layout (the
+     * buffer[BLOCK/sizeof(word64) - 2/-1] indices assume 16 words per block,
+     * which is wrong when sizeof(word64) != 8).  Place the 128-bit bit-length
+     * as 16 big-endian octets at the pad offset, then load all 16 big-endian
+     * schedule words octet-wise. */
+    local[WC_SHA512_PAD_SIZE +  0] = (byte)((sha512->hiLen >> 56) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  1] = (byte)((sha512->hiLen >> 48) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  2] = (byte)((sha512->hiLen >> 40) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  3] = (byte)((sha512->hiLen >> 32) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  4] = (byte)((sha512->hiLen >> 24) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  5] = (byte)((sha512->hiLen >> 16) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  6] = (byte)((sha512->hiLen >>  8) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  7] = (byte)((sha512->hiLen      ) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  8] = (byte)((sha512->loLen >> 56) & 0xFF);
+    local[WC_SHA512_PAD_SIZE +  9] = (byte)((sha512->loLen >> 48) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 10] = (byte)((sha512->loLen >> 40) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 11] = (byte)((sha512->loLen >> 32) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 12] = (byte)((sha512->loLen >> 24) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 13] = (byte)((sha512->loLen >> 16) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 14] = (byte)((sha512->loLen >>  8) & 0xFF);
+    local[WC_SHA512_PAD_SIZE + 15] = (byte)((sha512->loLen      ) & 0xFF);
+    WordsFromBytesBE64(sha512->buffer, (const byte*)sha512->buffer,
+        WC_SHA512_BLOCK_SIZE / 8);
+#else
+#if defined(LITTLE_ENDIAN_ORDER) && !defined(WC_SHA512_RAW_BE_BUFFER)
     #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
         (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-        #ifdef WC_C_DYNAMIC_FALLBACK
-        if (sha512->sha_method == SHA512_C)
-        #else
         if (!IS_INTEL_AVX1(intel_flags) && !IS_INTEL_AVX2(intel_flags))
-        #endif
     #endif
     #if (!defined(WOLFSSL_ESP32_CRYPT) || \
           defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
           defined(NO_WOLFSSL_ESP32_CRYPT_HASH_SHA512)) && \
-         !defined(WOLFSSL_ARMASM)
+         !defined(WOLFSSL_ARMASM) && !defined(WOLFSSL_PPC64_ASM) && \
+         !defined(WOLFSSL_RISCV_ASM)
             ByteReverseWords64(sha512->buffer, sha512->buffer, WC_SHA512_PAD_SIZE);
     #endif
 #endif
@@ -2100,11 +2452,13 @@ static WC_INLINE int Sha512Final(wc_Sha512* sha512)
     sha512->buffer[WC_SHA512_BLOCK_SIZE / sizeof(word64) - 2] = sha512->hiLen;
     sha512->buffer[WC_SHA512_BLOCK_SIZE / sizeof(word64) - 1] = sha512->loLen;
 #endif
+#endif /* WOLFSSL_WIDE_BYTE */
 
 #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
     (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-    #ifdef WC_C_DYNAMIC_FALLBACK
-    if (sha512->sha_method != SHA512_C)
+    #ifdef WC_SHA512_RAW_BE_BUFFER
+    /* raw-buffer convention -- the length words must be big-endian in the
+     * stream regardless of which transform consumes the final block. */
     #else
     if (IS_INTEL_AVX1(intel_flags) || IS_INTEL_AVX2(intel_flags))
     #endif
@@ -2113,17 +2467,31 @@ static WC_INLINE int Sha512Final(wc_Sha512* sha512)
                            &(sha512->buffer[WC_SHA512_BLOCK_SIZE / sizeof(word64) - 2]),
                            WC_SHA512_BLOCK_SIZE - WC_SHA512_PAD_SIZE);
     }
-#elif defined(WOLFSSL_ARMASM)
+#elif defined(WOLFSSL_ARMASM) || defined(WOLFSSL_RISCV_ASM)
     #define SHA512_PAD_LEN_64  (WC_SHA512_PAD_SIZE / sizeof(word64))
     {
         ByteReverseWords64(&(sha512->buffer[SHA512_PAD_LEN_64]),
                            &(sha512->buffer[SHA512_PAD_LEN_64]),
                            WC_SHA512_BLOCK_SIZE - WC_SHA512_PAD_SIZE);
     }
+#elif defined(WOLFSSL_PPC64_ASM) && defined(LITTLE_ENDIAN_ORDER)
+    /* The PPC64 assembly loads the message with byte-reversed loads on
+     * little-endian, treating the whole block as a big-endian byte stream.  The
+     * 128-bit length just stored is in native (little-endian) word order, so
+     * reverse it here to keep the block a consistent big-endian stream. */
+    {
+        ByteReverseWords64(
+            &(sha512->buffer[WC_SHA512_PAD_SIZE / sizeof(word64)]),
+            &(sha512->buffer[WC_SHA512_PAD_SIZE / sizeof(word64)]),
+            WC_SHA512_BLOCK_SIZE - WC_SHA512_PAD_SIZE);
+    }
 #endif
 
-#ifdef WOLFSSL_ARMASM
-    Transform_Sha512(sha512, (const byte*)sha512->buffer);
+#if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_PPC64_ASM) || \
+    defined(WOLFSSL_PPC32_ASM) || defined(WOLFSSL_RISCV_ASM)
+    ret = Transform_Sha512(sha512, (const byte*)sha512->buffer);
+    if (ret != 0)
+        return ret;
 #else
 #if !defined(WOLFSSL_ESP32_CRYPT) || \
       defined(NO_WOLFSSL_ESP32_CRYPT_HASH) || \
@@ -2151,7 +2519,9 @@ static WC_INLINE int Sha512Final(wc_Sha512* sha512)
         return ret;
 #endif
 
-    #ifdef LITTLE_ENDIAN_ORDER
+    /* CHAR_BIT != 8: leave digest in host word order; the *Final functions
+     * emit big-endian octets via BytesFromWordsBE64 (no in-place reverse). */
+    #if defined(LITTLE_ENDIAN_ORDER) && !defined(WOLFSSL_WIDE_BYTE)
         ByteReverseWords64(sha512->digest, sha512->digest,
             WC_SHA512_DIGEST_SIZE);
     #endif
@@ -2185,7 +2555,9 @@ static int Sha512FinalRaw(wc_Sha512* sha512, byte* hash, word32 digestSz)
         return BAD_FUNC_ARG;
     }
 
-#ifdef LITTLE_ENDIAN_ORDER
+#if defined(WOLFSSL_WIDE_BYTE)
+    BytesFromWordsBE64(hash, sha512->digest, digestSz);
+#elif defined(LITTLE_ENDIAN_ORDER)
     if ((digestSz & 0x7) == 0)
         ByteReverseWords64((word64 *)hash, sha512->digest, digestSz);
     else {
@@ -2238,7 +2610,11 @@ static int Sha512_Family_Final(wc_Sha512* sha512, byte* hash, size_t digestSz,
     if (ret != 0)
         return ret;
 
+#ifdef WOLFSSL_WIDE_BYTE
+    BytesFromWordsBE64(hash, sha512->digest, (word32)digestSz);
+#else
     XMEMCPY(hash, sha512->digest, digestSz);
+#endif
 
     /* initialize Sha512 structure for the next use */
     return initfp(sha512);
@@ -2306,7 +2682,7 @@ void wc_Sha512Free(wc_Sha512* sha512)
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     if (sha512->W != NULL) {
         ForceZero(sha512->W, (sizeof(word64) * 16) + WC_SHA512_BLOCK_SIZE);
-        XFREE(sha512->W, sha512->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        XFREE(sha512->W, sha512->heap, DYNAMIC_TYPE_DIGEST);
         sha512->W = NULL;
     }
 #endif
@@ -2370,25 +2746,26 @@ int wc_Sha512Transform(wc_Sha512* sha, const unsigned char* data)
         return MEMORY_E;
 #endif
 
-#if defined(LITTLE_ENDIAN_ORDER)
+#if defined(LITTLE_ENDIAN_ORDER) && !defined(WC_SHA512_RAW_BE_BUFFER)
 #if defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
     (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))
-    #ifdef WC_C_DYNAMIC_FALLBACK
-    if (sha->sha_method == SHA512_C)
-    #else
     if (!IS_INTEL_AVX1(intel_flags) && !IS_INTEL_AVX2(intel_flags))
-    #endif
 #endif
     {
         ByteReverseWords64((word64*)data, (word64*)data,
                                                 WC_SHA512_BLOCK_SIZE);
     }
-#endif /* LITTLE_ENDIAN_ORDER */
+#endif /* LITTLE_ENDIAN_ORDER && !WC_SHA512_RAW_BE_BUFFER */
 
-#if defined(WOLFSSL_ARMASM)
+#if defined(WOLFSSL_ARMASM) || defined(WOLFSSL_RISCV_ASM)
     ByteReverseWords64(buffer, (word64*)data, WC_SHA512_BLOCK_SIZE);
     Transform_Sha512(sha, (const byte*)buffer);
     ret = 0;
+#elif defined(WOLFSSL_PPC64_ASM) || defined(WOLFSSL_PPC32_ASM)
+    /* PPC assembly uses the (sha, data) form and reads the block directly
+     * (big-endian native - any little-endian reversal was done above). */
+    (void)buffer;
+    ret = Transform_Sha512(sha, data);
 #else
     XMEMCPY(buffer, sha->buffer, WC_SHA512_BLOCK_SIZE);
     XMEMCPY(sha->buffer, data, WC_SHA512_BLOCK_SIZE);
@@ -2561,12 +2938,7 @@ static int InitSha384(wc_Sha384* sha384)
 #if (defined(WOLFSSL_X86_64_BUILD) && defined(USE_INTEL_SPEEDUP) && \
      (defined(HAVE_INTEL_AVX1) || defined(HAVE_INTEL_AVX2))) || \
     defined(WOLFSSL_ARMASM)
-#ifdef WC_C_DYNAMIC_FALLBACK
-    sha384->sha_method = 0;
-    Sha512_SetTransform(&sha384->sha_method);
-#else
     Sha512_SetTransform();
-#endif
 #endif
 
 #if defined(WOLFSSL_USE_ESP32_CRYPT_HASH_HW)  && \
@@ -2592,6 +2964,28 @@ static int InitSha384(wc_Sha384* sha384)
 
     return 0;
 }
+
+#if !defined(WOLFSSL_HASH_KEEP)
+int wc_Sha384Reset(wc_Sha384* sha384) {
+    if (sha384 == NULL)
+        return BAD_FUNC_ARG;
+#ifdef WOLF_CRYPTO_CB
+    /* A device may hang state off devCtx that InitSha384() cannot restart.
+     * Free and re-init so the callback gets its teardown and setup. */
+    #ifndef WOLF_CRYPTO_CB_FIND
+    if (sha384->devId != INVALID_DEVID)
+    #endif
+    {
+        void* heap = sha384->heap;
+        int devId = sha384->devId;
+        wc_Sha384Free(sha384);
+        return wc_InitSha384_ex(sha384, heap, devId);
+    }
+#endif
+    return InitSha384(sha384);
+}
+#define WC_SHA384RESET_DEFINED
+#endif /* !WOLFSSL_HASH_KEEP */
 
 int wc_Sha384Update(wc_Sha384* sha384, const byte* data, word32 len)
 {
@@ -2636,7 +3030,9 @@ int wc_Sha384FinalRaw(wc_Sha384* sha384, byte* hash)
         return BAD_FUNC_ARG;
     }
 
-#ifdef LITTLE_ENDIAN_ORDER
+#if defined(WOLFSSL_WIDE_BYTE)
+    BytesFromWordsBE64(hash, sha384->digest, WC_SHA384_DIGEST_SIZE);
+#elif defined(LITTLE_ENDIAN_ORDER)
     ByteReverseWords64((word64 *)hash, sha384->digest, WC_SHA384_DIGEST_SIZE);
 #else
     XMEMCPY(hash, sha384->digest, WC_SHA384_DIGEST_SIZE);
@@ -2677,7 +3073,11 @@ int wc_Sha384Final(wc_Sha384* sha384, byte* hash)
     if (ret != 0)
         return ret;
 
+#ifdef WOLFSSL_WIDE_BYTE
+    BytesFromWordsBE64(hash, sha384->digest, WC_SHA384_DIGEST_SIZE);
+#else
     XMEMCPY(hash, sha384->digest, WC_SHA384_DIGEST_SIZE);
+#endif
 
     return InitSha384(sha384);  /* reset state */
 }
@@ -2779,7 +3179,7 @@ void wc_Sha384Free(wc_Sha384* sha384)
 #ifdef WOLFSSL_SMALL_STACK_CACHE
     if (sha384->W != NULL) {
         ForceZero(sha384->W, (sizeof(word64) * 16) + WC_SHA512_BLOCK_SIZE);
-        XFREE(sha384->W, sha384->heap, DYNAMIC_TYPE_TMP_BUFFER);
+        XFREE(sha384->W, sha384->heap, DYNAMIC_TYPE_DIGEST);
         sha384->W = NULL;
     }
 #endif
@@ -3443,4 +3843,49 @@ int wc_Sha384_Grow(wc_Sha384* sha384, const byte* in, int inSz)
 #endif /* WOLFSSL_HASH_KEEP */
 
 #endif /* !WOLF_CRYPTO_CB_ONLY_SHA512 */
+
+/* Fallback implementations of the Reset functions, for all configurations other
+ * than plain software.  Continues with the established heap and devId.
+ */
+
+#ifdef WOLF_CRYPTO_CB
+    #define WC_SHA512_RESET_DEVID(sha) ((sha)->devId)
+#else
+    #define WC_SHA512_RESET_DEVID(sha) (INVALID_DEVID)
+#endif
+#define WC_SHA512_RESET_FALLBACK_IMPLEMENT(flavor)              \
+    int wc_##flavor##Reset(wc_##flavor *sha) {                  \
+        void *heap;                                             \
+        int devId;                                              \
+                                                                \
+        if (sha == NULL)                                        \
+            return BAD_FUNC_ARG;                                \
+                                                                \
+        heap = sha->heap;                                       \
+        devId = WC_SHA512_RESET_DEVID(sha);                     \
+                                                                \
+        wc_##flavor##Free(sha);                                 \
+        return wc_Init##flavor##_ex(sha, heap, devId);          \
+    }
+
+#if defined(WOLFSSL_SHA512) && !defined(WC_SHA512RESET_DEFINED)
+    WC_SHA512_RESET_FALLBACK_IMPLEMENT(Sha512)
+#endif
+
+#if defined(WOLFSSL_SHA512) && !defined(WOLFSSL_NOSHA512_224) && \
+    !defined(WC_SHA512_224RESET_DEFINED) && \
+    (!defined(HAVE_FIPS) || FIPS_VERSION_GE(5, 3)) && !defined(HAVE_SELFTEST)
+    WC_SHA512_RESET_FALLBACK_IMPLEMENT(Sha512_224)
+#endif
+
+#if defined(WOLFSSL_SHA512) && !defined(WOLFSSL_NOSHA512_256) && \
+    !defined(WC_SHA512_256RESET_DEFINED) && \
+    (!defined(HAVE_FIPS) || FIPS_VERSION_GE(5, 3)) && !defined(HAVE_SELFTEST)
+    WC_SHA512_RESET_FALLBACK_IMPLEMENT(Sha512_256)
+#endif
+
+#if defined(WOLFSSL_SHA384) && !defined(WC_SHA384RESET_DEFINED)
+    WC_SHA512_RESET_FALLBACK_IMPLEMENT(Sha384)
+#endif
+
 #endif /* WOLFSSL_SHA512 || WOLFSSL_SHA384 */

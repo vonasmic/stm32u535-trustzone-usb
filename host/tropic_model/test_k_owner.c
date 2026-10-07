@@ -111,6 +111,18 @@ int main(void)
     TEST_ASSERT_EQ(se_nv_set_pairing(1U, pairing_priv, pairing_pub), LT_OK, "pairing persist");
     TEST_ASSERT_EQ(se_nv_peer_add((const uint8_t *)"alice", 5U, hash48), LT_OK, "peer add");
 
+    {
+        const uint8_t pin[] = "pin-1234";
+        const uint8_t *view = NULL;
+        uint16_t view_len = 0U;
+
+        TEST_ASSERT_EQ(se_tropic_kem_init_probe(), SE_TROPIC_OK, "slot 510 empty before KEM INIT");
+        TEST_ASSERT_EQ(se_tropic_kem_init_confirm(pin, 8U, NULL, 0U), SE_TROPIC_OK, "KEM INIT");
+        TEST_ASSERT_EQ(se_tropic_kem_init_probe(), SE_TROPIC_SLOT_OCC, "slot 510 occupied");
+        TEST_ASSERT_EQ(se_tropic_mlkem_pub_view(&view, &view_len), SE_TROPIC_OK, "kem pub before replace");
+        TEST_ASSERT_EQ(view_len, (uint16_t)SE_TROPIC_MLKEM_PK_LEN, "kem pub len");
+    }
+
     TEST_ASSERT_EQ(se_owner_replace((const uint8_t *)"wrongpass", 9U, (const uint8_t *)"passwordB",
                                     9U, pub_b, (uint16_t)pub_len_b),
                    LT_FAIL, "bad reset password");
@@ -127,6 +139,14 @@ int main(void)
     TEST_ASSERT(se_ready_encrypt() == 0, "encrypt not ready after replace");
     TEST_ASSERT(se_creds_has_sae_ca() == 0, "SAE CA cleared");
     TEST_ASSERT(se_nv_has_mlkem() == 0, "mlkem cleared");
+    {
+        const uint8_t *view = NULL;
+        uint16_t view_len = 0U;
+
+        TEST_ASSERT_EQ(se_tropic_mlkem_pub_view(&view, &view_len), SE_TROPIC_NOT_READY,
+                       "kem pub empty after replace");
+        TEST_ASSERT_EQ(se_tropic_kem_init_probe(), SE_TROPIC_OK, "slot 510 empty after replace");
+    }
     TEST_ASSERT_EQ(se_device_id_ensure(), LT_OK, "device ML-DSA after replace");
     TEST_ASSERT(se_nv_has_device_sk() != 0, "device SK after replace");
     TEST_ASSERT(se_ready_encrypt() == 0, "encrypt still needs device cert");
