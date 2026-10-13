@@ -170,7 +170,8 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     if (ret != LT_OK) {
         return -1;
     }
-    count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * (unsigned int)peer_n));
+    count = (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS
+                       + (SECURE_LV_UPLINK_PEER_ITEMS * (unsigned int)peer_n));
 
     if ((write(&version, 1U, ctx) == 0) &&
         (secure_lv_write_u16(count, write, ctx) == 0) &&
@@ -187,18 +188,25 @@ int se_tropic_session_uplink(uint8_t exporter[SE_TROPIC_EXPORTER_LEN],
     for (i = 0U; (rc == 0) && (i < (unsigned int)peer_n); i++) {
         uint8_t name[SE_NV_PEER_NAME_MAX];
         uint8_t hash48[SE_NV_PEER_HASH_LEN];
+        uint8_t pad_plain_le[2];
         uint8_t name_len = SE_NV_PEER_NAME_MAX;
+        uint16_t pad_plain = 0U;
 
-        ret = se_nv_peer_get((uint8_t)i, name, &name_len, hash48);
+        ret = se_nv_peer_get((uint8_t)i, name, &name_len, hash48, &pad_plain);
         if (ret != LT_OK) {
             rc = -1;
             break;
         }
+        se_put_u16le(pad_plain_le, pad_plain);
         if (secure_lv_write_item(hash48, SE_NV_PEER_HASH_LEN, write, ctx) != 0) {
             rc = -1;
             break;
         }
         if (secure_lv_write_item(name, (uint16_t)name_len, write, ctx) != 0) {
+            rc = -1;
+            break;
+        }
+        if (secure_lv_write_item(pad_plain_le, (uint16_t)sizeof(pad_plain_le), write, ctx) != 0) {
             rc = -1;
         }
     }

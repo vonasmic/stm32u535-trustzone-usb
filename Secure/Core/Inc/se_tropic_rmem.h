@@ -284,9 +284,10 @@ uint32_t se_tropic_otp_xor_pads_needed(void);
 
 /**
  * Remaining and half-capacity keystream bytes for @p dir. Unused pads in that
- * half times slot plaintext max. Unprovisioned OTP (no fill/cursors) reports
- * remaining 0 and the default half capacity. Exhausted cursor reports 0 left.
- * Does not need PIN. Either @p left_out or @p cap_out may be NULL.
+ * half times the fill's stored plaintext length. Unprovisioned OTP or a fill
+ * with no stored length reports remaining 0 and cap 0. Exhausted cursor
+ * reports 0 left. Does not need PIN. Either @p left_out or @p cap_out may be
+ * NULL.
  */
 lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
                                    uint32_t *left_out, uint32_t *cap_out);

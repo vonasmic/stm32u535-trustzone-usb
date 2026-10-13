@@ -87,7 +87,7 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 Plaintext record on Secure flash **page 22** (`0x0C02C000`). The page is **8 KB** (same size in the host RAM model). Bytes `[0,32)` are generate-once `secure_dwk` (Tropic AEAD / PIN pepper / pw hash only — **not** an NV seal). The record starts at offset 32 (`SE_NV_REC_OFF`).
 
-Magic `SENV` (`0x53454E56`) + version **7**. Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Sealed v3–v6 blobs are **not** migrated; re-enroll. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
+Magic `SENV` (`0x53454E56`) + version **8**. Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Sealed v3–v7 blobs are **not** migrated; re-enroll. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
 
 Reads copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. Writes erase the whole 8 KB page (RMW work buffer, then `ForceZero`).
 
@@ -98,12 +98,13 @@ Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER
 | `fill_id` | 32 B | Committed fill; binds kem_ct and pad keys |
 | `cursor_encrypt` / `cursor_decrypt` | u16 × 2 | Current physical pad index |
 | `base_encrypt` / `base_decrypt` | u16 × 2 | Half starts |
+| `pad_plain` | u16 | SAE-chosen plaintext bytes per pad for this fill; 0 until downlink item 2 |
 | `time_floor` | u32 | Monotonic Unix floor for wolfSSL |
 | `flags` | u32 | `FILL`, `TIME`, `PAIRING`, `OTP` |
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |
 | `pairing_pub` | 32 B | X25519 host public |
 | `peer_count` | 1 B | Occupied peers, 0–8 |
-| 8 × `{name_len, name[16], hash[48]}` | 65 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
+| 8 × `{name_len, name[16], hash[48], pad_plain}` | 67 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
 | `owner_len` + owner SPKI | u16 + 1312 B | Enrolled owner (`OWNER SET`) |
 | `mlkem_len` + ML-KEM pk | u16 + 1184 B | NV copy from `KEM INIT` |
 | `pw_hash` | 48 B | `SHA-384(secure_dwk \|\| password)` |

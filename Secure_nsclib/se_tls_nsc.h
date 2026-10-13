@@ -99,6 +99,8 @@ uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);
 /** Four u32le: enc left, enc cap, dec left, dec cap. */
 uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4]);
+/** This Tropic's plaintext bytes per pad. */
+uint32_t CSME_NSE_API SECURE_TropicPadLen_nsc_call(uint32_t *out_plain);
 
 /**
  * PEER LIST is the only PEER path on NSC. ADD/REMOVE mutate through MANAGE TLS.
@@ -120,7 +122,8 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
  * NSC payload stays within SECURE_USB_PKT_MAX.
  */
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash48_out);
+                                              uint32_t *name_len_inout, uint8_t *hash48_out,
+                                              uint32_t *pad_plain_out);
 
 #ifdef __cplusplus
 }

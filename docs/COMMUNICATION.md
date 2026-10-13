@@ -97,13 +97,13 @@ Used only on **provision**: hashed into the uplink signature so a MitM that term
 
 | Mode      | Peer | Device sends              | Device reads                            |
 | --------- | ---- | ------------------------- | --------------------------------------- |
-| Provision | SAE  | LV **uplink v4**, then `TROPIC_WIPE_FINISHED\n`, integer KB lines (~every 10 KiB), then `SE_OK\n` | LV **downlink v2** (after wipe finished) |
+| Provision | SAE  | LV **uplink v5**, then `TROPIC_WIPE_FINISHED\n`, integer KB lines (~every 10 KiB), then `SE_OK\n` | LV **downlink v3** (after wipe finished) |
 | Encrypt   | USER | nothing until USER request | PIN + plaintext; replies OTP ciphertext |
 | Decrypt   | USER | nothing until USER request | PIN + encrypt reply; replies plaintext  |
 | Manage    | USER | nothing until request     | unsigned cmd + optional PIN + body; replies status |
 
 
-After the uplink, the device erases R-MEM slots **0–509** one slot per USB service tick (overlapping SAE QKD fetch) and then writes `TROPIC_WIPE_FINISHED`. SAE waits for that line before streaming downlink v2. While ingesting, the device counts TLS application bytes and writes the integer KiB consumed each time another 10 KiB boundary is crossed (`10\n`, `20\n`, …). A short tail has no extra line. `SE_OK\n` still means the fill is stored.
+After the uplink, the device erases R-MEM slots **0–509** one slot per USB service tick (overlapping SAE QKD fetch) and then writes `TROPIC_WIPE_FINISHED`. SAE waits for that line before streaming downlink v3. While ingesting, the device counts TLS application bytes and writes the integer KiB consumed each time another 10 KiB boundary is crossed (`10\n`, `20\n`, …). A short tail has no extra line. `SE_OK\n` still means the fill is stored.
 
 Then bidirectional TLS shutdown: the device sends `close_notify` and stays in TLS (type `0x01`) until the peer (SAE on provision, USER otherwise) close_notify arrives. A 3 s timeout still disarms if the peer never closes. NonSecure then parses type `0x00` again; a command queued during the session runs next.
 
@@ -128,31 +128,31 @@ Unknown `version` is a hard error (`SECURE_QKD_WRONG_VERSION` on downlink). Upli
 
 | Message                    | Version                              |
 | -------------------------- | ------------------------------------ |
-| Session uplink (provision) | **4** (`SECURE_LV_UPLINK_VERSION`)   |
-| QKD downlink (provision)   | **2** (`SECURE_LV_DOWNLINK_VERSION`) |
+| Session uplink (provision) | **5** (`SECURE_LV_UPLINK_VERSION`)   |
+| QKD downlink (provision)   | **3** (`SECURE_LV_DOWNLINK_VERSION`) |
 
 
 ---
 
 
 
-## Uplink v4 (Secure → SAE, provision only)
+## Uplink v5 (Secure → SAE, provision only)
 
 Built in [se_tropic_session.c](../Secure/Core/Src/se_tropic_session.c).
 
-`count = 7 + 2 × NV peer_count` (`se_nv_peer_count()`, from `PEER ADD`). An empty list is valid → **7** items.
+`count = 7 + 3 × NV peer_count` (`se_nv_peer_count()`, from `PEER ADD`). An empty list is valid → **7** items.
 
 
-| Index | Item                    | Size         | Notes                                           |
-| ----- | ----------------------- | ------------ | ----------------------------------------------- |
-| 0     | Session signature       | 64 B         | TROPIC P-256 ECDSA                              |
-| 1     | TROPIC P-256 public key | 64 B         | XY from ECC slot 0                              |
-| 2     | Client hash             | 48 B         | `SHA384(device_cert_spki || ecc_pub)`           |
-| 3     | R-MEM slot size         | 2 B          | u16 LE, chip `r_mem_udata_slot_size_max`        |
-| 4     | Pad slot count          | 2 B          | u16 LE = **507**                                |
-| 5     | Pending `fill_id`       | 32 B         | RNG; committed when `kem_ct` is written         |
-| 6     | ML-KEM-768 public key   | **1184 B**   | Encapsulate from **this item**, not from a file |
-| 7+    | Per peer: hash, name    | 48 B + UTF-8 | MCU NV (`PEER ADD`); hash is SHA384 of the peer SPKI |
+| Index | Item                         | Size              | Notes                                                                 |
+| ----- | ---------------------------- | ----------------- | --------------------------------------------------------------------- |
+| 0     | Session signature            | 64 B              | TROPIC P-256 ECDSA                                                    |
+| 1     | TROPIC P-256 public key      | 64 B              | XY from ECC slot 0                                                    |
+| 2     | Client hash                  | 48 B              | `SHA384(device_cert_spki || ecc_pub)`                                 |
+| 3     | R-MEM slot size              | 2 B               | u16 LE, chip `r_mem_udata_slot_size_max` (raw slot, not plaintext)    |
+| 4     | Pad slot count               | 2 B               | u16 LE = **507**                                                      |
+| 5     | Pending `fill_id`            | 32 B              | RNG; committed when `kem_ct` is written                               |
+| 6     | ML-KEM-768 public key        | **1184 B**        | Encapsulate from **this item**, not from a file                       |
+| 7+    | Per peer: hash, name, pad    | 48 B + UTF-8 + 2 B | MCU NV (`PEER ADD`); pad is u16 LE plaintext bytes per pad |
 
 
 Signature digest:
@@ -169,7 +169,7 @@ leftmost 256 bits (FIPS 186-4 §6.4).
 
 The exporter is wiped after hashing. Device-cert SPKI bits are hashed, never sent: SAE
 recomputes them from the mTLS client certificate (raw `subjectPublicKey` BIT STRING payload,
-not the whole SPKI DER). USB command `CLIENT HASH` prints this same `client_hash` (96 hex digits).
+not the whole SPKI DER). USB command `CLIENT HASH` prints this same `client_hash` (96 hex digits). USB `TROPIC PAD LEN` prints this chip's plaintext pad ceiling (slot size minus 29-byte AEAD overhead) as a decimal.
 
 Encrypt/decrypt modes send **no** uplink.
 
@@ -177,7 +177,7 @@ Encrypt/decrypt modes send **no** uplink.
 
 
 
-## Downlink v2 (SAE → Secure, provision only)
+## Downlink v3 (SAE → Secure, provision only)
 
 Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.c) (no full-message buffer).
 
@@ -186,12 +186,15 @@ Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.
 | ----- | -------------- | ------------------- | ------------------------------------------------------------------------------------- |
 | 0     | `kem_ct`       | **1088 B**          | `se_tropic_kem_ct_write` — new `fill_id`, store ct in slots 0–2 (slots **0–509** already erased after the uplink) |
 | 1     | `decrypt_half` | **1 B**, `0` or `1` | `se_tropic_qkd_arm_halves` — which pad half is decrypt vs encrypt                     |
-| 2…    | Pad images     | 29–475 B            | Logical pad index = item index − 2; `se_tropic_qkd_store`                             |
+| 2     | `pad_plain`    | **2 B** u16 LE      | SAE-chosen plaintext bytes per pad; stored in NV with the fill                        |
+| 3…    | Pad images     | 30–475 B            | Logical pad index = item index − 3; image length is 29 + `pad_plain`; `se_tropic_qkd_store` |
 
 
-- Empty item 0 or 1 is a parse error.
+- Empty item 0, 1, or 2 is a parse error. `pad_plain` must be 1..this chip's plaintext max.
+- A non-empty pad image whose plaintext length differs from item 2 is refused.
 - Zero-length **pad** items are skipped but still consume the index.
-- Payload cap `SECURE_QKD_MAX_BYTES` = 1088 + 507×475 = **241 913** bytes (framing not counted).
+- Payload cap `SECURE_QKD_MAX_BYTES` = 1088 + 1 + 2 + 507×475 = **241 916** bytes (framing not counted).
+- Encrypt, decrypt, and `TROPIC OTP STATUS` use the saved `pad_plain` as the full-pad chunk size. A fill with no saved length fails closed. The chip plaintext max stays a hard ceiling.
 
 `decrypt_half = 0`: decrypt uses physical pads 3–255, encrypt 256–509. `1` swaps the halves. Details: **[TROPIC.md](TROPIC.md)**.
 
@@ -256,7 +259,7 @@ repeat n_pads times:
   u8  chunk[chunk_len]
 ```
 
-No slot IDs. UserApp concatenates chunks. Non-last pads must be full `se_tropic_otp_xor_pad_max()` (plaintext max, typically 446 on FW ≥ 2.0.0); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
+No slot IDs. UserApp concatenates chunks. Non-last pads must be the saved fill plaintext length (downlink item 2); last may be short. Exhausted / parse / PIN / tamper use the same `n_pads = 0` error reply as encrypt.
 
 OTP consume is **TLS only** (`ENCRYPT` / `DECRYPT`): TLS pumps application bytes into [`secure_otp_session_feed`](../Secure/Core/Inc/secure_otp.h); the pad module opens XOR, leftover-compacts, burns pads, and encodes the reply. Remaining/capacity pad kilobytes (no PIN, no consume) are `TROPIC OTP STATUS` on the USB console.
 

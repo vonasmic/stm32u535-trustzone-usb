@@ -30,6 +30,14 @@
 #define CHUNK_SIZE 7u
 #define LONG_MSG_LEN (100u * 1024u)
 
+static void lv_put_pad_plain(uint8_t *blob, uint32_t *len, uint16_t pad_plain)
+{
+    uint8_t le[2];
+
+    se_put_u16le(le, pad_plain);
+    secure_lv_put_item(blob, len, le, 2u);
+}
+
 static lt_ret_t sae_encapsulate(const uint8_t pk[SE_TROPIC_MLKEM_PK_LEN],
                                 uint8_t ct[SE_TROPIC_KEM_CT_LEN],
                                 uint8_t ss[SE_TROPIC_MLKEM_SS_LEN])
@@ -325,6 +333,7 @@ static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
     TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate 100 KiB");
     ret = se_tropic_kem_ct_write(h, kem_ct);
     TEST_ASSERT_EQ(ret, LT_OK, "kem_ct write 100 KiB");
+    TEST_ASSERT_EQ(se_nv_set_pad_plain(plain_max), LT_OK, "pad_plain 100 KiB");
     ret = se_tropic_qkd_arm_halves(h, 1U);
     TEST_ASSERT_EQ(ret, LT_OK, "arm encrypt-first half");
     ret = se_nv_get_fill_id(fill_id);
@@ -645,7 +654,7 @@ int main(void)
     uint16_t image0_len = sizeof(image0);
     uint8_t msg[32];
     uint8_t out[32];
-    uint8_t blob[16u + SE_TROPIC_KEM_CT_LEN + 2u * SE_TROPIC_RMEM_BLOB_MAX];
+    uint8_t blob[24u + SE_TROPIC_KEM_CT_LEN + 2u * SE_TROPIC_RMEM_BLOB_MAX];
     uint8_t body[1u + 8u + 4u + 32u];
     uint8_t reply[128];
     static uint8_t pad_a[SE_TROPIC_RMEM_PLAIN_MAX];
@@ -690,25 +699,17 @@ int main(void)
         uint32_t left_dec = 1U;
         uint32_t cap_enc = 0U;
         uint32_t cap_dec = 0U;
-        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
 
-        if (pmax == 0U) {
-            pmax = SE_TROPIC_RMEM_PLAIN_MAX;
-        }
         ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_ENCRYPT, &left_enc, &cap_enc);
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt quota before fill");
         TEST_ASSERT_EQ(left_enc, 0U, "encrypt empty before fill");
-        TEST_ASSERT_EQ(cap_enc,
-                       ((uint32_t)SE_TROPIC_PAD_COUNT - (uint32_t)SE_TROPIC_PAD_HALF) *
-                           (uint32_t)pmax,
-                       "encrypt default half capacity");
+        TEST_ASSERT_EQ(cap_enc, 0U, "encrypt capacity closed without pad_plain");
         ret = se_tropic_otp_bytes_quota(h, SE_NV_OTP_DECRYPT, &left_dec, &cap_dec);
         TEST_ASSERT_EQ(ret, LT_OK, "decrypt quota before fill");
         TEST_ASSERT_EQ(left_dec, 0U, "decrypt empty before fill");
-        TEST_ASSERT_EQ(cap_dec, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)pmax,
-                       "decrypt default half capacity");
+        TEST_ASSERT_EQ(cap_dec, 0U, "decrypt capacity closed without pad_plain");
         st = se_tropic_otp_left_dump();
-        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "LEFT dump before fill is 0/capacity");
+        TEST_ASSERT_EQ(st, SE_TROPIC_OK, "LEFT dump before fill is 0/0");
     }
 
     ret = se_tropic_mlkem_provision(h, pin, sizeof(pin), NULL, 0U, pk, sizeof(pk), &pk_len);
@@ -746,13 +747,14 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad logical 0");
 
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 3u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 4u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 1U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
     secure_lv_put_item(blob, &blob_len, image0, image0_len);
 
     secure_qkd_discard();
@@ -768,16 +770,18 @@ int main(void)
     {
         uint32_t left_enc = 0U;
         uint32_t left_dec = 0U;
-        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
+        uint16_t fill_plain = 0U;
 
+        TEST_ASSERT_EQ(se_nv_get_pad_plain(&fill_plain), LT_OK, "fill pad_plain after ingest");
+        TEST_ASSERT_EQ(fill_plain, (uint16_t)sizeof(pad0), "stored pad_plain");
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_enc);
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after ingest");
-        TEST_ASSERT_EQ(left_enc, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)pmax,
+        TEST_ASSERT_EQ(left_enc, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)fill_plain,
                        "encrypt remaining is pads * pad size");
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left_dec);
         TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining after ingest");
         TEST_ASSERT_EQ(left_dec,
-                       (uint32_t)(SE_TROPIC_PAD_COUNT - SE_TROPIC_PAD_HALF) * (uint32_t)pmax,
+                       (uint32_t)(SE_TROPIC_PAD_COUNT - SE_TROPIC_PAD_HALF) * (uint32_t)fill_plain,
                        "decrypt remaining is pads * pad size");
     }
 
@@ -858,13 +862,14 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad B");
 
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 4u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 5u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 1U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, plain_max);
     secure_lv_put_item(blob, &blob_len, image_a, image_a_len);
     secure_lv_put_item(blob, &blob_len, image_b, image_b_len);
     TEST_ASSERT(blob_len <= (uint32_t)sizeof(blob), "two-pad LV fits");
@@ -963,13 +968,14 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "seal skip pad2");
 
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 5u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 0U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, 32u);
     secure_lv_put_item(blob, &blob_len, image_a, image_a_len);
     secure_lv_put_item(blob, &blob_len, NULL, 0u);
     secure_lv_put_item(blob, &blob_len, image_b, image_b_len);
@@ -1034,13 +1040,14 @@ int main(void)
     ret = sae_encapsulate(pk, kem_ct, ss);
     TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate empty");
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 3u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 4u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 1U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
     secure_lv_put_item(blob, &blob_len, image0, image0_len);
     secure_qkd_discard();
     st = feed_qkd(blob, blob_len);
@@ -1049,10 +1056,12 @@ int main(void)
     st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "empty FINISH");
     {
-        uint16_t pmax = se_tropic_get_rmem_slot_plaintext_max_size(h);
-        uint32_t two = (uint32_t)pmax * 2U;
+        uint16_t pmax = 0U;
+        uint32_t two;
         uint32_t left = 0U;
 
+        TEST_ASSERT_EQ(se_nv_get_pad_plain(&pmax), LT_OK, "almost-empty pad_plain");
+        two = (uint32_t)pmax * 2U;
         TEST_ASSERT(advance_until_one_pad(h, SE_NV_OTP_ENCRYPT, (uint32_t)pmax) == 0,
                     "encrypt one pad left");
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left);

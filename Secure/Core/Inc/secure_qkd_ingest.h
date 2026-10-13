@@ -9,8 +9,9 @@
  *
  * Chunks are parsed on the fly (no full-message buffer). Item 0 is the 1088-byte
  * ML-KEM ciphertext (kem_ct_write); item 1 is decrypt_half (1 byte, 0 or 1);
- * later items are finished pad images (qkd_store, logical = i-2). Zero-length
- * pad items are skipped positionally. SECURE_QKD_MAX_BYTES caps key payload.
+ * item 2 is pad_plain (u16 LE); later items are finished pad images
+ * (qkd_store, logical = i-3). Zero-length pad items are skipped positionally.
+ * SECURE_QKD_MAX_BYTES caps key payload.
  */
 #ifndef SECURE_QKD_INGEST_H
 #define SECURE_QKD_INGEST_H
@@ -41,7 +42,7 @@ extern "C" {
  * Payload only; LV framing is not counted.
  */
 #define SECURE_QKD_MAX_BYTES \
-    ((uint32_t)SE_TROPIC_KEM_CT_LEN + \
+    ((uint32_t)SE_TROPIC_KEM_CT_LEN + 1u + (uint32_t)SECURE_LV_PAD_PLAIN_LEN + \
      ((uint32_t)SE_TROPIC_PAD_COUNT * (uint32_t)SE_TROPIC_RMEM_SLOT_MAX))
 
 void secure_qkd_discard(void);

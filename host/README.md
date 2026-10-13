@@ -81,7 +81,7 @@ bash ../run_all.sh
 | G | `test_g_ingest` | QKD ingest / pad store |
 | H | `test_h_pairing` | Pairing-key install, SH0 invalidate, session uses new key, LOAD after NV wipe |
 | I | `test_i_post_tls` | Production `secure_otp_session_feed` encrypt/decrypt consume, OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
-| J | `test_j_peers` | PEER NV add/remove/list, uplink item count `7+2n` |
+| J | `test_j_peers` | PEER NV add/remove/list, uplink item count `7+3n` |
 | K | `test_k_owner` | First-wins owner, REPLACE, unsigned MANAGE CREDS stream, NV ML-KEM |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
 
@@ -163,6 +163,7 @@ DECRYPT <unix>
 MANAGE <unix>
 PEER LIST
 TROPIC OTP STATUS
+TROPIC PAD LEN
 ```
 
 Typical bring-up (same order as silicon). `OWNER SET` waits for an unsigned USB blob. Identity-changing commands stream unsigned over `MANAGE <unix>` (no ML-DSA). KEM INIT carries the PIN:

@@ -38,13 +38,13 @@ static int peer_names_equal(const uint8_t *a, uint8_t a_len, const uint8_t *b, u
 }
 
 lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
-                        const uint8_t hash48[SE_NV_PEER_HASH_LEN])
+                        const uint8_t hash48[SE_NV_PEER_HASH_LEN], uint16_t pad_plain)
 {
     se_nv_state_t st;
     lt_ret_t ret;
     uint8_t i;
 
-    if ((hash48 == NULL) || (se_nv_peer_name_ok(name, name_len) == 0)) {
+    if ((hash48 == NULL) || (pad_plain == 0U) || (se_nv_peer_name_ok(name, name_len) == 0)) {
         return LT_PARAM_ERR;
     }
     ret = se_nv_load(&st);
@@ -64,6 +64,7 @@ lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
     (void)memset(st.peers[i].name, 0, SE_NV_PEER_NAME_MAX);
     (void)memcpy(st.peers[i].name, name, name_len);
     (void)memcpy(st.peers[i].hash, hash48, SE_NV_PEER_HASH_LEN);
+    st.peers[i].pad_plain = pad_plain;
     st.peer_count = (uint8_t)(st.peer_count + 1u);
     return se_nv_store(&st);
 }
@@ -117,16 +118,17 @@ lt_ret_t se_nv_peer_count(uint8_t *count)
 }
 
 lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
-                        uint8_t hash48[SE_NV_PEER_HASH_LEN])
+                        uint8_t hash48[SE_NV_PEER_HASH_LEN], uint16_t *pad_plain)
 {
     se_nv_state_t st;
     uint8_t nlen;
     uint8_t cap;
     lt_ret_t ret;
 
-    if ((name == NULL) || (name_len == NULL) || (hash48 == NULL)) {
+    if ((name == NULL) || (name_len == NULL) || (hash48 == NULL) || (pad_plain == NULL)) {
         return LT_PARAM_ERR;
     }
+    *pad_plain = 0U;
     cap = *name_len;
     ret = se_nv_load(&st);
     if (ret != LT_OK) {
@@ -141,6 +143,7 @@ lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
     }
     (void)memcpy(name, st.peers[index].name, nlen);
     (void)memcpy(hash48, st.peers[index].hash, SE_NV_PEER_HASH_LEN);
+    *pad_plain = st.peers[index].pad_plain;
     *name_len = nlen;
     return LT_OK;
 }

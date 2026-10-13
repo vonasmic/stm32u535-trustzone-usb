@@ -17,9 +17,9 @@
 static uint8_t *s_nv_page; /* se_nv_page_acquire, not the arena */
 
 #define SE_NV_MAGIC   0x53454E56u /* SENV */
-#define SE_NV_VERSION 7u
+#define SE_NV_VERSION 8u
 
-#define SE_NV_PEER_SLOT_LEN (1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN)
+#define SE_NV_PEER_SLOT_LEN (1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN + 2u)
 
 #define SE_NV_OFF_MAGIC     32u
 #define SE_NV_OFF_VER       36u
@@ -30,18 +30,19 @@ static uint8_t *s_nv_page; /* se_nv_page_acquire, not the arena */
 #define SE_NV_OFF_CUR_D     80u
 #define SE_NV_OFF_BASE_E    82u
 #define SE_NV_OFF_BASE_D    84u
-#define SE_NV_OFF_P_SLOT    86u
-#define SE_NV_OFF_P_PUB     87u
-#define SE_NV_OFF_NPEER     119u
-#define SE_NV_OFF_PEERS     120u
-#define SE_NV_OFF_OWNER_LEN 640u
-#define SE_NV_OFF_OWNER     642u
-#define SE_NV_OFF_MLKEM_LEN 1954u
-#define SE_NV_OFF_MLKEM     1956u
-#define SE_NV_OFF_PW        3140u
-#define SE_NV_OFF_P_PRIV    3188u
-#define SE_NV_OFF_SK_LEN    3220u
-#define SE_NV_OFF_SK        3222u
+#define SE_NV_OFF_PAD_PLAIN 86u
+#define SE_NV_OFF_P_SLOT    88u
+#define SE_NV_OFF_P_PUB     89u
+#define SE_NV_OFF_NPEER     121u
+#define SE_NV_OFF_PEERS     122u
+#define SE_NV_OFF_OWNER_LEN 658u
+#define SE_NV_OFF_OWNER     660u
+#define SE_NV_OFF_MLKEM_LEN 1972u
+#define SE_NV_OFF_MLKEM     1974u
+#define SE_NV_OFF_PW        3158u
+#define SE_NV_OFF_P_PRIV    3206u
+#define SE_NV_OFF_SK_LEN    3238u
+#define SE_NV_OFF_SK        3240u
 #define SE_NV_REC_END       (SE_NV_OFF_SK + SE_NV_SK_MAX)
 #define SE_NV_OPS_LEN       (SE_NV_OFF_OWNER_LEN - SE_NV_OFF_FLAGS)
 
@@ -155,6 +156,7 @@ static void pack_ops(const se_nv_state_t *in, uint8_t *page)
     se_put_u16le(page + SE_NV_OFF_CUR_D, in->cursor_decrypt);
     se_put_u16le(page + SE_NV_OFF_BASE_E, in->base_encrypt);
     se_put_u16le(page + SE_NV_OFF_BASE_D, in->base_decrypt);
+    se_put_u16le(page + SE_NV_OFF_PAD_PLAIN, in->pad_plain);
     page[SE_NV_OFF_P_SLOT] = in->pairing_slot;
     (void)memcpy(page + SE_NV_OFF_P_PUB, in->pairing_pub, SE_NV_PAIRING_KEY_LEN);
     page[SE_NV_OFF_NPEER] = in->peer_count;
@@ -163,6 +165,7 @@ static void pack_ops(const se_nv_state_t *in, uint8_t *page)
         p[0] = in->peers[i].name_len;
         (void)memcpy(p + 1u, in->peers[i].name, SE_NV_PEER_NAME_MAX);
         (void)memcpy(p + 1u + SE_NV_PEER_NAME_MAX, in->peers[i].hash, SE_NV_PEER_HASH_LEN);
+        se_put_u16le(p + 1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN, in->peers[i].pad_plain);
         p += SE_NV_PEER_SLOT_LEN;
     }
 }
@@ -181,6 +184,7 @@ static lt_ret_t unpack_ops(const uint8_t *ops, se_nv_state_t *out)
     out->cursor_decrypt = se_u16le(ops + (SE_NV_OFF_CUR_D - SE_NV_OFF_FLAGS));
     out->base_encrypt = se_u16le(ops + (SE_NV_OFF_BASE_E - SE_NV_OFF_FLAGS));
     out->base_decrypt = se_u16le(ops + (SE_NV_OFF_BASE_D - SE_NV_OFF_FLAGS));
+    out->pad_plain = se_u16le(ops + (SE_NV_OFF_PAD_PLAIN - SE_NV_OFF_FLAGS));
     out->pairing_slot = ops[SE_NV_OFF_P_SLOT - SE_NV_OFF_FLAGS];
     (void)memcpy(out->pairing_pub, ops + (SE_NV_OFF_P_PUB - SE_NV_OFF_FLAGS),
                  SE_NV_PAIRING_KEY_LEN);
@@ -198,12 +202,16 @@ static lt_ret_t unpack_ops(const uint8_t *ops, se_nv_state_t *out)
             if (se_nv_peer_name_ok(p + 1u, nlen) == 0) {
                 return SE_TROPIC_LT_TAMPERED;
             }
+            if (se_u16le(p + 1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN) == 0U) {
+                return SE_TROPIC_LT_TAMPERED;
+            }
         } else if (nlen != 0U) {
             return SE_TROPIC_LT_TAMPERED;
         }
         out->peers[i].name_len = nlen;
         (void)memcpy(out->peers[i].name, p + 1u, SE_NV_PEER_NAME_MAX);
         (void)memcpy(out->peers[i].hash, p + 1u + SE_NV_PEER_NAME_MAX, SE_NV_PEER_HASH_LEN);
+        out->peers[i].pad_plain = se_u16le(p + 1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN);
         p += SE_NV_PEER_SLOT_LEN;
     }
     return LT_OK;
@@ -499,10 +507,66 @@ lt_ret_t se_nv_commit_fill(const uint8_t fill_id[SE_NV_FILL_ID_LEN])
     st.cursor_decrypt = 0U;
     st.base_encrypt = 0U;
     st.base_decrypt = 0U;
+    st.pad_plain = 0U;
     st.flags |= SE_NV_FLAG_FILL;
     st.flags &= ~SE_NV_FLAG_OTP;
     se_nv_pending_fill_clear();
     return se_nv_store(&st);
+}
+
+lt_ret_t se_nv_set_pad_plain(uint16_t pad_plain)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if (pad_plain == 0U) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((st.flags & SE_NV_FLAG_FILL) == 0U) {
+        return LT_FAIL;
+    }
+    st.pad_plain = pad_plain;
+    return se_nv_store(&st);
+}
+
+lt_ret_t se_nv_get_pad_plain(uint16_t *pad_plain)
+{
+    uint32_t flags = 0U;
+    uint16_t saved = 0U;
+    int present = 0;
+    lt_ret_t ret;
+
+    if (pad_plain == NULL) {
+        return LT_PARAM_ERR;
+    }
+    *pad_plain = 0U;
+    ret = nv_rec_present(&present);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (present == 0) {
+        return LT_FAIL;
+    }
+    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((flags & SE_NV_FLAG_FILL) == 0U) {
+        return LT_FAIL;
+    }
+    ret = nv_read_u16(SE_NV_OFF_PAD_PLAIN, &saved);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (saved == 0U) {
+        return LT_FAIL;
+    }
+    *pad_plain = saved;
+    return LT_OK;
 }
 
 lt_ret_t se_nv_arm_otp_cursors(uint16_t base_encrypt, uint16_t base_decrypt)

@@ -62,9 +62,14 @@ static lt_ret_t store_pad_slot(lt_handle_t *h, const uint8_t ss[SE_TROPIC_MLKEM_
     return se_tropic_qkd_store(h, slot, image, image_len);
 }
 
-static lt_ret_t write_fill_arm_encrypt_first(lt_handle_t *h, const uint8_t ct[SE_TROPIC_KEM_CT_LEN])
+static lt_ret_t write_fill_arm_encrypt_first(lt_handle_t *h, const uint8_t ct[SE_TROPIC_KEM_CT_LEN],
+                                            uint16_t pad_plain)
 {
     lt_ret_t ret = se_tropic_kem_ct_write(h, ct);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = se_nv_set_pad_plain(pad_plain);
     if (ret != LT_OK) {
         return ret;
     }
@@ -75,7 +80,7 @@ int main(void)
 {
     lt_handle_t *h;
     const uint8_t pin[] = {'9', '8', '7', '6', '5', '4', '3', '2'};
-    const uint8_t pin_bad[] = {0, 8, 7, 6};
+    const uint8_t pin_bad[] = {'0', '8', '7', '6', '5', '4', '3', '2'};
     const uint8_t add[] = {0xde, 0xad};
     uint8_t pk[SE_TROPIC_MLKEM_PK_LEN];
     uint8_t pk_saved[SE_TROPIC_MLKEM_PK_LEN];
@@ -134,7 +139,7 @@ int main(void)
 
     ret = sae_encapsulate(pk, kem_ct, ss);
     TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate");
-    ret = write_fill_arm_encrypt_first(h, kem_ct);
+    ret = write_fill_arm_encrypt_first(h, kem_ct, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "kem_ct write");
     ret = se_nv_get_fill_id(fill_id_a);
     TEST_ASSERT_EQ(ret, LT_OK, "fill_id after first fill");
@@ -156,7 +161,7 @@ int main(void)
 
     ret = store_pad_slot(h, ss, (uint16_t)(slot0 + 1u), pad2, (uint16_t)sizeof(pad2));
     TEST_ASSERT_EQ(ret, LT_OK, "store extra pad");
-    ret = write_fill_arm_encrypt_first(h, kem_ct);
+    ret = write_fill_arm_encrypt_first(h, kem_ct, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "SAE re-provision kem_ct");
     ret = se_nv_get_fill_id(fill_id_b);
     TEST_ASSERT_EQ(ret, LT_OK, "fill_id after re-provision");
@@ -214,7 +219,7 @@ int main(void)
     }
 
     /* Re-provision, store under new fill_id, then restore old image => tamper. */
-    ret = write_fill_arm_encrypt_first(h, kem_ct);
+    ret = write_fill_arm_encrypt_first(h, kem_ct, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "fill for replay test");
     ret = store_pad_slot(h, ss, slot0, pad, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "store under new fill");
@@ -228,7 +233,7 @@ int main(void)
     TEST_ASSERT_EQ(ret, SE_TROPIC_LT_TAMPERED, "old fill image is tamper");
 
     /* Fresh fill + pad, then rewind Tropic mcounter while MCU stays advanced. */
-    ret = write_fill_arm_encrypt_first(h, kem_ct);
+    ret = write_fill_arm_encrypt_first(h, kem_ct, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "fill for cursor rewind");
     ret = store_pad_slot(h, ss, slot0, pad, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "store for cursor rewind");
@@ -242,7 +247,7 @@ int main(void)
     TEST_ASSERT_EQ(ret, SE_TROPIC_LT_TAMPERED, "Tropic rewind is tamper");
 
     /* Restore aligned state for remaining tests. */
-    ret = write_fill_arm_encrypt_first(h, kem_ct);
+    ret = write_fill_arm_encrypt_first(h, kem_ct, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "fill after tamper tests");
     ret = store_pad_slot(h, ss, slot0, pad, (uint16_t)sizeof(pad));
     TEST_ASSERT_EQ(ret, LT_OK, "store after tamper tests");
@@ -250,7 +255,7 @@ int main(void)
     (void)memset(out, 0xEE, sizeof(out));
     ret = host_otp_xor_message(h, pin_bad, sizeof(pin_bad), add, sizeof(add), msg, 8u, out,
                                      SE_NV_OTP_ENCRYPT, NULL, 0U, NULL);
-    TEST_ASSERT(ret == LT_FAIL, "wrong PIN fails");
+    TEST_ASSERT_EQ(ret, LT_FAIL, "wrong PIN fails");
     for (i = 0; i < 8; i++) {
         TEST_ASSERT(out[i] == 0xEE, "wrong PIN leaves out untouched");
     }

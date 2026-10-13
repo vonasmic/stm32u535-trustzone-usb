@@ -2,7 +2,7 @@
  * @file    test_g_ingest.c
  * @brief   Group G: secure_qkd_ingest stores kem_ct + decrypt_half + pads on Tropic
  *
- * Builds a v2 LV downlink (SAE role), feeds it in small chunks, and checks
+ * Builds a v3 LV downlink (SAE role), feeds it in small chunks, and checks
  * that FINISH commits the pending fill_id and OTP can consume pad 0. Also
  * covers decrypt skip-ahead and rewind-fail with decrypt_half=0.
  */
@@ -13,6 +13,7 @@
 #include "se_tropic_mlkem.h"
 #include "se_tropic_rmem.h"
 #include "se_nv.h"
+#include "se_le.h"
 #include "host_fw_mlkem.h"
 #include "libtropic.h"
 #include <string.h>
@@ -21,6 +22,14 @@
 #include <wolfssl/wolfcrypt/wc_mlkem.h>
 
 #define CHUNK_SIZE 17u
+
+static void lv_put_pad_plain(uint8_t *blob, uint32_t *len, uint16_t pad_plain)
+{
+    uint8_t le[2];
+
+    se_put_u16le(le, pad_plain);
+    secure_lv_put_item(blob, len, le, 2u);
+}
 
 static lt_ret_t sae_encapsulate(const uint8_t pk[SE_TROPIC_MLKEM_PK_LEN],
                                 uint8_t ct[SE_TROPIC_KEM_CT_LEN],
@@ -108,8 +117,8 @@ int main(void)
     uint16_t image2_len = sizeof(image2);
     uint8_t msg[32];
     uint8_t out[32];
-    /* version + count + kem_ct + half + pad0 + empty + pad2 */
-    uint8_t blob[3u + 3u + SE_TROPIC_KEM_CT_LEN + 2u * (2u + SE_TROPIC_RMEM_BLOB_MAX) + 2u];
+    /* version + count + kem_ct + half + pad_plain + pad0 + empty + pad2 */
+    uint8_t blob[3u + 3u + SE_TROPIC_KEM_CT_LEN + 4u + 2u * (2u + SE_TROPIC_RMEM_BLOB_MAX) + 2u];
     uint8_t bad_blob[64];
     uint32_t blob_len = 0U;
     uint32_t bad_len = 0U;
@@ -151,6 +160,32 @@ int main(void)
     TEST_ASSERT_EQ(st, SECURE_QKD_PARSE, "FINISH after bad item 0");
     TEST_ASSERT(se_nv_have_fill() == 0, "no fill after bad item 0");
 
+    /* --- Pad image length must match item 2 --- */
+    for (i = 0; i < (int)SE_NV_FILL_ID_LEN; i++) {
+        pending_fill[i] = (uint8_t)(0x30u + (uint8_t)i);
+    }
+    se_nv_pending_fill_set(pending_fill);
+    ret = sae_encapsulate(pk, kem_ct, ss);
+    TEST_ASSERT_EQ(ret, LT_OK, "SAE encapsulate mismatch");
+    blob_len = 0U;
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 4u);
+    secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
+    {
+        const uint8_t half = 1U;
+
+        secure_lv_put_item(blob, &blob_len, &half, 1u);
+    }
+    lv_put_pad_plain(blob, &blob_len, 64u);
+    {
+        uint8_t short_pad[10];
+
+        (void)memset(short_pad, 0xAA, sizeof(short_pad));
+        secure_lv_put_item(blob, &blob_len, short_pad, (uint16_t)sizeof(short_pad));
+    }
+    secure_qkd_discard();
+    st = feed_chunks(blob, blob_len);
+    TEST_ASSERT_EQ(st, SECURE_QKD_PARSE, "mismatched pad image length");
+
     /* --- Happy path: pending fill_id + LV with hole --- */
     for (i = 0; i < (int)SE_NV_FILL_ID_LEN; i++) {
         pending_fill[i] = (uint8_t)(0x40u + (uint8_t)i);
@@ -179,13 +214,14 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad logical 2");
 
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 5u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 1U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
     secure_lv_put_item(blob, &blob_len, image0, image0_len);
     secure_lv_put_item(blob, &blob_len, NULL, 0u);
     secure_lv_put_item(blob, &blob_len, image2, image2_len);
@@ -196,7 +232,7 @@ int main(void)
     count = 0U;
     st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "FINISH ok");
-    TEST_ASSERT_EQ(count, SE_TROPIC_KEM_CT_LEN + 1u + image0_len + image2_len,
+    TEST_ASSERT_EQ(count, SE_TROPIC_KEM_CT_LEN + 1u + 2u + image0_len + image2_len,
                    "key payload bytes");
 
     TEST_ASSERT(se_nv_have_fill() != 0, "fill committed");
@@ -204,6 +240,12 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "get committed fill_id");
     TEST_ASSERT(memcmp(committed_fill, pending_fill, SE_NV_FILL_ID_LEN) == 0,
                 "committed fill_id matches pending");
+    {
+        uint16_t saved = 0U;
+
+        TEST_ASSERT_EQ(se_nv_get_pad_plain(&saved), LT_OK, "fill pad_plain");
+        TEST_ASSERT_EQ(saved, (uint16_t)sizeof(pad0), "stored pad_plain");
+    }
 
     for (i = 0; i < (int)sizeof(msg); i++) {
         msg[i] = (uint8_t)(0xE0u + (uint8_t)i);
@@ -234,13 +276,14 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad2 half0");
 
     blob_len = 0U;
-    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 5u);
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
     secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
     {
         const uint8_t half = 0U;
 
         secure_lv_put_item(blob, &blob_len, &half, 1u);
     }
+    lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
     secure_lv_put_item(blob, &blob_len, image0, image0_len);
     secure_lv_put_item(blob, &blob_len, NULL, 0u);
     secure_lv_put_item(blob, &blob_len, image2, image2_len);

@@ -39,7 +39,7 @@ Clock + TLS arm happen together on `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE
 | Context                                                                                   | On the 160-char ASCII line?                                                                            |
 | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`                                            | **Never** — PIN (when used) is only inside TLS                                                         |
-| `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `CLIENT CSR` / `KEM PUB` / `PEER LIST` | Unsigned, read-only                                                                                    |
+| `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `CLIENT CSR` / `KEM PUB` / `PEER LIST` / `TROPIC PAD LEN` | Unsigned, read-only                                                                                    |
 | MANAGE KEYGEN / KEM INIT / PEER ADD / REMOVE / CREDS / OWNER REPLACE / PAIRING / PAIRING LOAD | Unsigned request over owner-pinned TLS. PIN only on KEM INIT. **No ML-DSA.** |
 | `OWNER SET`                                                                               | Unsigned USB blob (password + SPKI + optional SAE CA). First-wins. Device ML-DSA is generated on-chip. |
 
@@ -67,15 +67,16 @@ Reply: `u8 status | u16le msg_len | msg` (ASCII, no NUL on the wire, max 160). P
 | ------------------ | ----- | ----- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `HELP`             | yes   | yes   | —                     | Print `commands:` plus all usage lines                                                                                                                                                                                                            |
 | `?`                | alias | alias | —                     | Same as HELP                                                                                                                                                                                                                                      |
-| `PROVISION <unix>` | yes   | yes   | decimal Unix UTC, ≠ 0 | Arm TLS mode **1** (**SAE** peer). Refuses until owner + device cert + device SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v4, then QKD downlink v2 into R-MEM. **mTLS** (device cert). |
+| `PROVISION <unix>` | yes   | yes   | decimal Unix UTC, ≠ 0 | Arm TLS mode **1** (**SAE** peer). Refuses until owner + device cert + device SK + SAE CA + NV ML-KEM pk are present. Verify SAE CA from FLASH_CREDS. After handshake: signed uplink v5, then QKD downlink v3 into R-MEM. **mTLS** (device cert). |
 | `ENCRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **2** (**USER** peer). Refuses until owner + device cert + device SK. **mTLS**; pin the TLS peer leaf SPKI to the enrolled **owner** key. Wait TLS: PIN + plaintext; reply XOR ciphertext with pad slots.                            |
 | `DECRYPT <unix>`   | yes   | yes   | same                  | Arm TLS mode **3** (**USER** peer). Same mTLS + owner pin as ENCRYPT. Wait TLS: PIN + encrypt reply; reply plaintext chunks (no slots).                                                                                                           |
 | `MANAGE <unix>`    | yes   | yes   | same                  | Arm TLS mode **4** (**USER** peer). Refuses until owner SPKI is present. Owner-pinned TLS **without** a device client cert. After handshake: one unsigned command ([MANAGE commands](#manage-commands)), status reply, shutdown.                  |
 | `OWNER SET`        | yes   | yes   | then type `0x01` blob | First USB wins if the owner slot is empty; else type `0x00` `refused`. Begin and apply `ok`/`failed` are type `0x00` ASCII. The blob is type `0x01`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
-| `PEER LIST`        | yes   | yes   | —                     | Dump: `u8 count | (u8 nlen | name | 48 hash)*`                                                                                                                                                                                                    |
+| `PEER LIST`        | yes   | yes   | —                     | ASCII lines `name` + 96 hex hash + decimal pad_plain, or `empty`                                                                                                                                                                                  |
 | `CLIENT HASH`      | yes   | yes   | —                     | Dump 48-byte `SHA384(device_cert_spki || ecc_pub)`                                                                                                                                                                                                |
 | `CLIENT CSR`       | yes   | yes   | —                     | Dump raw ML-DSA-44 pub (1312 B)                                                                                                                                                                                                                   |
-| `TROPIC …`         | yes   | yes   | subcommand            | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS                                                                                                                                                                                                      |
+| `TROPIC PAD LEN`   | yes   | yes   | —                     | Decimal plaintext OTP bytes per pad (chip slot size minus 29-byte AEAD overhead)                                                                                                                                                                  |
+| `TROPIC …`         | yes   | yes   | subcommand            | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS/PAD LEN                                                                                                                                                                                              |
 
 
 
@@ -104,7 +105,7 @@ Tropic PIN is only cmd 1 (KEM INIT): **8–16** printable ASCII (`0x20–0x7E`).
 | --- | ----------------- | ------------------------------------------------------------- | ---------------------- |
 | 1   | KEM INIT          | empty                                                         | `KEM INIT ok`          |
 | 2   | KEYGEN            | empty                                                         | `KEYGEN ok`            |
-| 3   | PEER ADD          | `u8 nlen | name | 48-byte hash`                               | `PEER ADD ok`          |
+| 3   | PEER ADD          | `u8 nlen | name | 48-byte hash | u16 LE pad_plain`            | `PEER ADD ok`          |
 | 4   | PEER REMOVE       | `u8 nlen | name`                                              | `PEER REMOVE ok`       |
 | 5   | CREDS SAE         | SAE CA DER (1–4000 bytes)                                     | `CREDS SAE ok`         |
 | 6   | INSERT SIGNED CSR | `u16le cert_len | cert DER`                                   | `INSERT SIGNED CSR ok` |
@@ -120,7 +121,7 @@ Unknown `cmd` is status **10**, `bad command`. A non-empty body on KEM INIT or K
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | KEM INIT          | Occupied R-MEM **510** is refused. Else M&D PIN setup, wrap the seed, persist the 1184-byte ML-KEM pk in NV.                                                                                       | **3** `slot occupied`. **1** `KEM INIT failed`.                                                |
 | KEYGEN            | ECC slot 0. Empty: generate P-256. Occupied: erase and generate.                                                                                                                                   | **1** `KEYGEN failed`. **11** `bad KEYGEN`.                                                    |
-| PEER ADD          | Nickname + `SHA384(peer SPKI)` into MCU NV. Name rules are under [PEER](#peer-commands).                                                                                                           | **6** `PEER nickname exists`. **8** `PEER list full`. **11** `bad PEER ADD`.                   |
+| PEER ADD          | Nickname + `SHA384(peer SPKI)` + Tropic plaintext pad length into MCU NV. `pad_plain` must be non-zero; this chip does not cap it. Name rules are under [PEER](#peer-commands).                     | **6** `PEER nickname exists`. **8** `PEER list full`. **11** `bad PEER ADD`.                   |
 | PEER REMOVE       | Delete by nickname.                                                                                                                                                                                | **7** `PEER not found`. **11** `bad PEER REMOVE`.                                              |
 | CREDS SAE         | Store the SAE CA DER in FLASH_CREDS.                                                                                                                                                               | **11** `bad CREDS SAE`. **1** `CREDS SAE failed`.                                              |
 | INSERT SIGNED CSR | Cert DER only. Requires the on-chip device SK. The leaf must match the on-chip ML-DSA public key.                                                                                                  | **4** `no device key`. **11** `bad INSERT SIGNED CSR`. **1** `INSERT SIGNED CSR failed`.       |
@@ -168,7 +169,7 @@ and apply status stay type `0x00`.
 
 ## `PEER` commands
 
-Runtime nickname + `SHA384(peer SPKI)` list in MCU NV. Provision uplink items 7+ are this table (hash then name per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
+Runtime nickname + `SHA384(peer SPKI)` + Tropic plaintext pad length in MCU NV. Provision uplink items 7+ are this table (hash, name, then u16 LE pad_plain per peer). Cap **8**. Nickname unique (case-sensitive). The same hash under two names is allowed. Duplicate nickname is refused — to change a hash, `REMOVE` then `ADD`. An empty list is valid (uplink then has **7** items).
 
 PEER ADD/REMOVE use MANAGE TLS application data, not the ASCII line. Bodies are in [MANAGE commands](#manage-commands).
 
@@ -177,11 +178,12 @@ PEER ADD/REMOVE use MANAGE TLS application data, not the ASCII line. Bodies are 
 | ---------------------------- | ----------------------------------------- | ------------------------------------ |
 | `PEER ADD` (MANAGE cmd 3)    | status 0, `PEER ADD ok`                   | nickname exists, list full |
 | `PEER REMOVE` (MANAGE cmd 4) | status 0, `PEER REMOVE ok`                | not found                  |
-| `PEER LIST`                  | ASCII lines `name` + hex hash, or `empty` | `failed`                             |
+| `PEER LIST`                  | ASCII lines `name` + hex hash + decimal pad_plain, or `empty` | `failed`                             |
 
 
 - `<name>`: 1–16 bytes, printable ASCII `[A-Za-z0-9_.-]`
 - Hash: 48-byte SHA-384 of the peer SPKI
+- `pad_plain`: 1–65535 plaintext OTP bytes per pad (the peer's Tropic ceiling)
 
 `PEER LIST` goes through `SECURE_PeerGet_nsc_call`.
 
@@ -198,7 +200,8 @@ PEER ADD/REMOVE use MANAGE TLS application data, not the ASCII line. Bodies are 
 | `TROPIC INFO`       | —          | Chip ID / FW ASCII (success only)                      |
 | `TROPIC PUB`        | —          | Hex P-256 pub, or `empty`                              |
 | `TROPIC KEM PUB`    | —          | Hex NV ML-KEM pk, or `empty`                           |
-| `TROPIC OTP STATUS` | —          | `enc=A/B kb dec=C/D kb`. Unprovisioned is `0/capacity` |
+| `TROPIC OTP STATUS` | —          | `enc=A/B kb dec=C/D kb`. Remaining and capacity use the saved fill plaintext length. No saved length is `0/0` |
+| `TROPIC PAD LEN`    | —          | Decimal chip plaintext pad ceiling (`slot size − 29`) |
 
 
 Unknown USB lines: `failed`. NSC Tropic results are only ok / err (plus empty for unoccupied PUB / KEM PUB). KEM INIT, KEYGEN, PAIRING, and PAIRING LOAD run as MANAGE cmds 1, 2, 8, and 9 — see [MANAGE commands](#manage-commands).
@@ -252,6 +255,7 @@ TROPIC INFO
 TROPIC PUB
 TROPIC KEM PUB
 TROPIC OTP STATUS
+TROPIC PAD LEN
 ```
 
 Host adds `QUIT`.
@@ -274,7 +278,8 @@ Console handlers call these entries ([se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.
 | `CLIENT HASH`                                  | `SECURE_TropicClientHash_nsc_call`                                                                                    |
 | `CLIENT CSR`                                   | `SECURE_ClientCsr_nsc_call`                                                                                           |
 | `TROPIC OTP STATUS`                            | `SECURE_TropicOtpLeft_nsc_call`                                                                                       |
-| `TROPIC PING` …                                | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
+| `TROPIC PAD LEN`                               | `SECURE_TropicPadLen_nsc_call`                                                                                        |
+| `TROPIC PING` …                                | `SECURE_TropicPing/Info/Pub/KemPub/OtpLeft/PadLen_nsc_call`. Failures collapse to ERR; empty PUB / KEM PUB is ASCII `empty`. |
 | Console ASCII                                  | `SECURE_UsbLog_nsc_call` (TX wrapped as type `0x00` when idle)                                                      |
 
 

@@ -5,14 +5,15 @@
 #include "se_usb_tls.h"
 #include <stdio.h>
 
-void se_usb_debug_puts(const char *msg)
+int se_usb_debug_puts(const char *msg)
 {
     if (msg == NULL) {
-        return;
+        return -1;
     }
     (void)fputs(msg, stdout);
     (void)fputc('\n', stdout);
     (void)fflush(stdout);
+    return 0;
 }
 
 void se_usb_failed(void)

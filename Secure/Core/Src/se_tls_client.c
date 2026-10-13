@@ -38,12 +38,6 @@
 #include "se_ram.h"
 #include "main.h"
 #include <string.h>
-#ifdef SE_HOST_MODEL
-#include <stdio.h>
-#define SE_HOST_LOG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define SE_HOST_LOG(...) ((void)0)
-#endif
 #include "wolfssl/ssl.h"
 #include "wolfssl/internal.h"
 #include "wolfssl/wolfcrypt/error-crypt.h"
@@ -54,10 +48,10 @@
 #define TLS_WRITE_CHUNK    1024
 #define TLS_DL_PROGRESS_BYTES 10240u
 #define TLS_LINE_MAX       32
-/* One LV item is u16le length plus the value. Uplink v4 is the header, seven
- * fixed items, then up to SE_NV_PEER_MAX hash/name pairs. Built once: the
- * stream function zeros the exporter, so a WANT_WRITE retry would sign again
- * and emit a second envelope. */
+/* One LV item is u16le length plus the value. Uplink v5 is the header, seven
+ * fixed items, then up to SE_NV_PEER_MAX hash/name/pad_plain triples. Built
+ * once: the stream function zeros the exporter, so a WANT_WRITE retry would
+ * sign again and emit a second envelope. */
 #define TLS_UPLINK_ITEM(n) (2u + (n))
 #define TLS_UPLINK_MAX (1u + 2u \
     + TLS_UPLINK_ITEM(64u) \
@@ -67,7 +61,9 @@
     + TLS_UPLINK_ITEM(2u) \
     + TLS_UPLINK_ITEM(SE_NV_FILL_ID_LEN) \
     + TLS_UPLINK_ITEM(SE_TROPIC_MLKEM_PK_LEN) \
-    + (SE_NV_PEER_MAX * (TLS_UPLINK_ITEM(SE_NV_PEER_HASH_LEN) + TLS_UPLINK_ITEM(SE_NV_PEER_NAME_MAX))))
+    + (SE_NV_PEER_MAX * (TLS_UPLINK_ITEM(SE_NV_PEER_HASH_LEN) \
+                         + TLS_UPLINK_ITEM(SE_NV_PEER_NAME_MAX) \
+                         + TLS_UPLINK_ITEM(SECURE_LV_PAD_PLAIN_LEN))))
 #define TLS_SHUTDOWN_MS    3000u
 /* Backup if HAL_GetTick freezes (seen after long flash/Tropic work on U5). */
 #define TLS_SHUTDOWN_POLLS_MAX 60000u
@@ -327,7 +323,6 @@ static int tls_start(void)
 {
     uint16_t cert_len = 0U;
 
-    SE_HOST_LOG("tls_start mode=%u\n", (unsigned)s_mode);
     /* wolfSSL_Init holds a global RNG in the arena. Free that first, then
      * drop anything a previous session left behind, then bring wolfSSL back.
      * The next handshake always starts from one full region. */
@@ -395,14 +390,12 @@ static int tls_start(void)
     }
 
     s_state = TLS_ST_HANDSHAKE;
-    SE_HOST_LOG("tls_start ok\n");
     return 0;
 }
 
 int se_tls_arm(uint32_t mode)
 {
     if ((s_state != TLS_ST_IDLE) || (s_mode != 0U)) {
-        SE_HOST_LOG("tls_arm refuse state=%u mode=%u\n", (unsigned)s_state, (unsigned)s_mode);
         return -1;
     }
     if (se_auth_active() != 0) {
@@ -1029,7 +1022,6 @@ void se_tls_service_once(void)
         n = wolfSSL_connect(s_ssl);
         se_ram_sample();
         if (n == WOLFSSL_SUCCESS) {
-            SE_HOST_LOG("handshake ok\n");
             if (s_mode != SECURE_TLS_MODE_MANAGE) {
                 int exported = wolfSSL_export_keying_material(s_ssl, s_exporter,
                                                               SE_TROPIC_EXPORTER_LEN,
@@ -1052,7 +1044,6 @@ void se_tls_service_once(void)
         }
         err = wolfSSL_get_error(s_ssl, n);
         if (err != WOLFSSL_ERROR_WANT_READ && err != WOLFSSL_ERROR_WANT_WRITE) {
-            SE_HOST_LOG("handshake fail err=%d\n", err);
             se_tls_die = 1U;
             se_tls_die_err = err;
             se_tls_abort();

@@ -210,18 +210,24 @@ static uint32_t peer_map(lt_ret_t ret, char *msg, uint16_t cap, const char *ok)
 static uint32_t do_peer_add(const uint8_t *body, uint16_t body_len, char *msg, uint16_t msg_cap)
 {
     uint8_t nlen;
+    uint16_t pad_plain;
 
-    if ((body == NULL) || (body_len < (1U + SE_NV_PEER_HASH_LEN))) {
+    if ((body == NULL) || (body_len < (1U + SE_NV_PEER_HASH_LEN + 2U))) {
         set_msg(msg, msg_cap, "bad PEER ADD");
         return SE_MANAGE_PARSE;
     }
     nlen = body[0];
     if ((nlen < 1U) || (nlen > SE_NV_PEER_NAME_MAX) ||
-        (body_len != (1U + (uint16_t)nlen + SE_NV_PEER_HASH_LEN))) {
+        (body_len != (1U + (uint16_t)nlen + SE_NV_PEER_HASH_LEN + 2U))) {
         set_msg(msg, msg_cap, "bad PEER ADD");
         return SE_MANAGE_PARSE;
     }
-    return peer_map(se_nv_peer_add(body + 1U, nlen, body + 1U + nlen), msg, msg_cap,
+    pad_plain = se_u16le(body + 1U + nlen + SE_NV_PEER_HASH_LEN);
+    if (pad_plain == 0U) {
+        set_msg(msg, msg_cap, "bad PEER ADD");
+        return SE_MANAGE_PARSE;
+    }
+    return peer_map(se_nv_peer_add(body + 1U, nlen, body + 1U + nlen, pad_plain), msg, msg_cap,
                     "PEER ADD ok");
 }
 

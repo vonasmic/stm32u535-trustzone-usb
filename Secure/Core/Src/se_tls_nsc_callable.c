@@ -362,6 +362,17 @@ uint32_t CSME_NSE_API SECURE_TropicOtpLeft_nsc_call(uint32_t out_quotas[4])
     return tropic_nsc_ok_err(se_tropic_otp_left(ns_out));
 }
 
+uint32_t CSME_NSE_API SECURE_TropicPadLen_nsc_call(uint32_t *out_plain)
+{
+    uint32_t *ns_out;
+
+    ns_out = (uint32_t *)ns_sanitize_out(out_plain, (uint32_t)sizeof(uint32_t));
+    if (ns_out == NULL) {
+        return SECURE_TROPIC_ERR;
+    }
+    return tropic_nsc_ok_err(se_tropic_pad_len(ns_out));
+}
+
 static uint32_t peer_lt_to_nsc(lt_ret_t ret)
 {
     if (ret == LT_OK) {
@@ -385,12 +396,15 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
 }
 
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash48_out)
+                                              uint32_t *name_len_inout, uint8_t *hash48_out,
+                                              uint32_t *pad_plain_out)
 {
     uint8_t *ns_name;
     uint32_t *ns_nlen;
     uint8_t *ns_hash;
+    uint32_t *ns_pad;
     uint8_t nlen;
+    uint16_t pad_plain = 0U;
     uint32_t cap;
 
     if (index > 255U) {
@@ -406,15 +420,17 @@ uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
     }
     ns_name = (uint8_t *)ns_sanitize_out(name_out, cap);
     ns_hash = (uint8_t *)ns_sanitize_out(hash48_out, SECURE_PEER_HASH_LEN);
-    if ((ns_name == NULL) || (ns_hash == NULL)) {
+    ns_pad = (uint32_t *)ns_sanitize_out(pad_plain_out, (uint32_t)sizeof(uint32_t));
+    if ((ns_name == NULL) || (ns_hash == NULL) || (ns_pad == NULL)) {
         return SECURE_PEER_ERR;
     }
     nlen = (uint8_t)cap;
     {
-        lt_ret_t ret = se_nv_peer_get((uint8_t)index, ns_name, &nlen, ns_hash);
+        lt_ret_t ret = se_nv_peer_get((uint8_t)index, ns_name, &nlen, ns_hash, &pad_plain);
 
         if (ret == LT_OK) {
             *ns_nlen = (uint32_t)nlen;
+            *ns_pad = (uint32_t)pad_plain;
         }
         return peer_lt_to_nsc(ret);
     }

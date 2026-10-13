@@ -28,6 +28,32 @@ typedef struct {
 
 static otp_xor_ctx_t s_otp_xor;
 
+/** SAE-chosen fill length, never larger than this Tropic's plaintext max. */
+static lt_ret_t otp_fill_plain_max(lt_handle_t *h, uint16_t *out)
+{
+    uint16_t chip;
+    uint16_t saved = 0U;
+    lt_ret_t ret;
+
+    if ((h == NULL) || (out == NULL)) {
+        return LT_PARAM_ERR;
+    }
+    *out = 0U;
+    chip = se_tropic_get_rmem_slot_plaintext_max_size(h);
+    if (chip == 0U) {
+        return LT_FAIL;
+    }
+    ret = se_nv_get_pad_plain(&saved);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (saved > chip) {
+        return LT_FAIL;
+    }
+    *out = saved;
+    return LT_OK;
+}
+
 static lt_ret_t decrypt_storage_blob_with_slot_binding(const uint8_t *key, uint16_t slot,
                                                     const uint8_t *blob, uint16_t blob_len,
                                                     uint8_t *plain, uint16_t plain_max,
@@ -198,9 +224,12 @@ lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
         *cap_out = 0U;
     }
 
-    pad_max = se_tropic_get_rmem_slot_plaintext_max_size(h);
-    if (pad_max == 0U) {
-        pad_max = SE_TROPIC_RMEM_PLAIN_MAX;
+    ret = otp_fill_plain_max(h, &pad_max);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return ret;
+    }
+    if (ret != LT_OK) {
+        return LT_OK;
     }
 
     ret = se_tropic_otp_dir_range(dir, &half_base, &half_last);
@@ -263,17 +292,29 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
         return LT_PARAM_ERR;
     }
 
-    s_otp_xor.plain_max = se_tropic_get_rmem_slot_plaintext_max_size(h);
+    ret = se_tropic_mlkem_key_open(h, pin, pin_len, add, add_len);
+    if (ret != LT_OK) {
+        return ret;
+    }
+
+    ret = otp_fill_plain_max(h, &s_otp_xor.plain_max);
+    if (ret != LT_OK) {
+        se_tropic_mlkem_key_close();
+        return (ret == SE_TROPIC_LT_TAMPERED) ? ret : LT_FAIL;
+    }
     if (s_otp_xor.plain_max == 0U) {
+        se_tropic_mlkem_key_close();
         return LT_FAIL;
     }
 
     if (dir == SE_NV_OTP_ENCRYPT) {
         if (msg_len == 0U) {
+            se_tropic_mlkem_key_close();
             return LT_PARAM_ERR;
         }
         slots32 = (msg_len + (uint32_t)s_otp_xor.plain_max - 1U) / (uint32_t)s_otp_xor.plain_max;
         if (slots32 == 0U) {
+            se_tropic_mlkem_key_close();
             return LT_PARAM_ERR;
         }
         s_otp_xor.slots_needed = slots32;
@@ -281,6 +322,7 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
         s_otp_xor.by_pads = 0U;
     } else {
         if (n_pads == 0U) {
+            se_tropic_mlkem_key_close();
             return LT_PARAM_ERR;
         }
         s_otp_xor.slots_needed = n_pads;
@@ -290,25 +332,25 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
 
     ret = se_tropic_otp_dir_range(dir, &half_base, &half_last);
     if (ret != LT_OK) {
+        se_tropic_mlkem_key_close();
         return ret;
     }
     ret = se_tropic_qkd_cursor_get(h, dir, &raw_slot);
     if (ret == SE_TROPIC_LT_TAMPERED) {
+        se_tropic_mlkem_key_close();
         return ret;
     }
     if (ret != LT_OK) {
+        se_tropic_mlkem_key_close();
         return SE_TROPIC_LT_OTP_EXHAUSTED;
     }
     first_slot = (uint16_t)raw_slot;
     last_slot = se_tropic_keystream_slot_at_offset(first_slot, (uint16_t)(s_otp_xor.slots_needed - 1u));
     if ((first_slot < half_base) || (last_slot > half_last)) {
+        se_tropic_mlkem_key_close();
         return SE_TROPIC_LT_OTP_EXHAUSTED;
     }
 
-    ret = se_tropic_mlkem_key_open(h, pin, pin_len, add, add_len);
-    if (ret != LT_OK) {
-        return ret;
-    }
     ret = se_tropic_kem_ct_read(h, s_kem_ct);
     if (ret == LT_OK) {
         ret = se_tropic_mlkem_decapsulate(s_kem_ct, s_otp_xor.ss);

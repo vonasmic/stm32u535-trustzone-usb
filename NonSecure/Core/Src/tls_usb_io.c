@@ -116,6 +116,7 @@ static void cmd_tropic_info(char *args);
 static void cmd_tropic_pub(char *args);
 static void cmd_tropic_kem_pub(char *args);
 static void cmd_tropic_otp_left(char *args);
+static void cmd_tropic_pad_len(char *args);
 static void cmd_peer_list(char *args);
 static void cmd_owner_set(char *args);
 static void cmd_client_hash(char *args);
@@ -137,6 +138,7 @@ static const host_cmd_t s_host_cmds[] = {
     { "TROPIC PUB",      "TROPIC PUB",           cmd_tropic_pub },
     { "TROPIC KEM PUB",  "TROPIC KEM PUB",       cmd_tropic_kem_pub },
     { "TROPIC OTP STATUS", "TROPIC OTP STATUS",  cmd_tropic_otp_left },
+    { "TROPIC PAD LEN",   "TROPIC PAD LEN",     cmd_tropic_pad_len },
 };
 
 static int cmd_match(const char *line, const char *name, char **args_out)
@@ -342,23 +344,38 @@ static void cmd_tropic_otp_left(char *args)
     ns_log(line);
 }
 
+static void cmd_tropic_pad_len(char *args)
+{
+    uint32_t n = 0U;
+    char line[16];
+
+    (void)args;
+    if (SECURE_TropicPadLen_nsc_call(&n) != SECURE_TROPIC_OK) {
+        usb_failed();
+        return;
+    }
+    (void)snprintf(line, sizeof(line), "%lu", (unsigned long)n);
+    ns_log(line);
+}
+
 static void cmd_peer_list(char *args)
 {
     uint32_t i;
     uint8_t nrec = 0U;
-    char line[1U + SECURE_PEER_NAME_MAX + 1U + (SECURE_PEER_HASH_LEN * 2U) + 1U];
+    char line[1U + SECURE_PEER_NAME_MAX + 1U + (SECURE_PEER_HASH_LEN * 2U) + 1U + 6U + 1U];
 
     (void)args;
     for (i = 0U; i < SECURE_PEER_MAX; i++) {
         uint8_t name[SECURE_PEER_NAME_MAX + 1U];
         uint8_t hash48[SECURE_PEER_HASH_LEN];
         uint32_t nlen = SECURE_PEER_NAME_MAX;
+        uint32_t pad_plain = 0U;
         uint32_t st;
         uint32_t j;
         uint32_t pos;
 
         (void)memset(name, 0, sizeof(name));
-        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash48);
+        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash48, &pad_plain);
         if (st == SECURE_PEER_NOT_FOUND) {
             break;
         }
@@ -376,7 +393,8 @@ static void cmd_peer_list(char *args)
             line[pos++] = (char)("0123456789abcdef"[(hash48[j] >> 4) & 0x0FU]);
             line[pos++] = (char)("0123456789abcdef"[hash48[j] & 0x0FU]);
         }
-        line[pos] = '\0';
+        line[pos++] = ' ';
+        (void)snprintf(line + pos, sizeof(line) - pos, "%lu", (unsigned long)pad_plain);
         ns_log(line);
         nrec++;
     }

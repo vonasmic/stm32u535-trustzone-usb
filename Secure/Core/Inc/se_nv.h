@@ -55,6 +55,7 @@ typedef struct {
     uint8_t name_len; /* 0 = empty slot */
     uint8_t name[SE_NV_PEER_NAME_MAX];
     uint8_t hash[SE_NV_PEER_HASH_LEN];
+    uint16_t pad_plain; /* peer Tropic plaintext bytes per pad */
 } se_nv_peer_t;
 
 /** Operational NV (no pairing priv, no device SK). */
@@ -64,6 +65,8 @@ typedef struct {
     uint16_t cursor_decrypt;
     uint16_t base_encrypt;
     uint16_t base_decrypt;
+    /** SAE-chosen plaintext bytes per pad for this fill; 0 until downlink item 2. */
+    uint16_t pad_plain;
     uint32_t time_floor;
     uint32_t flags;
     uint8_t pairing_slot;
@@ -97,6 +100,18 @@ lt_ret_t se_nv_get_cursor(se_nv_otp_dir_t dir, uint16_t *cursor);
 lt_ret_t se_nv_commit_fill(const uint8_t fill_id[SE_NV_FILL_ID_LEN]);
 
 /**
+ * Store the SAE-chosen plaintext pad length for the committed fill.
+ * @p pad_plain must be non-zero. Cleared on the next {@code se_nv_commit_fill}.
+ */
+lt_ret_t se_nv_set_pad_plain(uint16_t pad_plain);
+
+/**
+ * Copy the fill's plaintext pad length. LT_FAIL when no fill or the length
+ * has not been stored yet.
+ */
+lt_ret_t se_nv_get_pad_plain(uint16_t *pad_plain);
+
+/**
  * Arm both OTP halves: store bases and set both current cursors to those bases.
  * Requires a committed fill.
  */
@@ -127,7 +142,7 @@ lt_ret_t se_nv_clear_pairing(void);
  * @return LT_OK, SE_NV_PEER_EXISTS, SE_NV_PEER_FULL, LT_PARAM_ERR, or tamper
  */
 lt_ret_t se_nv_peer_add(const uint8_t *name, uint8_t name_len,
-                        const uint8_t hash48[SE_NV_PEER_HASH_LEN]);
+                        const uint8_t hash48[SE_NV_PEER_HASH_LEN], uint16_t pad_plain);
 
 /** Remove by nickname. @return LT_OK, SE_NV_PEER_NOT_FOUND, or tamper */
 lt_ret_t se_nv_peer_remove(const uint8_t *name, uint8_t name_len);
@@ -140,7 +155,7 @@ lt_ret_t se_nv_peer_count(uint8_t *count);
  * @p name_len in: capacity of @p name; out: actual length.
  */
 lt_ret_t se_nv_peer_get(uint8_t index, uint8_t *name, uint8_t *name_len,
-                        uint8_t hash48[SE_NV_PEER_HASH_LEN]);
+                        uint8_t hash48[SE_NV_PEER_HASH_LEN], uint16_t *pad_plain);
 
 /**
  * Read TIME floor if present.

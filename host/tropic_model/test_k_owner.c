@@ -109,7 +109,7 @@ int main(void)
         hash48[i] = (uint8_t)(0x5Au + i);
     }
     TEST_ASSERT_EQ(se_nv_set_pairing(1U, pairing_priv, pairing_pub), LT_OK, "pairing persist");
-    TEST_ASSERT_EQ(se_nv_peer_add((const uint8_t *)"alice", 5U, hash48), LT_OK, "peer add");
+    TEST_ASSERT_EQ(se_nv_peer_add((const uint8_t *)"alice", 5U, hash48, 64U), LT_OK, "peer add");
 
     {
         const uint8_t pin[] = "pin-1234";

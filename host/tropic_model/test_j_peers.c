@@ -16,6 +16,7 @@
 
 #define HASH_A_FIRST 0xA1u
 #define HASH_B_FIRST 0xB2u
+#define PEER_PAD_PLAIN 64u
 
 typedef struct {
     uint8_t buf[4096];
@@ -48,23 +49,68 @@ static const uint8_t k_dummy_cert[] = {
     0x30, 0x09, 0x30, 0x00, 0x03, 0x05, 0x00, 0xaa, 0xbb, 0xcc, 0xdd
 };
 
-static uint16_t uplink_count(void)
+static int capture_uplink(uplink_cap_t *cap)
 {
-    uplink_cap_t cap;
     uint8_t exporter[SE_TROPIC_EXPORTER_LEN];
     unsigned int i;
 
-    (void)memset(&cap, 0, sizeof(cap));
+    (void)memset(cap, 0, sizeof(*cap));
     for (i = 0U; i < sizeof(exporter); i++) {
         exporter[i] = (uint8_t)(0xE0u + (uint8_t)i);
     }
-    if (se_tropic_session_uplink(exporter, cap_write, &cap) != 0) {
-        return 0xFFFFu;
+    if (se_tropic_session_uplink(exporter, cap_write, cap) != 0) {
+        return -1;
     }
-    if (cap.off < 3U) {
+    if (cap->off < 3U) {
+        return -1;
+    }
+    return 0;
+}
+
+static uint16_t uplink_count(void)
+{
+    uplink_cap_t cap;
+
+    if (capture_uplink(&cap) != 0) {
         return 0xFFFFu;
     }
     return se_u16le(cap.buf + 1);
+}
+
+static int uplink_item(uint16_t want, uint8_t *out, uint16_t out_cap, uint16_t *out_len)
+{
+    uplink_cap_t cap;
+    uint16_t count;
+    uint16_t i;
+    uint32_t off;
+
+    if ((out == NULL) || (out_len == NULL) || (capture_uplink(&cap) != 0)) {
+        return -1;
+    }
+    count = se_u16le(cap.buf + 1);
+    off = 3U;
+    for (i = 0U; i < count; i++) {
+        uint16_t n;
+
+        if ((off + 2U) > cap.off) {
+            return -1;
+        }
+        n = se_u16le(cap.buf + off);
+        off += 2U;
+        if ((off + n) > cap.off) {
+            return -1;
+        }
+        if (i == want) {
+            if (n > out_cap) {
+                return -1;
+            }
+            (void)memcpy(out, cap.buf + off, n);
+            *out_len = n;
+            return 0;
+        }
+        off += n;
+    }
+    return -1;
 }
 
 int main(void)
@@ -74,6 +120,7 @@ int main(void)
     uint8_t name[SE_NV_PEER_NAME_MAX];
     uint8_t got_hash[SE_NV_PEER_HASH_LEN];
     uint8_t nlen;
+    uint16_t pad_plain;
     uint8_t count;
     uint32_t floor;
     int present;
@@ -99,21 +146,34 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "count empty page");
     TEST_ASSERT_EQ(count, 0U, "empty count");
 
-    ret = se_nv_peer_add(alice, 5U, hash_a);
+    ret = se_nv_peer_add(alice, 5U, hash_a, 0U);
+    TEST_ASSERT_EQ(ret, LT_PARAM_ERR, "zero pad_plain refused");
+    ret = se_nv_peer_add(alice, 5U, hash_a, 60000U);
+    TEST_ASSERT_EQ(ret, LT_OK, "peer larger than this chip");
+    nlen = SE_NV_PEER_NAME_MAX;
+    pad_plain = 0U;
+    ret = se_nv_peer_get(0U, name, &nlen, got_hash, &pad_plain);
+    TEST_ASSERT_EQ(ret, LT_OK, "get uncapped Alice");
+    TEST_ASSERT_EQ(pad_plain, 60000U, "uncapped pad_plain");
+    ret = se_nv_peer_remove(alice, 5U);
+    TEST_ASSERT_EQ(ret, LT_OK, "remove uncapped Alice");
+    ret = se_nv_peer_add(alice, 5U, hash_a, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, LT_OK, "add Alice");
-    ret = se_nv_peer_add(alice, 5U, hash_b);
+    ret = se_nv_peer_add(alice, 5U, hash_b, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, SE_NV_PEER_EXISTS, "dup nickname");
     ret = se_nv_peer_count(&count);
     TEST_ASSERT_EQ(ret, LT_OK, "count after Alice load");
     TEST_ASSERT_EQ(count, 1U, "count after Alice");
     nlen = SE_NV_PEER_NAME_MAX;
-    ret = se_nv_peer_get(0U, name, &nlen, got_hash);
+    pad_plain = 0U;
+    ret = se_nv_peer_get(0U, name, &nlen, got_hash, &pad_plain);
     TEST_ASSERT_EQ(ret, LT_OK, "get Alice");
     TEST_ASSERT_EQ(nlen, 5U, "Alice name_len");
     TEST_ASSERT(memcmp(name, alice, 5U) == 0, "Alice name");
     TEST_ASSERT(memcmp(got_hash, hash_a, SE_NV_PEER_HASH_LEN) == 0, "Alice hash");
+    TEST_ASSERT_EQ(pad_plain, PEER_PAD_PLAIN, "Alice pad_plain");
 
-    ret = se_nv_peer_add(bob, 3U, hash_a);
+    ret = se_nv_peer_add(bob, 3U, hash_a, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, LT_OK, "same hash other name");
     ret = se_nv_peer_remove(alice, 5U);
     TEST_ASSERT_EQ(ret, LT_OK, "remove Alice");
@@ -121,7 +181,8 @@ int main(void)
     TEST_ASSERT_EQ(ret, LT_OK, "count after remove Alice load");
     TEST_ASSERT_EQ(count, 1U, "count after remove Alice");
     nlen = SE_NV_PEER_NAME_MAX;
-    ret = se_nv_peer_get(0U, name, &nlen, got_hash);
+    pad_plain = 0U;
+    ret = se_nv_peer_get(0U, name, &nlen, got_hash, &pad_plain);
     TEST_ASSERT_EQ(ret, LT_OK, "get compacted Bob");
     TEST_ASSERT_EQ(nlen, 3U, "Bob compacted to slot 0");
     TEST_ASSERT(memcmp(name, bob, 3U) == 0, "Bob name");
@@ -138,10 +199,10 @@ int main(void)
 
         nm[0] = (uint8_t)('A' + (uint8_t)i);
         nm[1] = (uint8_t)('0' + (uint8_t)i);
-        ret = se_nv_peer_add(nm, 2U, hash_b);
+        ret = se_nv_peer_add(nm, 2U, hash_b, PEER_PAD_PLAIN);
         TEST_ASSERT_EQ(ret, LT_OK, "add slot");
     }
-    ret = se_nv_peer_add(alice, 5U, hash_a);
+    ret = se_nv_peer_add(alice, 5U, hash_a, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, SE_NV_PEER_FULL, "list full");
     for (i = 0U; i < SE_NV_PEER_MAX; i++) {
         uint8_t nm[2];
@@ -161,7 +222,7 @@ int main(void)
     ret = se_nv_peer_count(&count);
     TEST_ASSERT_EQ(ret, LT_OK, "count after time");
     TEST_ASSERT_EQ(count, 0U, "time-only has empty peers");
-    ret = se_nv_peer_add(alice, 5U, hash_a);
+    ret = se_nv_peer_add(alice, 5U, hash_a, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, LT_OK, "add after time");
     ret = se_nv_get_time_floor(&floor, &present);
     TEST_ASSERT_EQ(ret, LT_OK, "time after peer store");
@@ -188,16 +249,25 @@ int main(void)
 
     items = uplink_count();
     TEST_ASSERT_EQ(items, (uint16_t)SECURE_LV_UPLINK_FIXED_ITEMS, "uplink 7 items empty peers");
-    ret = se_nv_peer_add(alice, 5U, hash_a);
+    ret = se_nv_peer_add(alice, 5U, hash_a, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, LT_OK, "add Alice for uplink");
     items = uplink_count();
-    TEST_ASSERT_EQ(items, (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + 2u),
-                   "uplink 9 items one peer");
-    ret = se_nv_peer_add(bob, 3U, hash_b);
+    TEST_ASSERT_EQ(items, (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + SECURE_LV_UPLINK_PEER_ITEMS),
+                   "uplink 10 items one peer");
+    {
+        uint8_t item[2];
+        uint16_t item_len = 0U;
+
+        TEST_ASSERT_EQ(uplink_item(9U, item, (uint16_t)sizeof(item), &item_len), 0,
+                       "peer pad_plain item");
+        TEST_ASSERT_EQ(item_len, 2U, "peer pad_plain size");
+        TEST_ASSERT_EQ(se_u16le(item), PEER_PAD_PLAIN, "uplink peer pad_plain");
+    }
+    ret = se_nv_peer_add(bob, 3U, hash_b, PEER_PAD_PLAIN);
     TEST_ASSERT_EQ(ret, LT_OK, "add Bob for uplink");
     items = uplink_count();
-    TEST_ASSERT_EQ(items, (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + 4u),
-                   "uplink 11 items two peers");
+    TEST_ASSERT_EQ(items, (uint16_t)(SECURE_LV_UPLINK_FIXED_ITEMS + (2u * SECURE_LV_UPLINK_PEER_ITEMS)),
+                   "uplink 13 items two peers");
 
     se_tropic_deinit_session();
     host_crypto_deinit();

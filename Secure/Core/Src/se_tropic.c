@@ -250,6 +250,30 @@ uint32_t se_tropic_info(void)
     return SE_TROPIC_OK;
 }
 
+uint32_t se_tropic_pad_len(uint32_t *out_plain)
+{
+    lt_handle_t *h;
+    uint16_t n;
+
+    if (out_plain == NULL) {
+        return SE_TROPIC_ERR;
+    }
+    *out_plain = 0U;
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
+        return SE_TROPIC_ERR;
+    }
+    h = se_tropic_handle();
+    if (h == NULL) {
+        return SE_TROPIC_ERR;
+    }
+    n = se_tropic_get_rmem_slot_plaintext_max_size(h);
+    if (n == 0U) {
+        return SE_TROPIC_ERR;
+    }
+    *out_plain = (uint32_t)n;
+    return SE_TROPIC_OK;
+}
+
 uint32_t se_tropic_otp_left(uint32_t out_quotas[4])
 {
     lt_handle_t *h;

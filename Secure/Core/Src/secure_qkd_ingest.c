@@ -6,8 +6,9 @@
  *
  * Item 0: raw ML-KEM-768 ciphertext -> se_tropic_kem_ct_write
  * Item 1: decrypt_half (1 byte, 0 or 1) -> se_tropic_qkd_arm_halves
- * Items 2..N: finished pad images -> se_tropic_qkd_store(logical = i-2)
- * Zero-length pads are skipped (positional); empty item 0 or 1 is a parse error.
+ * Item 2: pad_plain (u16 LE) -> se_nv_set_pad_plain
+ * Items 3..N: finished pad images -> se_tropic_qkd_store(logical = i-3)
+ * Zero-length pads are skipped (positional); empty item 0, 1, or 2 is a parse error.
  */
 #include "secure_qkd_ingest.h"
 #include "se_tropic.h"
@@ -35,6 +36,8 @@ static uint16_t s_item_got;   /* bytes copied into s_item so far */
 static uint32_t s_key_bytes;  /* payload only; framing not counted */
 static uint8_t s_item0_stored;
 static uint8_t s_item1_stored;
+static uint8_t s_item2_stored;
+static uint16_t s_pad_plain;
 static uint8_t s_item[SE_TROPIC_KEM_CT_LEN];
 
 static void qkd_wipe(void)
@@ -51,6 +54,8 @@ static void qkd_wipe(void)
     s_key_bytes = 0U;
     s_item0_stored = 0U;
     s_item1_stored = 0U;
+    s_item2_stored = 0U;
+    s_pad_plain = 0U;
     wc_ForceZero(s_item, sizeof(s_item));
 }
 
@@ -60,8 +65,9 @@ void secure_qkd_discard(void)
 }
 
 /**
- * Commit the item at index s_keys_done (0 = kem_ct, 1 = decrypt_half, else pad).
- * Zero-length pads are a no-op. Caller increments s_keys_done after success.
+ * Commit the item at index s_keys_done (0 = kem_ct, 1 = decrypt_half,
+ * 2 = pad_plain, else pad). Zero-length pads are a no-op. Caller increments
+ * s_keys_done after success.
  */
 static uint32_t qkd_commit_item(uint16_t item_len)
 {
@@ -116,8 +122,48 @@ static uint32_t qkd_commit_item(uint16_t item_len)
         return SECURE_QKD_OK;
     }
 
+    if (s_keys_done == 2U) {
+        uint16_t pad_plain;
+        uint16_t chip_max;
+
+        if (item_len != SECURE_LV_PAD_PLAIN_LEN) {
+            qkd_wipe();
+            return SECURE_QKD_PARSE;
+        }
+        pad_plain = se_u16le(s_item);
+        wc_ForceZero(s_item, sizeof(s_item));
+        if (se_tropic_init_session() != SE_TROPIC_OK) {
+            qkd_wipe();
+            return SECURE_QKD_STORE;
+        }
+        h = se_tropic_handle();
+        if (h == NULL) {
+            qkd_wipe();
+            return SECURE_QKD_STORE;
+        }
+        chip_max = se_tropic_get_rmem_slot_plaintext_max_size(h);
+        if ((pad_plain == 0U) || (chip_max == 0U) || (pad_plain > chip_max)) {
+            qkd_wipe();
+            return SECURE_QKD_PARSE;
+        }
+        ret = se_nv_set_pad_plain(pad_plain);
+        if (ret != LT_OK) {
+            qkd_wipe();
+            return SECURE_QKD_STORE;
+        }
+        s_pad_plain = pad_plain;
+        s_item2_stored = 1U;
+        return SECURE_QKD_OK;
+    }
+
     if (item_len == 0U) {
         return SECURE_QKD_OK;
+    }
+
+    if ((s_pad_plain == 0U)
+        || (item_len != (uint16_t)(SE_TROPIC_RMEM_OVERHEAD + s_pad_plain))) {
+        qkd_wipe();
+        return SECURE_QKD_PARSE;
     }
 
     if (se_tropic_init_session() != SE_TROPIC_OK) {
@@ -129,7 +175,7 @@ static uint32_t qkd_commit_item(uint16_t item_len)
         qkd_wipe();
         return SECURE_QKD_STORE;
     }
-    ret = se_tropic_qkd_store(h, (uint16_t)(s_keys_done - 2U), s_item, item_len);
+    ret = se_tropic_qkd_store(h, (uint16_t)(s_keys_done - 3U), s_item, item_len);
     wc_ForceZero(s_item, sizeof(s_item));
     if (ret != LT_OK) {
         qkd_wipe();
@@ -170,6 +216,12 @@ static uint32_t qkd_validate_len(uint16_t item_len)
     }
     if (s_keys_done == 1U) {
         if (item_len != 1U) {
+            return SECURE_QKD_PARSE;
+        }
+        return SECURE_QKD_OK;
+    }
+    if (s_keys_done == 2U) {
+        if (item_len != SECURE_LV_PAD_PLAIN_LEN) {
             return SECURE_QKD_PARSE;
         }
         return SECURE_QKD_OK;
@@ -278,7 +330,8 @@ static uint32_t qkd_feed(const uint8_t *chunk, uint32_t len)
 
 uint8_t secure_qkd_ready_to_finish(void)
 {
-    return ((s_phase == QKD_PHASE_DONE) && (s_item0_stored != 0U) && (s_item1_stored != 0U))
+    return ((s_phase == QKD_PHASE_DONE) && (s_item0_stored != 0U) && (s_item1_stored != 0U)
+            && (s_item2_stored != 0U))
                ? 1U
                : 0U;
 }
@@ -291,7 +344,8 @@ static uint32_t qkd_finish(uint32_t *bytesOut)
         return SECURE_QKD_ERR;
     }
 
-    if ((s_phase != QKD_PHASE_DONE) || (s_item0_stored == 0U) || (s_item1_stored == 0U)) {
+    if ((s_phase != QKD_PHASE_DONE) || (s_item0_stored == 0U) || (s_item1_stored == 0U)
+        || (s_item2_stored == 0U)) {
         qkd_wipe();
         return SECURE_QKD_PARSE;
     }

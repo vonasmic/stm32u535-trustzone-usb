@@ -31,10 +31,10 @@
 extern "C" {
 #endif
 
-#define SECURE_LV_DOWNLINK_VERSION 2u
+#define SECURE_LV_DOWNLINK_VERSION 3u
 
 /** Session uplink after TLS; includes R-MEM pad geometry, fill_id, and ML-KEM PK. */
-#define SECURE_LV_UPLINK_VERSION   4u
+#define SECURE_LV_UPLINK_VERSION   5u
 
 /**
  * OTP pad stream (not an LV envelope). ENCRYPT TLS body after PIN is
@@ -44,16 +44,18 @@ extern "C" {
  * DECRYPT reply:
  *   u32 n_pads LE | repeat: u16 chunk_len LE | chunk
  *
- * Uplink v4 items, in order: session signature (64 B), TROPIC01 P-256 public
+ * Uplink v5 items, in order: session signature (64 B), TROPIC01 P-256 public
  * key (64 B), client hash (48 B), R-MEM slot size (u16 LE), pad slot count
- * (u16 LE), pending fill_id (32 B), ML-KEM-768 public key (1184 B), then
- * alternating peer hash (48 B) / peer name from MCU NV (PEER ADD).
- * count = SECURE_LV_UPLINK_FIXED_ITEMS + 2 * se_nv_peer_count().
+ * (u16 LE), pending fill_id (32 B), ML-KEM-768 public key (1184 B), then per
+ * peer: hash (48 B), name, Tropic plaintext pad length (u16 LE) from MCU NV
+ * (PEER ADD). count = SECURE_LV_UPLINK_FIXED_ITEMS + 3 * se_nv_peer_count().
  *
- * Downlink v2 items: kem_ct (1088 B), decrypt_half (1 B, 0 or 1), then pad
- * images (logical index = item index - 2).
+ * Downlink v3 items: kem_ct (1088 B), decrypt_half (1 B, 0 or 1), pad_plain
+ * (u16 LE), then pad images (logical index = item index - 3).
  */
 #define SECURE_LV_UPLINK_FIXED_ITEMS 7u
+#define SECURE_LV_UPLINK_PEER_ITEMS  3u
+#define SECURE_LV_PAD_PLAIN_LEN      2u
 
 /** Write version and little-endian item count. */
 static inline void secure_lv_put_header(uint8_t *buf, uint32_t *off, uint8_t version,

@@ -29,6 +29,8 @@ uint32_t se_tropic_ping(void);
 uint32_t se_tropic_info(void);
 /** Remaining OTP bytes: out[0..3] = enc left, enc cap, dec left, dec cap. */
 uint32_t se_tropic_otp_left(uint32_t out_quotas[4]);
+/** This Tropic's plaintext bytes per pad (slot size minus AEAD overhead). */
+uint32_t se_tropic_pad_len(uint32_t *out_plain);
 uint32_t se_tropic_otp_left_dump(void);
 /** ECC slot 0 XY. NOT_READY if unoccupied (Tropic INVALID_KEY). */
 uint32_t se_tropic_pub_read(uint8_t *out_xy64);

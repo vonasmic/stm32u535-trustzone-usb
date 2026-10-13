@@ -4,7 +4,8 @@
  *
  * User PTY vs optional SAE PTY: user slave attached wins (lab "home PC").
  * That tears down the SAE symlink so a continuous usb-tcp bridge waits and
- * reopens when UserApp DISCONNECTs. Slave attach is DTR. Stdin is extra RX.
+ * reopens when UserApp DISCONNECTs. Slave attach is DTR. Stdin is extra RX
+ * only while no slave is attached; after that it is discarded.
  * ASCII TX is echoed to stdout. TLS records (0x14–0x17) are muted for the
  * rest of the session until printable ASCII returns.
  */
@@ -393,6 +394,22 @@ UINT ux_device_class_cdc_acm_read_run(UX_SLAVE_CLASS_CDC_ACM *cdc, UCHAR *buffer
         if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EIO) {
             return UX_STATE_ERROR;
         }
+    }
+
+    /* The chip's USB read has no keyboard. Once UserApp holds the slave,
+     * se-host pane input is not a CDC packet. */
+    if (s_slave_attached != 0) {
+        if (s_stdin_eof == 0 && s_stdin_disabled == 0) {
+            char junk[64];
+
+            n = read(STDIN_FILENO, junk, sizeof(junk));
+            if (n == 0) {
+                s_stdin_eof = 1;
+            } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                s_stdin_eof = 1;
+            }
+        }
+        return UX_STATE_WAIT;
     }
 
     if (s_stdin_eof == 0 && s_stdin_disabled == 0) {

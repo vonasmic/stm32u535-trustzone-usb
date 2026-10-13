@@ -198,7 +198,7 @@ Disconnect, DTR off, TLS error, or session end returns to command mode.
 ## Lab extras (not a USER or SAE TLS session)
 
 - `CLIENT CSR` — dump on-chip ML-DSA-44 public key.
-- `TROPIC PUB` / `CLIENT HASH` / `TROPIC KEM PUB` — dump P-256 pub, device `client_hash`, or ML-KEM public key.
+- `TROPIC PUB` / `CLIENT HASH` / `TROPIC KEM PUB` / `TROPIC PAD LEN` — dump P-256 pub, device `client_hash`, ML-KEM public key, or plaintext pad ceiling.
 
 ---
 
