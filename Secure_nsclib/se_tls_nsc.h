@@ -117,13 +117,23 @@ uint32_t CSME_NSE_API SECURE_TropicPadLen_nsc_call(uint32_t *out_plain);
 
 /** Occupied count 0..8 on success; >8 means the table could not be read. */
 uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void);
+
 /**
- * One occupied slot. @p name_len_inout in: buffer size; out: actual name length.
+ * Packed meta for PeerGet — keeps the CMSE entry at ≤4 register args
+ * (a fifth pointer would spill onto the stack and is rejected by GCC).
+ */
+typedef struct {
+    uint32_t name_len;  /**< in: name buffer size; out: actual name length */
+    uint32_t pad_plain; /**< out: peer plaintext bytes per pad */
+} secure_peer_get_meta_t;
+
+/**
+ * One occupied slot. @p meta->name_len in: buffer size; out: actual name length.
  * NSC payload stays within SECURE_USB_PKT_MAX.
  */
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash48_out,
-                                              uint32_t *pad_plain_out);
+                                              uint8_t *hash48_out,
+                                              secure_peer_get_meta_t *meta);
 
 #ifdef __cplusplus
 }

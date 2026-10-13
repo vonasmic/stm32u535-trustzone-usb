@@ -396,13 +396,12 @@ uint32_t CSME_NSE_API SECURE_PeerCount_nsc_call(void)
 }
 
 uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
-                                              uint32_t *name_len_inout, uint8_t *hash48_out,
-                                              uint32_t *pad_plain_out)
+                                              uint8_t *hash48_out,
+                                              secure_peer_get_meta_t *meta)
 {
     uint8_t *ns_name;
-    uint32_t *ns_nlen;
     uint8_t *ns_hash;
-    uint32_t *ns_pad;
+    secure_peer_get_meta_t *ns_meta;
     uint8_t nlen;
     uint16_t pad_plain = 0U;
     uint32_t cap;
@@ -410,18 +409,17 @@ uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
     if (index > 255U) {
         return SECURE_PEER_ERR;
     }
-    ns_nlen = (uint32_t *)ns_sanitize_out(name_len_inout, (uint32_t)sizeof(uint32_t));
-    if (ns_nlen == NULL) {
+    ns_meta = (secure_peer_get_meta_t *)ns_sanitize_out(meta, (uint32_t)sizeof(*meta));
+    if (ns_meta == NULL) {
         return SECURE_PEER_ERR;
     }
-    cap = *ns_nlen;
+    cap = ns_meta->name_len;
     if ((cap < 1U) || (cap > SECURE_PEER_NAME_MAX)) {
         return SECURE_PEER_ERR;
     }
     ns_name = (uint8_t *)ns_sanitize_out(name_out, cap);
     ns_hash = (uint8_t *)ns_sanitize_out(hash48_out, SECURE_PEER_HASH_LEN);
-    ns_pad = (uint32_t *)ns_sanitize_out(pad_plain_out, (uint32_t)sizeof(uint32_t));
-    if ((ns_name == NULL) || (ns_hash == NULL) || (ns_pad == NULL)) {
+    if ((ns_name == NULL) || (ns_hash == NULL)) {
         return SECURE_PEER_ERR;
     }
     nlen = (uint8_t)cap;
@@ -429,8 +427,8 @@ uint32_t CSME_NSE_API SECURE_PeerGet_nsc_call(uint32_t index, uint8_t *name_out,
         lt_ret_t ret = se_nv_peer_get((uint8_t)index, ns_name, &nlen, ns_hash, &pad_plain);
 
         if (ret == LT_OK) {
-            *ns_nlen = (uint32_t)nlen;
-            *ns_pad = (uint32_t)pad_plain;
+            ns_meta->name_len = (uint32_t)nlen;
+            ns_meta->pad_plain = (uint32_t)pad_plain;
         }
         return peer_lt_to_nsc(ret);
     }

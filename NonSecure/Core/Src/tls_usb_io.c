@@ -368,24 +368,25 @@ static void cmd_peer_list(char *args)
     for (i = 0U; i < SECURE_PEER_MAX; i++) {
         uint8_t name[SECURE_PEER_NAME_MAX + 1U];
         uint8_t hash48[SECURE_PEER_HASH_LEN];
-        uint32_t nlen = SECURE_PEER_NAME_MAX;
-        uint32_t pad_plain = 0U;
+        secure_peer_get_meta_t meta;
         uint32_t st;
         uint32_t j;
         uint32_t pos;
 
         (void)memset(name, 0, sizeof(name));
-        st = SECURE_PeerGet_nsc_call(i, name, &nlen, hash48, &pad_plain);
+        meta.name_len = SECURE_PEER_NAME_MAX;
+        meta.pad_plain = 0U;
+        st = SECURE_PeerGet_nsc_call(i, name, hash48, &meta);
         if (st == SECURE_PEER_NOT_FOUND) {
             break;
         }
-        if (st != SECURE_PEER_OK || nlen > SECURE_PEER_NAME_MAX) {
+        if (st != SECURE_PEER_OK || meta.name_len > SECURE_PEER_NAME_MAX) {
             usb_failed();
             return;
         }
-        name[nlen] = '\0';
+        name[meta.name_len] = '\0';
         pos = 0U;
-        for (j = 0U; j < nlen; j++) {
+        for (j = 0U; j < meta.name_len; j++) {
             line[pos++] = (char)name[j];
         }
         line[pos++] = ' ';
@@ -394,7 +395,8 @@ static void cmd_peer_list(char *args)
             line[pos++] = (char)("0123456789abcdef"[hash48[j] & 0x0FU]);
         }
         line[pos++] = ' ';
-        (void)snprintf(line + pos, sizeof(line) - pos, "%lu", (unsigned long)pad_plain);
+        (void)snprintf(line + pos, sizeof(line) - pos, "%lu",
+                       (unsigned long)meta.pad_plain);
         ns_log(line);
         nrec++;
     }
