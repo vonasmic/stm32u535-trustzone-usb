@@ -34,7 +34,7 @@ This document analyses **protocol, TrustZone layout, Tropic binding, and PQ algo
 | **USB / NS policy**            | Unsigned enrollment surface, first-wins owner, coarse dump occupancy, NS as API caller (documented residuals).                                      |
 | **Tropic / L3 (classical)**    | SH0, pairing, mcounters, R-MEM ciphertext, M&D budget, uplink P-256 vs PQ TLS identity.                                                     |
 | **MCU flash / SWD**            | `secure_dwk`, NV page 22, creds page 21, plaintext ML-DSA SK and pairing priv in flash dump.                                                |
-| **PIN online guessing**        | M&D throttle (8 tries); weak PIN on a live device.                                                                                           |
+| **PIN online guessing**        | M&D throttle (7 tries); weak PIN on a live device.                                                                                           |
 
 
 ### Out of scope
@@ -198,7 +198,7 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 - MCU runs the PIN protocol KDF (**HMAC-SHA384** on `PIN || add || pepper`). Each check concatenates two 32-byte **`lt_mac_and_destroy`** outputs as a 64-byte HMAC key (`K = S1 || S2`), then `t = HMAC-SHA384(master, 0x00)` (48-byte tag). Chip **KMAC** still runs in one-time hardware slots (two slots per try).
 - Key entropy up to 512 bits (independent 256-bit M&D outputs). HMAC-SHA384 output 384 bits. Generic quantum key-search on the 512-bit key ~2²⁵⁶; generic quantum attack on a 384-bit MAC value ~2¹⁹². NIST lists SHA-384 as a 192-bit hash-strength primitive.
 - Attempt spent **before** verify; each miss **destroys** one M&D slot pair (not a software counter).
-- Silicon budget **8** tries / **16** slots (host model 4 tries / 8 slots). Exhaustion makes slot 510 unrecoverable (`KEM INIT` will also refuse: slot occupied).
+- Silicon budget **7** tries / **14** slots (host model 4 tries / 8 slots). Exhaustion makes slot 510 unrecoverable (`KEM INIT` will also refuse: slot occupied).
 - Pepper binds PIN to this MCU’s `secure_dwk`.
 
 **Residual:**

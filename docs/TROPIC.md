@@ -44,7 +44,7 @@ Overhead **29** bytes. Max slot **475** B (FW ≥ 2.0.0) → plaintext max **446
 | --- | --- | --- |
 | ECC P-256 | `TR01_ECC_SLOT_0` | Session uplink signature |
 | Pairing X25519 | 0 = factory **SH0**; **1–3** = host | L3 session keys |
-| MAC-and-Destroy | hardware slots `0 .. 2*PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 16 slots / 8 tries) |
+| MAC-and-Destroy | hardware slots `0 .. 2*PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 14 slots / 7 tries) |
 | Mcounters | index 0 = encrypt cursor, index 1 = decrypt | Mirror of MCU OTP pointers |
 
 ---
@@ -119,7 +119,7 @@ Flags: `SE_NV_FLAG_FILL 0x1`, `TIME 0x2`, `PAIRING 0x4`, `OTP 0x8`.
 
 ## MAC-and-Destroy PIN
 
-Silicon: **8** tries (`SE_TROPIC_PIN_ROUNDS`) using **16** hardware M&D slots (`2i` and `2i+1` per try). Host model: **4** tries / 8 slots (`host_libtropic_config.h`). Chip maximum is 128; this firmware does not use the rest.
+Silicon: **7** tries (`SE_TROPIC_PIN_ROUNDS`) using **14** hardware M&D slots (`2i` and `2i+1` per try). Host model: **4** tries / 8 slots (`host_libtropic_config.h`). Chip maximum is 128; this firmware does not use the rest.
 
 PIN length **8–16** printable ASCII bytes.
 
@@ -127,7 +127,7 @@ MCU KDF is **HMAC-SHA384**. Each try concatenates two independent 32-byte M&D ou
 
 **Pepper** (MCU-only): `HKDF-SHA384(device_key, "SE_tropic_pin_pepper_v2")`. Tropic never sees it. `kdf_in = PIN || add || pepper`. Changing `secure_dwk` invalidates PIN NVM — re-run `KEM INIT`.
 
-NVM blob in slot **511** (MCU-sealed): remaining attempts `i` (1 B), wrapped `ci[ROUNDS][48]`, auth tag `t` (48 B). Silicon size `1 + 8*48 + 48 = 433` B (fits FW ≥ 2.0.0 plaintext max 446).
+NVM blob in slot **511** (MCU-sealed): remaining attempts `i` (1 B), wrapped `ci[ROUNDS][48]`, auth tag `t` (48 B). Silicon size `1 + 7*48 + 48 = 385` B (fits FW ≥ 2.0.0 plaintext max 446).
 
 ### Setup (`MANAGE` KEM INIT)
 

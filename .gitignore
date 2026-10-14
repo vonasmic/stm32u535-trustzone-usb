@@ -23,3 +23,25 @@ host/tropic_model/run_logs_manual/
 .model_config_save.yaml
 docs_build/
 .codechecker/
+
+# IDE (CLion / IntelliJ, CubeIDE workspace)
+.idea/
+*.iml
+.vscode/
+.cube_ws/
+**/.settings/language.settings.xml
+
+# Backups / editor leftovers
+*.bak
+*.bak-*
+*.orig
+*~
+
+# Build output
+build/
+cmake-build-*/
+*.o
+*.d
+*.su
+*.map
+*.list

@@ -218,7 +218,7 @@ Host-only (do not exist on silicon):
 | Creds page | Secure flash page 21 | 8 KB RAM |
 | CDC bytes | USBX CDC ACM | PTY `--tty` (lab: `/tmp/ttyACM-se1` / `se2`) |
 | SH0 | prod0 unless `SE_TROPIC_SH0_ENG` | Forced prod0 (`host_libtropic_config.h`) |
-| PIN rounds | silicon default 8 tries / 16 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |
+| PIN rounds | silicon default 7 tries / 14 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |
 
 TLS I/O, console parsing, NSC veneers, and wall-clock floor are the firmware sources. Host wolfSSL still uses the process clock (`TIME_OVERRIDES` is firmware-only).
 

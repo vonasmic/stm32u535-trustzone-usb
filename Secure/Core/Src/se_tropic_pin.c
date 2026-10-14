@@ -133,6 +133,18 @@ static lt_ret_t pin_wrap_key(const uint8_t s1[TR01_MAC_AND_DESTROY_DATA_SIZE],
     return ret;
 }
 
+/** Constant-time equality: 1 when equal. The loop never exits early on a mismatch. */
+static int pin_ct_equal(const uint8_t *a, const uint8_t *b, size_t len)
+{
+    volatile uint8_t diff = 0U;
+    size_t k;
+
+    for (k = 0U; k < len; k++) {
+        diff |= (uint8_t)(a[k] ^ b[k]);
+    }
+    return (diff == 0U) ? 1 : 0;
+}
+
 int se_tropic_pin_ascii_ok(const uint8_t *pin, uint8_t pin_len)
 {
     uint8_t i;
@@ -313,7 +325,7 @@ lt_ret_t se_tropic_pin_check(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
     if (ret != LT_OK) {
         goto exit;
     }
-    if (memcmp(nvm.t, t_, sizeof(t_)) != 0) {
+    if (pin_ct_equal(nvm.t, t_, sizeof(t_)) == 0) {
         ret = LT_FAIL;
         goto exit;
     }
