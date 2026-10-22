@@ -19,6 +19,12 @@ static inline enum lt_mcounter_index_t se_tropic_otp_mcounter(se_nv_otp_dir_t di
                                       : SE_TROPIC_QKD_MCOUNTER_ENCRYPT;
 }
 
+static inline enum lt_mcounter_index_t se_tropic_otp_end_mcounter(se_nv_otp_dir_t dir)
+{
+    return (dir == SE_NV_OTP_DECRYPT) ? SE_TROPIC_QKD_MCOUNTER_END_DECRYPT
+                                      : SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT;
+}
+
 static inline uint16_t se_tropic_otp_half_last(uint16_t this_base, uint16_t other_base)
 {
     if (this_base < other_base) {

@@ -193,6 +193,8 @@ Parsed on the fly by [secure_qkd_ingest.c](../Secure/Core/Src/secure_qkd_ingest.
 - Empty item 0, 1, or 2 is a parse error. `pad_plain` must be 1..this chip's plaintext max.
 - A non-empty pad image whose plaintext length differs from item 2 is refused.
 - Zero-length **pad** items are skipped but still consume the index.
+- Within a half, pads must be contiguous from the half base: each pad must land at that half's end cursor, which then advances. A pad after a hole in the same half fails the ingest (`STORE`). Zero-length items are only useful after the last pad of a half (to reach the next half), which is what `SeKemFill` sends.
+- `FINISH` persists both end cursors (Tropic mcounters 2/3, then MCU NV). Until then, and after an aborted ingest, the fill has 0 usable pads.
 - Payload cap `SECURE_QKD_MAX_BYTES` = 1088 + 1 + 2 + 507×475 = **241 916** bytes (framing not counted).
 - Encrypt, decrypt, and `TROPIC OTP STATUS` use the saved `pad_plain` as the full-pad chunk size. A fill with no saved length fails closed. The chip plaintext max stays a hard ceiling.
 

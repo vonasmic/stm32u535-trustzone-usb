@@ -120,7 +120,7 @@ NonSecure cannot read Secure RAM or those two pages. It can still point `PROVISI
 | SE-T2 | R-MEM slots 0–511 | L3 plus per-slot AEAD | 0–2 `kem_ct`, 3–509 pad blobs, 510 ML-KEM seed, 511 PIN NVM. Blobs are ciphertext. Plaintext still needs the MCU key and, for the seed, the PIN |
 | SE-T3 | ECC slot 0 | L3 | P-256 private key used for the uplink signature |
 | SE-T4 | MAC-and-Destroy slots | Live Tropic + MCU pepper | 7 PIN tries on silicon (14 hardware slots). Each miss destroys a pair. Not an offline hash |
-| SE-T5 | Mcounters 0 and 1 | L3 | Encrypt and decrypt cursors. Mismatch with MCU NV returns `DEVICE_TAMPERED` |
+| SE-T5 | Mcounters 0–3 | L3 | Encrypt and decrypt start cursors (0, 1) and end cursors (2, 3). Mismatch with MCU NV returns `DEVICE_TAMPERED` |
 
 ---
 

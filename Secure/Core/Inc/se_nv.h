@@ -65,6 +65,9 @@ typedef struct {
     uint16_t cursor_decrypt;
     uint16_t base_encrypt;
     uint16_t base_decrypt;
+    /** One past the last written pad per half (write cursor); base = 0 pads. */
+    uint16_t end_encrypt;
+    uint16_t end_decrypt;
     /** SAE-chosen plaintext bytes per pad for this fill; 0 until downlink item 2. */
     uint16_t pad_plain;
     uint32_t time_floor;
@@ -112,7 +115,8 @@ lt_ret_t se_nv_set_pad_plain(uint16_t pad_plain);
 lt_ret_t se_nv_get_pad_plain(uint16_t *pad_plain);
 
 /**
- * Arm both OTP halves: store bases and set both current cursors to those bases.
+ * Arm both OTP halves: store bases and set both current (start) cursors and
+ * both end (write) cursors to those bases, i.e. 0 pads per half.
  * Requires a committed fill.
  */
 lt_ret_t se_nv_arm_otp_cursors(uint16_t base_encrypt, uint16_t base_decrypt);
@@ -122,6 +126,15 @@ lt_ret_t se_nv_get_otp_bases(uint16_t *base_encrypt, uint16_t *base_decrypt);
 
 /** Update one direction's current cursor (must already have fill + armed OTP). */
 lt_ret_t se_nv_set_cursor(se_nv_otp_dir_t dir, uint16_t cursor);
+
+/**
+ * MCU end (write) cursor for @p dir: one past the last written pad.
+ * LT_FAIL when no fill or the OTP halves are not armed.
+ */
+lt_ret_t se_nv_get_otp_end(se_nv_otp_dir_t dir, uint16_t *end);
+
+/** Update both end cursors at once (must already have fill + armed OTP). */
+lt_ret_t se_nv_set_otp_ends(uint16_t end_encrypt, uint16_t end_decrypt);
 
 /** Persist TIME floor (sets SE_NV_FLAG_TIME). Keeps fill fields. */
 lt_ret_t se_nv_set_time_floor(uint32_t unix_utc);

@@ -105,6 +105,7 @@ lt_ret_t se_tropic_OTP_xor_consume(lt_handle_t *h, se_nv_otp_dir_t dir,
     uint16_t plain_max;
     uint32_t raw_slot = 0U;
     uint16_t slot = 0U;
+    uint16_t end = 0U;
     uint16_t i;
     lt_ret_t ret;
 
@@ -123,6 +124,13 @@ lt_ret_t se_tropic_OTP_xor_consume(lt_handle_t *h, se_nv_otp_dir_t dir,
         return ret;
     }
     slot = (uint16_t)raw_slot;
+    ret = se_tropic_qkd_end_get(h, dir, &end);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return ret;
+    }
+    if ((ret != LT_OK) || (slot >= end)) {
+        return SE_TROPIC_LT_OTP_EXHAUSTED;
+    }
 
     ret = se_nv_get_fill_id(fill_id);
     if (ret != LT_OK) {
@@ -194,24 +202,14 @@ uint32_t se_tropic_otp_xor_pads_needed(void)
     return s_otp_xor.open ? s_otp_xor.slots_needed : 0U;
 }
 
-/** decrypt_half=0 layout: decrypt is the first pad half, encrypt the second. */
-static uint32_t otp_unarmed_slots(se_nv_otp_dir_t dir)
-{
-    if (dir == SE_NV_OTP_DECRYPT) {
-        return (uint32_t)SE_TROPIC_PAD_HALF;
-    }
-    return (uint32_t)SE_TROPIC_PAD_COUNT - (uint32_t)SE_TROPIC_PAD_HALF;
-}
-
 lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
                                    uint32_t *left_out, uint32_t *cap_out)
 {
     uint32_t raw_slot = 0U;
     uint16_t half_base = 0U;
     uint16_t half_last = 0U;
+    uint16_t end = 0U;
     uint16_t pad_max;
-    uint32_t slots;
-    uint32_t cap;
     lt_ret_t ret;
 
     if ((h == NULL) || (se_tropic_otp_dir_ok(dir) == 0) || ((left_out == NULL) && (cap_out == NULL))) {
@@ -237,17 +235,19 @@ lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
         return ret;
     }
     if (ret != LT_OK) {
-        cap = otp_unarmed_slots(dir) * (uint32_t)pad_max;
-        if (cap_out != NULL) {
-            *cap_out = cap;
-        }
+        return LT_OK;
+    }
+    ret = se_tropic_qkd_end_get(h, dir, &end);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return ret;
+    }
+    if (ret != LT_OK) {
         return LT_OK;
     }
 
-    slots = (uint32_t)half_last - (uint32_t)half_base + 1U;
-    cap = slots * (uint32_t)pad_max;
+    /* Written by the last fill: base .. end-1. */
     if (cap_out != NULL) {
-        *cap_out = cap;
+        *cap_out = ((uint32_t)end - (uint32_t)half_base) * (uint32_t)pad_max;
     }
     if (left_out == NULL) {
         return LT_OK;
@@ -260,12 +260,11 @@ lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
     if (ret != LT_OK) {
         return LT_OK;
     }
-    if (((uint16_t)raw_slot < half_base) || ((uint16_t)raw_slot > half_last)) {
+    if (((uint16_t)raw_slot < half_base) || ((uint16_t)raw_slot >= end)) {
         return LT_OK;
     }
 
-    slots = (uint32_t)half_last - (uint32_t)raw_slot + 1U;
-    *left_out = slots * (uint32_t)pad_max;
+    *left_out = ((uint32_t)end - raw_slot) * (uint32_t)pad_max;
     return LT_OK;
 }
 
@@ -283,6 +282,7 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
     uint16_t half_last = 0U;
     uint16_t first_slot;
     uint16_t last_slot;
+    uint16_t end = 0U;
     uint32_t slots32;
     lt_ret_t ret;
 
@@ -350,6 +350,17 @@ lt_ret_t se_tropic_otp_xor_open(lt_handle_t *h, const uint8_t *pin, uint8_t pin_
         se_tropic_mlkem_key_close();
         return SE_TROPIC_LT_OTP_EXHAUSTED;
     }
+    /* Only pads the last fill wrote (start .. end-1) are usable. */
+    ret = se_tropic_qkd_end_get(h, dir, &end);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        se_tropic_mlkem_key_close();
+        return ret;
+    }
+    if ((ret != LT_OK) || (first_slot >= end) ||
+        (s_otp_xor.slots_needed > (uint32_t)end - (uint32_t)first_slot)) {
+        se_tropic_mlkem_key_close();
+        return SE_TROPIC_LT_OTP_EXHAUSTED;
+    }
 
     ret = se_tropic_kem_ct_read(h, s_kem_ct);
     if (ret == LT_OK) {
@@ -377,6 +388,7 @@ lt_ret_t se_tropic_otp_xor_pad(lt_handle_t *h, const uint16_t *req_slot, const u
     uint16_t half_last = 0U;
     uint16_t slot;
     uint16_t logical = 0U;
+    uint16_t end = 0U;
     lt_ret_t ret;
 
     if (logical_slot != NULL) {
@@ -423,6 +435,13 @@ lt_ret_t se_tropic_otp_xor_pad(lt_handle_t *h, const uint16_t *req_slot, const u
         }
         if ((target_phys < half_base) || (target_phys > half_last)) {
             return LT_FAIL;
+        }
+        ret = se_tropic_qkd_end_get(h, s_otp_xor.dir, &end);
+        if (ret == SE_TROPIC_LT_TAMPERED) {
+            return ret;
+        }
+        if ((ret != LT_OK) || (target_phys >= end)) {
+            return SE_TROPIC_LT_OTP_EXHAUSTED;
         }
         ret = se_tropic_qkd_cursor_get(h, s_otp_xor.dir, &raw_slot);
         if (ret != LT_OK) {

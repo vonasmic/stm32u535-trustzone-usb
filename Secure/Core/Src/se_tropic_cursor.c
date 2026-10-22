@@ -11,6 +11,10 @@
 
 static uint8_t s_kem_ct[SE_TROPIC_KEM_CT_LEN];
 static uint8_t s_qkd_wiped;
+/* RAM end (write) cursors during ingest; persisted once at FINISH. */
+static uint16_t s_end_encrypt;
+static uint16_t s_end_decrypt;
+static uint8_t s_end_armed;
 
 static void write_kem_ct_storage_binding(uint16_t slot, const uint8_t fill_id[SE_NV_FILL_ID_LEN],
                                       uint8_t binding[34])
@@ -133,6 +137,99 @@ lt_ret_t se_tropic_qkd_arm_halves(lt_handle_t *h, uint8_t decrypt_half)
     if (ret != LT_OK) {
         return ret;
     }
+    ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT, (uint32_t)base_encrypt);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_DECRYPT, (uint32_t)base_decrypt);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    s_end_encrypt = base_encrypt;
+    s_end_decrypt = base_decrypt;
+    s_end_armed = 1U;
+    return LT_OK;
+}
+
+lt_ret_t se_tropic_qkd_ends_persist(lt_handle_t *h)
+{
+    lt_ret_t ret;
+
+    if (h == NULL) {
+        return LT_PARAM_ERR;
+    }
+    if (s_end_armed == 0U) {
+        return LT_FAIL;
+    }
+    /* Tropic first, then MCU NV (power-cut between may look like tamper). */
+    ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT, (uint32_t)s_end_encrypt);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_DECRYPT, (uint32_t)s_end_decrypt);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    /* RAM ends stay armed; only the next arm_halves (new fill) resets them. */
+    return se_nv_set_otp_ends(s_end_encrypt, s_end_decrypt);
+}
+
+lt_ret_t se_tropic_qkd_ends_reset(lt_handle_t *h)
+{
+    lt_ret_t ret;
+
+    s_end_armed = 0U;
+    s_end_encrypt = 0U;
+    s_end_decrypt = 0U;
+    if (h == NULL) {
+        return LT_PARAM_ERR;
+    }
+    /* Matches the zeroed NV end fields after se_nv_clear_except_pairing. */
+    ret = lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT, 0U);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    return lt_mcounter_init(h, SE_TROPIC_QKD_MCOUNTER_END_DECRYPT, 0U);
+}
+
+lt_ret_t se_tropic_qkd_end_get(lt_handle_t *h, se_nv_otp_dir_t dir, uint16_t *end)
+{
+    uint32_t tropic_raw = 0U;
+    uint16_t mcu_end = 0U;
+    uint16_t base = 0U;
+    uint16_t last = 0U;
+    lt_ret_t ret;
+
+    if ((h == NULL) || (end == NULL) || (se_tropic_otp_dir_ok(dir) == 0)) {
+        return LT_PARAM_ERR;
+    }
+
+    ret = se_nv_get_otp_end(dir, &mcu_end);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return ret;
+    }
+    if (ret != LT_OK) {
+        return LT_FAIL;
+    }
+    ret = se_tropic_otp_dir_range(dir, &base, &last);
+    if (ret == SE_TROPIC_LT_TAMPERED) {
+        return ret;
+    }
+    if (ret != LT_OK) {
+        return LT_FAIL;
+    }
+    if ((mcu_end < base) || ((uint32_t)mcu_end > (uint32_t)last + 1U)) {
+        return LT_FAIL;
+    }
+
+    ret = lt_mcounter_get(h, se_tropic_otp_end_mcounter(dir), &tropic_raw);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (tropic_raw != (uint32_t)mcu_end) {
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    *end = mcu_end;
     return LT_OK;
 }
 
@@ -328,6 +425,9 @@ lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image
     lt_ret_t ret;
     uint16_t slot_max;
     uint16_t phys = 0U;
+    uint16_t base_e = 0U;
+    uint16_t last_e = 0U;
+    uint16_t *end;
 
     if ((h == NULL) || (image == NULL) || (image_len == 0u)) {
         return LT_PARAM_ERR;
@@ -345,11 +445,28 @@ lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image
         return LT_FAIL;
     }
 
+    /* Contiguous per half: the pad must land exactly at its half's end cursor. */
+    if (s_end_armed == 0U) {
+        return LT_FAIL;
+    }
+    ret = se_tropic_otp_dir_range(SE_NV_OTP_ENCRYPT, &base_e, &last_e);
+    if (ret != LT_OK) {
+        return LT_FAIL;
+    }
+    end = ((phys >= base_e) && (phys <= last_e)) ? &s_end_encrypt : &s_end_decrypt;
+    if (phys != *end) {
+        return LT_FAIL;
+    }
+
     if (rmem_slot_has_data(h, phys) != 0U) {
         return LT_FAIL;
     }
 
-    return lt_r_mem_data_write(h, phys, image, image_len);
+    ret = lt_r_mem_data_write(h, phys, image, image_len);
+    if (ret == LT_OK) {
+        *end = (uint16_t)(*end + 1U);
+    }
+    return ret;
 }
 lt_ret_t se_tropic_qkd_cursor_skip_one(lt_handle_t *h, se_nv_otp_dir_t dir)
 {

@@ -59,7 +59,12 @@ static lt_ret_t store_pad_slot(lt_handle_t *h, const uint8_t ss[SE_TROPIC_MLKEM_
     if (ret != LT_OK) {
         return ret;
     }
-    return se_tropic_qkd_store(h, slot, image, image_len);
+    ret = se_tropic_qkd_store(h, slot, image, image_len);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    /* Direct store bypasses ingest FINISH: persist the end cursors here. */
+    return se_tropic_qkd_ends_persist(h);
 }
 
 static lt_ret_t write_fill_arm_encrypt_first(lt_handle_t *h, const uint8_t ct[SE_TROPIC_KEM_CT_LEN],

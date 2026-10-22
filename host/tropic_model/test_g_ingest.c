@@ -4,7 +4,8 @@
  *
  * Builds a v3 LV downlink (SAE role), feeds it in small chunks, and checks
  * that FINISH commits the pending fill_id and OTP can consume pad 0. Also
- * covers decrypt skip-ahead and rewind-fail with decrypt_half=0.
+ * covers decrypt skip-ahead and rewind-fail with decrypt_half=0, and that a
+ * hole inside a half is refused (pads must land at the half's end cursor).
  */
 #include "test_harness.h"
 #include "secure_qkd_ingest.h"
@@ -108,17 +109,21 @@ int main(void)
     uint8_t pending_fill[SE_NV_FILL_ID_LEN];
     uint8_t committed_fill[SE_NV_FILL_ID_LEN];
     uint8_t pad0[64];
+    uint8_t pad1[64];
     uint8_t pad2[64];
     uint8_t nonce0[SE_TROPIC_RMEM_NONCE_LEN];
+    uint8_t nonce1[SE_TROPIC_RMEM_NONCE_LEN];
     uint8_t nonce2[SE_TROPIC_RMEM_NONCE_LEN];
     uint8_t image0[SE_TROPIC_RMEM_BLOB_MAX];
+    uint8_t image1[SE_TROPIC_RMEM_BLOB_MAX];
     uint8_t image2[SE_TROPIC_RMEM_BLOB_MAX];
     uint16_t image0_len = sizeof(image0);
+    uint16_t image1_len = sizeof(image1);
     uint16_t image2_len = sizeof(image2);
     uint8_t msg[32];
     uint8_t out[32];
-    /* version + count + kem_ct + half + pad_plain + pad0 + empty + pad2 */
-    uint8_t blob[3u + 3u + SE_TROPIC_KEM_CT_LEN + 4u + 2u * (2u + SE_TROPIC_RMEM_BLOB_MAX) + 2u];
+    /* version + count + kem_ct + half + pad_plain + pad0 + pad1 + pad2 */
+    uint8_t blob[3u + 3u + SE_TROPIC_KEM_CT_LEN + 4u + 3u * (2u + SE_TROPIC_RMEM_BLOB_MAX) + 2u];
     uint8_t bad_blob[64];
     uint32_t blob_len = 0U;
     uint32_t bad_len = 0U;
@@ -186,7 +191,7 @@ int main(void)
     st = feed_chunks(blob, blob_len);
     TEST_ASSERT_EQ(st, SECURE_QKD_PARSE, "mismatched pad image length");
 
-    /* --- Happy path: pending fill_id + LV with hole --- */
+    /* --- Hole inside a half is refused; then the contiguous happy path --- */
     for (i = 0; i < (int)SE_NV_FILL_ID_LEN; i++) {
         pending_fill[i] = (uint8_t)(0x40u + (uint8_t)i);
     }
@@ -197,10 +202,12 @@ int main(void)
 
     for (i = 0; i < (int)sizeof(pad0); i++) {
         pad0[i] = (uint8_t)(0x10u + (uint8_t)i);
+        pad1[i] = (uint8_t)(0x18u + (uint8_t)i);
         pad2[i] = (uint8_t)(0x20u + (uint8_t)i);
     }
     for (i = 0; i < (int)SE_TROPIC_RMEM_NONCE_LEN; i++) {
         nonce0[i] = (uint8_t)(0xA0u + (uint8_t)i);
+        nonce1[i] = (uint8_t)(0xB0u + (uint8_t)i);
         nonce2[i] = (uint8_t)(0xC0u + (uint8_t)i);
     }
 
@@ -212,6 +219,10 @@ int main(void)
     ret = seal_pad_pending(ss, pending_fill, 2u, pad2, (uint16_t)sizeof(pad2), nonce2, image2,
                            &image2_len);
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad logical 2");
+    image1_len = sizeof(image1);
+    ret = seal_pad_pending(ss, pending_fill, 1u, pad1, (uint16_t)sizeof(pad1), nonce1, image1,
+                           &image1_len);
+    TEST_ASSERT_EQ(ret, LT_OK, "seal pad logical 1");
 
     blob_len = 0U;
     secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
@@ -228,11 +239,36 @@ int main(void)
 
     secure_qkd_discard();
     st = feed_chunks(blob, blob_len);
+    TEST_ASSERT_EQ(st, SECURE_QKD_STORE, "hole inside a half refused");
+    {
+        uint32_t left_hole = 1U;
+
+        ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_hole);
+        TEST_ASSERT_EQ(ret, LT_OK, "remaining after aborted fill");
+        TEST_ASSERT_EQ(left_hole, 0U, "aborted fill leaves 0 pads (end not persisted)");
+    }
+
+    se_nv_pending_fill_set(pending_fill);
+    blob_len = 0U;
+    secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
+    secure_lv_put_item(blob, &blob_len, kem_ct, SE_TROPIC_KEM_CT_LEN);
+    {
+        const uint8_t half = 1U;
+
+        secure_lv_put_item(blob, &blob_len, &half, 1u);
+    }
+    lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
+    secure_lv_put_item(blob, &blob_len, image0, image0_len);
+    secure_lv_put_item(blob, &blob_len, image1, image1_len);
+    secure_lv_put_item(blob, &blob_len, image2, image2_len);
+
+    secure_qkd_discard();
+    st = feed_chunks(blob, blob_len);
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "chunked ingest");
     count = 0U;
     st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &count);
     TEST_ASSERT_EQ(st, SECURE_QKD_OK, "FINISH ok");
-    TEST_ASSERT_EQ(count, SE_TROPIC_KEM_CT_LEN + 1u + 2u + image0_len + image2_len,
+    TEST_ASSERT_EQ(count, SE_TROPIC_KEM_CT_LEN + 1u + 2u + image0_len + image1_len + image2_len,
                    "key payload bytes");
 
     TEST_ASSERT(se_nv_have_fill() != 0, "fill committed");
@@ -274,6 +310,10 @@ int main(void)
     ret = seal_pad_pending(ss, pending_fill, 2u, pad2, (uint16_t)sizeof(pad2), nonce2, image2,
                            &image2_len);
     TEST_ASSERT_EQ(ret, LT_OK, "seal pad2 half0");
+    image1_len = sizeof(image1);
+    ret = seal_pad_pending(ss, pending_fill, 1u, pad1, (uint16_t)sizeof(pad1), nonce1, image1,
+                           &image1_len);
+    TEST_ASSERT_EQ(ret, LT_OK, "seal pad1 half0");
 
     blob_len = 0U;
     secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
@@ -285,7 +325,7 @@ int main(void)
     }
     lv_put_pad_plain(blob, &blob_len, (uint16_t)sizeof(pad0));
     secure_lv_put_item(blob, &blob_len, image0, image0_len);
-    secure_lv_put_item(blob, &blob_len, NULL, 0u);
+    secure_lv_put_item(blob, &blob_len, image1, image1_len);
     secure_lv_put_item(blob, &blob_len, image2, image2_len);
 
     secure_qkd_discard();

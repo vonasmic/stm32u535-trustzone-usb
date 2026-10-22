@@ -352,6 +352,9 @@ static int test_long_encrypt(lt_handle_t *h, const uint8_t *pin, uint8_t pin_len
         ret = se_tropic_qkd_store(h, slot, image, image_len);
         TEST_ASSERT_EQ(ret, LT_OK, "store 100 KiB pad");
     }
+    /* Direct store bypasses ingest FINISH: persist the end cursors here. */
+    ret = se_tropic_qkd_ends_persist(h);
+    TEST_ASSERT_EQ(ret, LT_OK, "persist ends 100 KiB");
 
     ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_before);
     TEST_ASSERT_EQ(ret, LT_OK, "remaining before 100 KiB");
@@ -663,6 +666,9 @@ int main(void)
     static uint8_t out2[SE_TROPIC_RMEM_PLAIN_MAX + 16u];
     static uint8_t image_a[SE_TROPIC_RMEM_BLOB_MAX];
     static uint8_t image_b[SE_TROPIC_RMEM_BLOB_MAX];
+    static uint8_t image_c[SE_TROPIC_RMEM_BLOB_MAX];
+    static uint8_t pad_c[32];
+    uint16_t image_c_len = 0U;
     static uint8_t reply2[12u + 2u * SE_TROPIC_RMEM_PLAIN_MAX];
     uint16_t image_a_len;
     uint16_t image_b_len;
@@ -776,13 +782,12 @@ int main(void)
         TEST_ASSERT_EQ(fill_plain, (uint16_t)sizeof(pad0), "stored pad_plain");
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_ENCRYPT, &left_enc);
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after ingest");
-        TEST_ASSERT_EQ(left_enc, (uint32_t)SE_TROPIC_PAD_HALF * (uint32_t)fill_plain,
-                       "encrypt remaining is pads * pad size");
+        /* One pad written into the encrypt half (decrypt_half=1). */
+        TEST_ASSERT_EQ(left_enc, 1U * (uint32_t)fill_plain,
+                       "encrypt remaining is written pads * pad size");
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left_dec);
         TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining after ingest");
-        TEST_ASSERT_EQ(left_dec,
-                       (uint32_t)(SE_TROPIC_PAD_COUNT - SE_TROPIC_PAD_HALF) * (uint32_t)fill_plain,
-                       "decrypt remaining is pads * pad size");
+        TEST_ASSERT_EQ(left_dec, 0U, "decrypt half got no pads");
     }
 
     for (i = 0; i < (int)sizeof(msg); i++) {
@@ -966,6 +971,14 @@ int main(void)
     image_b_len = sizeof(image_b);
     ret = seal_pad_pending(ss, pending_fill, 2u, pad_b, 32u, nonce1, image_b, &image_b_len);
     TEST_ASSERT_EQ(ret, LT_OK, "seal skip pad2");
+    /* Pads must be contiguous per half; pad1 is written and later burned by the skip. */
+    for (i = 0; i < 32; i++) {
+        pad_c[i] = (uint8_t)(0xC0u + (uint8_t)i);
+    }
+    nonce1[0] ^= 0x5Au;
+    image_c_len = sizeof(image_c);
+    ret = seal_pad_pending(ss, pending_fill, 1u, pad_c, 32u, nonce1, image_c, &image_c_len);
+    TEST_ASSERT_EQ(ret, LT_OK, "seal skip pad1");
 
     blob_len = 0U;
     secure_lv_put_header(blob, &blob_len, (uint8_t)SECURE_LV_DOWNLINK_VERSION, 6u);
@@ -977,7 +990,7 @@ int main(void)
     }
     lv_put_pad_plain(blob, &blob_len, 32u);
     secure_lv_put_item(blob, &blob_len, image_a, image_a_len);
-    secure_lv_put_item(blob, &blob_len, NULL, 0u);
+    secure_lv_put_item(blob, &blob_len, image_c, image_c_len);
     secure_lv_put_item(blob, &blob_len, image_b, image_b_len);
     TEST_ASSERT(blob_len <= (uint32_t)sizeof(blob), "skip LV fits");
 
@@ -1105,11 +1118,10 @@ int main(void)
         TEST_ASSERT_EQ(ret, LT_OK, "encrypt remaining after 100 KiB refuse");
         TEST_ASSERT_EQ(left, (uint32_t)pmax, "refuse left the last pad");
 
-        TEST_ASSERT(advance_until_one_pad(h, SE_NV_OTP_DECRYPT, (uint32_t)pmax) == 0,
-                    "decrypt one pad left");
+        /* The single pad went to the encrypt half; the decrypt half is empty. */
         ret = se_tropic_otp_bytes_remaining(h, SE_NV_OTP_DECRYPT, &left);
-        TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining one pad");
-        TEST_ASSERT_EQ(left, (uint32_t)pmax, "decrypt almost empty");
+        TEST_ASSERT_EQ(ret, LT_OK, "decrypt remaining empty half");
+        TEST_ASSERT_EQ(left, 0U, "decrypt half empty");
         {
             uint8_t req[1u + 8u + 4u];
             uint8_t err_reply[8];

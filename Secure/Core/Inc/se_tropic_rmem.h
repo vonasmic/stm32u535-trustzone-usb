@@ -65,6 +65,16 @@ extern "C" {
 #define SE_TROPIC_QKD_MCOUNTER_DECRYPT TR01_MCOUNTER_INDEX_1
 #endif
 
+/** Tropic mcounter: encrypt end (write) cursor, mirrored like the start cursor. */
+#ifndef SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT
+#define SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT TR01_MCOUNTER_INDEX_2
+#endif
+
+/** Tropic mcounter: decrypt end (write) cursor. */
+#ifndef SE_TROPIC_QKD_MCOUNTER_END_DECRYPT
+#define SE_TROPIC_QKD_MCOUNTER_END_DECRYPT TR01_MCOUNTER_INDEX_3
+#endif
+
 /** Mcounter value meaning cursor is unset or exhausted (not a keystream slot). */
 #define SE_TROPIC_QKD_CURSOR_END TR01_MCOUNTER_VALUE_MAX
 
@@ -209,7 +219,9 @@ void se_tropic_qkd_set_wiped(uint8_t wiped);
 lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h);
 
 /**
- * Split the pad pool 50/50 and arm both Tropic mcounters plus MCU NV cursors.
+ * Split the pad pool 50/50 and arm the start and end cursors of both halves
+ * at their bases (0 pads): MCU NV plus Tropic mcounters 0/1 (start) and 2/3
+ * (end). Also arms the RAM end cursors that se_tropic_qkd_store advances.
  * @p decrypt_half 0 = first half decrypt / second encrypt; 1 = swapped.
  */
 lt_ret_t se_tropic_qkd_arm_halves(lt_handle_t *h, uint8_t decrypt_half);
@@ -217,10 +229,29 @@ lt_ret_t se_tropic_qkd_arm_halves(lt_handle_t *h, uint8_t decrypt_half);
 /**
  * Store one finished slot image into an empty pad (no device-side
  * re-encryption). @p slot is the SAE index (0 = first pad). Requires a
- * committed fill in MCU NV; does not wipe. Refuses rewrite of an occupied slot.
+ * committed fill in MCU NV and armed halves; does not wipe. The pad must land
+ * exactly at its half's RAM end cursor, which then advances by one. Refuses
+ * rewrite of an occupied slot.
  */
 lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image,
                              uint16_t image_len);
+
+/**
+ * Persist both RAM end cursors (Tropic end mcounter first, then MCU NV, the
+ * same order as a start-cursor advance). Called once at ingest FINISH.
+ * LT_FAIL when the halves were not armed in this session.
+ */
+lt_ret_t se_tropic_qkd_ends_persist(lt_handle_t *h);
+
+/** Reset both end mcounters to 0 and drop the RAM end cursors (user wipe). */
+lt_ret_t se_tropic_qkd_ends_reset(lt_handle_t *h);
+
+/**
+ * End (write) cursor for @p dir: one past the last written pad. MCU NV is
+ * authoritative; the Tropic end mcounter must match or SE_TROPIC_LT_TAMPERED
+ * is returned. LT_FAIL when OTP is not armed or the value is out of range.
+ */
+lt_ret_t se_tropic_qkd_end_get(lt_handle_t *h, se_nv_otp_dir_t dir, uint16_t *end);
 
 /* ---- kem_ct header --------------------------------------------------- */
 
@@ -283,11 +314,11 @@ uint32_t se_tropic_otp_xor_bytes_left(void);
 uint32_t se_tropic_otp_xor_pads_needed(void);
 
 /**
- * Remaining and half-capacity keystream bytes for @p dir. Unused pads in that
- * half times the fill's stored plaintext length. Unprovisioned OTP or a fill
- * with no stored length reports remaining 0 and cap 0. Exhausted cursor
- * reports 0 left. Does not need PIN. Either @p left_out or @p cap_out may be
- * NULL.
+ * Remaining and written keystream bytes for @p dir: (end - start) pads and
+ * (end - base) pads of that half, times the fill's stored plaintext length.
+ * Unprovisioned OTP or a fill with no stored length reports 0 and 0.
+ * Exhausted cursor reports 0 left. Does not need PIN. Either @p left_out or
+ * @p cap_out may be NULL.
  */
 lt_ret_t se_tropic_otp_bytes_quota(lt_handle_t *h, se_nv_otp_dir_t dir,
                                    uint32_t *left_out, uint32_t *cap_out);

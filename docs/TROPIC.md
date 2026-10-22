@@ -45,15 +45,22 @@ Overhead **29** bytes. Max slot **475** B (FW ≥ 2.0.0) → plaintext max **446
 | ECC P-256 | `TR01_ECC_SLOT_0` | Session uplink signature |
 | Pairing X25519 | 0 = factory **SH0**; **1–3** = host | L3 session keys |
 | MAC-and-Destroy | hardware slots `0 .. 2*PIN_ROUNDS-1` | PIN attempt budget (chip has 128; this firmware uses 14 slots / 7 tries) |
-| Mcounters | index 0 = encrypt cursor, index 1 = decrypt | Mirror of MCU OTP pointers |
+| Mcounters | index 0 = encrypt start cursor, 1 = decrypt start cursor, 2 = encrypt end cursor, 3 = decrypt end cursor | Mirror of the MCU OTP pointers |
 
 ---
 
 ## OTP cursors (slot pointers)
 
-MCU NV is the **source of truth**. Tropic mcounters **mirror** the two physical pad pointers. They are not a second copy of the NV page.
+MCU NV is the **source of truth**. Tropic mcounters **mirror** the physical pad pointers. They are not a second copy of the NV page.
 
-On consume, firmware reads MCU cursor and Tropic mcounter. **Mismatch → `DEVICE_TAMPERED`**.
+Each half has two pointers:
+
+- **start** (`cursor_*`, mcounters 0/1): the next pad to use. Advanced on every consume.
+- **end** (`end_*`, mcounters 2/3): one past the last pad the last fill wrote. Usable pads are `[start, end)`; `end − start` is what is left.
+
+Both are mirrored the same way (mcounter value = physical slot index) and checked the same way: on every use firmware reads the MCU value and the Tropic mcounter. **Mismatch → `DEVICE_TAMPERED`**.
+
+End cursors during `PROVISION`: item 1 (`decrypt_half`) arms both halves with start = end = base (NV and mcounters 0–3). Each stored pad must land exactly at its half's end cursor, which then advances in RAM (no holes inside a half; a pad elsewhere fails the ingest). `FINISH` persists both ends once: Tropic mcounters 2/3 first, then MCU NV (same order as a start-cursor advance). An aborted fill leaves end = start = base, i.e. 0 pads. `OWNER REPLACE` sets mcounters 2/3 to 0 and its NV clear zeroes the NV ends (no fill → 0 pads).
 
 ### Halves (`decrypt_half` from downlink item 1)
 
@@ -62,7 +69,7 @@ On consume, firmware reads MCU cursor and Tropic mcounter. **Mismatch → `DEVIC
 | 0 | 3 (logical 0–252) | 256 (logical 253–506) |
 | 1 | 256 | 3 |
 
-Each direction stays inside `[base, last]` (`last` is the other base − 1, or 509). Crossing halves is refused.
+Each direction stays inside `[base, end)`, and `end` is at most `last + 1` (`last` is the other base − 1, or 509). Crossing halves is refused.
 
 ### Consume order (erase-before-reuse)
 
@@ -79,7 +86,8 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 - Decrypt **rewind** (`target < cursor`) is refused.
 - Decrypt **skip-ahead**: intermediate pads are burned (`erase + advance`, no XOR).
-- Exhausted: Tropic mcounter `0xFFFFFFFE`; MCU cursor **510** (not a keystream slot). TLS replies with `SECURE_OTP_ERR_EXHAUSTED`. `TROPIC OTP STATUS` prints remaining/capacity kilobytes per half (`enc=A/B kb dec=C/D kb`). No fill yet is `0/capacity`, not an error.
+- Exhausted: start = end (all pads the last fill wrote are used, or the request needs more than `end − start`), or the half's last slot was consumed (Tropic mcounter `0xFFFFFFFE`, MCU cursor **510**). Open refuses before any pad is burned and TLS replies with `SECURE_OTP_ERR_EXHAUSTED` (1), never the generic 255. A decrypt target at or past `end` is refused the same way.
+- `TROPIC OTP STATUS` prints per half `enc=A/B B dec=C/D B`: A = bytes left ((end − start) × `pad_plain`), B = bytes written by the last fill ((end − base) × `pad_plain`). No fill, unarmed halves or no saved `pad_plain` is `0/0`, not an error.
 
 ---
 
@@ -87,7 +95,7 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 Plaintext record on Secure flash **page 22** (`0x0C02C000`). The page is **8 KB** (same size in the host RAM model). Bytes `[0,32)` are generate-once `secure_dwk` (Tropic AEAD / PIN pepper / pw hash only — **not** an NV seal). The record starts at offset 32 (`SE_NV_REC_OFF`).
 
-Magic `SENV` (`0x53454E56`) + version **8**. Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Sealed v3–v7 blobs are **not** migrated; re-enroll. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
+Magic `SENV` (`0x53454E56`) + version **9** (v9 added the two end cursors after `pad_plain` and shifted every later field by 4 bytes). Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Older records (v3–v8) are **not** migrated: after flashing v9 firmware over a v8 record every NV read returns `DEVICE_TAMPERED`, so erase the flash (the normal mass-erase download blanks page 22) and set the device up again from scratch. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
 
 Reads copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. Writes erase the whole 8 KB page (RMW work buffer, then `ForceZero`).
 
@@ -99,6 +107,7 @@ Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER
 | `cursor_encrypt` / `cursor_decrypt` | u16 × 2 | Current physical pad index |
 | `base_encrypt` / `base_decrypt` | u16 × 2 | Half starts |
 | `pad_plain` | u16 | SAE-chosen plaintext bytes per pad for this fill; 0 until downlink item 2 |
+| `end_encrypt` / `end_decrypt` | u16 × 2 | One past the last written physical pad per half (base = 0 pads); persisted at `FINISH` |
 | `time_floor` | u32 | Monotonic Unix floor for wolfSSL |
 | `flags` | u32 | `FILL`, `TIME`, `PAIRING`, `OTP` |
 | `pairing_slot` | 1 B | Tropic pairing slot 1–3 |

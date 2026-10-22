@@ -96,7 +96,7 @@ TLS arm failure: type `0x00` line `failed` (no Tropic/TLS/auth taxonomy).
 
 ## MANAGE commands
 
-Not USB lines. `HELP` prints only `MANAGE <unix>`. After that arms TLS mode **4**, the owner peer sends **one** request from the framing above, the device replies, and TLS shuts down. Codec: [se_manage.h](../Secure/Core/Inc/se_manage.h) and Java `fel.cvut.se.SeManage`. UserApp sends these from `INIT LAB` / `INIT PROD` / `PEER` / `INSERT SIGNED CSR` / `REPLACE` ([UserApp README](../../JAVA_APPS/src/UserApp/README.md)); a raw `MANAGE` line at that prompt is refused.
+Not USB lines. `HELP` prints only `MANAGE <unix>`. After that arms TLS mode **4**, the owner peer sends **one** request from the framing above, the device replies, and TLS shuts down. Codec: [se_manage.h](../Secure/Core/Inc/se_manage.h) and Java `fel.cvut.se.SeManage`. UserApp sends these from `INIT LAB` / `INIT PROD` / `PEER` / `INSERT SIGNED CSR` / `REPLACE` ([UserApp README](../../JAVA_APPS/modules/user-app/README.md)); a raw `MANAGE` line at that prompt is refused.
 
 Tropic PIN is only cmd 1 (KEM INIT): **8–16** printable ASCII (`0x20–0x7E`). A missing or ill-formed PIN is status **11** (`PIN required` / `bad PIN`) before Tropic runs. Every other command rejects a non-zero PIN length (`bad KEYGEN`, `bad PEER ADD`, `bad PAIRING`, …).
 
@@ -125,7 +125,7 @@ Unknown `cmd` is status **10**, `bad command`. A non-empty body on KEM INIT or K
 | PEER REMOVE       | Delete by nickname.                                                                                                                                                                                | **7** `PEER not found`. **11** `bad PEER REMOVE`.                                              |
 | CREDS SAE         | Store the SAE CA DER in FLASH_CREDS.                                                                                                                                                               | **11** `bad CREDS SAE`. **1** `CREDS SAE failed`.                                              |
 | INSERT SIGNED CSR | Cert DER only. Requires the on-chip device SK. The leaf must match the on-chip ML-DSA public key.                                                                                                  | **4** `no device key`. **11** `bad INSERT SIGNED CSR`. **1** `INSERT SIGNED CSR failed`.       |
-| OWNER REPLACE     | Reset password (not the Tropic PIN): **8–64** printable ASCII, same hash as [PIN / owner policy](#pin--owner-policy). Replaces the enrolled owner SPKI.                                            | Wrong current password: **12** `OWNER REPLACE failed`. **11** `bad OWNER REPLACE`.             |
+| OWNER REPLACE     | **Resets the chip contents.** Needs the current reset password (not the Tropic PIN): **8–64** printable ASCII, same hash as [PIN / owner policy](#pin--owner-policy). Then erases every TROPIC01 user-data slot 0–511 (pads, ML-KEM seed, PIN data), the Tropic ECC key, the device ML-DSA key and device cert, the SAE CA, and the MCU NV record (ML-KEM pk, peers, pad cursors), keeping only the pairing key; finally installs the new password + owner SPKI. Afterwards the chip is like a fresh one with an owner: `OWNER SET` is accepted again (it keeps this owner and regenerates the device key), and INIT LAB / INIT PROD can run. Nothing irreversible (no pairing invalidation). | Wrong current password: **12** `OWNER REPLACE failed`. **11** `bad OWNER REPLACE`.             |
 | PAIRING           | X25519 into pairing slot 1–3. The private key is stored in MCU NV and returned once in the MANAGE reply (UserApp writes `pairing-key.hex`, does not print it). On silicon, factory SH0 invalidation is irreversible. An occupied slot is refused. | **3** `slot occupied`. **11** `bad PAIRING`. **1** `PAIRING failed`. |
 | PAIRING LOAD      | Restore a previously exported host pairing key into MCU NV (no Tropic write). Refused if NV already has a pairing key. After a reflash: `OWNER SET`, then this command. Restores L3 only; pads and device identity stay lost. | **11** `bad PAIRING LOAD`. **1** `pairing present` / `PAIRING LOAD failed`. |
 
@@ -200,7 +200,7 @@ PEER ADD/REMOVE use MANAGE TLS application data, not the ASCII line. Bodies are 
 | `TROPIC INFO`       | —          | Chip ID / FW ASCII (success only)                      |
 | `TROPIC PUB`        | —          | Hex P-256 pub, or `empty`                              |
 | `TROPIC KEM PUB`    | —          | Hex NV ML-KEM pk, or `empty`                           |
-| `TROPIC OTP STATUS` | —          | `enc=A/B kb dec=C/D kb`. Remaining and capacity use the saved fill plaintext length. No saved length is `0/0` |
+| `TROPIC OTP STATUS` | —          | `enc=A/B B dec=C/D B` (bytes) per half: **A** = bytes left, (end − start cursor) × fill plaintext length; **B** = bytes the last fill wrote into that half, (end − base) × fill plaintext length. A half with A = 0 answers ENCRYPT/DECRYPT with OTP error **1** (`EXHAUSTED`). No fill, unarmed halves or no saved length is `0/0` |
 | `TROPIC PAD LEN`    | —          | Decimal chip plaintext pad ceiling (`slot size − 29`) |
 
 

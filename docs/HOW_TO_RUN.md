@@ -189,7 +189,7 @@ MANAGE <unix>       # USER
 | `MANAGE`    | USER | Unsigned enroll / peer / creds / owner-replace command. PIN only on KEM INIT.                                                             |
 
 
-Pads are one-shot. When a half is exhausted, ENCRYPT/DECRYPT reply with OTP error code **1** (`EXHAUSTED`) until a new `PROVISION`. Cursor mismatch or fill_id mismatch returns `DEVICE_TAMPERED`.
+Pads are one-shot. When a half is exhausted (every pad the last fill wrote into it is used, which after a partial fill can be well before the half's last slot), ENCRYPT/DECRYPT reply with OTP error code **1** (`EXHAUSTED`) until a new `PROVISION`. `TROPIC OTP STATUS` shows the bytes left and written per half. Cursor mismatch or fill_id mismatch returns `DEVICE_TAMPERED`.
 
 Disconnect, DTR off, TLS error, or session end returns to command mode.
 

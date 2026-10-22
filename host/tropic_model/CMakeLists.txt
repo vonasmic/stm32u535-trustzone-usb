@@ -187,6 +187,7 @@ add_model_test(test_h_pairing test_h_pairing.c)
 add_model_test(test_i_post_tls test_i_post_tls.c)
 add_model_test(test_j_peers   test_j_peers.c)
 add_model_test(test_k_owner   test_k_owner.c)
+add_model_test(test_l_end_cursor test_l_end_cursor.c)
 add_model_test(brick_lab      brick_lab.c)
 
 # Device process: firmware USB/TLS over a PTY (not a CTest).

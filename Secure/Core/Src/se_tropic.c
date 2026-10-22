@@ -558,6 +558,12 @@ uint32_t se_tropic_user_wipe(void)
     for (slot = 0U; slot <= (uint16_t)TR01_R_MEM_DATA_SLOT_MAX; slot++) {
         (void)lt_r_mem_data_erase(&s_lt, slot);
     }
+    /* End (write) cursors back to 0 pads; NV ends are zeroed by the NV clear. */
+    ret = se_tropic_qkd_ends_reset(&s_lt);
+    if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
+        return SE_TROPIC_ERR;
+    }
     if (se_tropic_slot_occupied() != 0U) {
         ret = lt_ecc_key_erase(&s_lt, SE_TROPIC_ECC_SLOT);
         if (ret != LT_OK) {

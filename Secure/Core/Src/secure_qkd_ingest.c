@@ -9,6 +9,8 @@
  * Item 2: pad_plain (u16 LE) -> se_nv_set_pad_plain
  * Items 3..N: finished pad images -> se_tropic_qkd_store(logical = i-3)
  * Zero-length pads are skipped (positional); empty item 0, 1, or 2 is a parse error.
+ * Pads must be contiguous from each half's base (each advances that half's
+ * end cursor in RAM); FINISH persists both end cursors once.
  */
 #include "secure_qkd_ingest.h"
 #include "se_tropic.h"
@@ -352,6 +354,16 @@ static uint32_t qkd_finish(uint32_t *bytesOut)
 
     key_bytes = s_key_bytes;
     qkd_wipe();
+    {
+        lt_handle_t *h = NULL;
+
+        if (se_tropic_init_session() == SE_TROPIC_OK) {
+            h = se_tropic_handle();
+        }
+        if ((h == NULL) || (se_tropic_qkd_ends_persist(h) != LT_OK)) {
+            return SECURE_QKD_STORE;
+        }
+    }
     *bytesOut = key_bytes;
     return SECURE_QKD_OK;
 }

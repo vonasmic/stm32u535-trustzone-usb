@@ -338,7 +338,7 @@ static void cmd_tropic_otp_left(char *args)
         usb_failed();
         return;
     }
-    (void)snprintf(line, sizeof(line), "enc=%lu/%lu kb dec=%lu/%lu kb",
+    (void)snprintf(line, sizeof(line), "enc=%lu/%lu B dec=%lu/%lu B",
                    (unsigned long)q[0], (unsigned long)q[1],
                    (unsigned long)q[2], (unsigned long)q[3]);
     ns_log(line);

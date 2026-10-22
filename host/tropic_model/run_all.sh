@@ -9,7 +9,7 @@ BUILD_DIR="$SCRIPT_DIR/build"
 TESTS=(
   test_a_session test_b_ecc test_c_rmem test_d_pin test_e_mcounter
   test_f_mlkem test_g_ingest test_h_pairing test_i_post_tls test_j_peers
-  test_k_owner brick_lab
+  test_k_owner test_l_end_cursor brick_lab
 )
 
 # Kill leftovers without killing this script
