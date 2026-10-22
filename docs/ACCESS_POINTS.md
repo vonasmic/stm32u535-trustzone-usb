@@ -87,7 +87,7 @@ One request per session: `u8 cmd | u8 pin_len | pin | u16le body_len | body`. PI
 
 | Cmd | Name | What an accepted call changes | Review |
 | --- | --- | --- | --- |
-| 1 | KEM INIT | PIN setup (8 silicon tries), ML-KEM seed in R-MEM 510, public key in NV. PIN is on this TLS channel | **High** |
+| 1 | KEM INIT | PIN setup (7 silicon tries, 4 in the host model), ML-KEM seed in R-MEM 510, public key in NV. PIN is on this TLS channel | **High** |
 | 2 | KEYGEN | P-256 key in Tropic ECC slot 0 (generate, or replace if occupied) | **High.** Uplink signatures |
 | 3 | PEER ADD | Nickname + SPKI hash + pad length in NV (max 8) | Medium |
 | 4 | PEER REMOVE | Deletes that peer | Medium |
@@ -158,7 +158,7 @@ Copy this and mark each row when the review is done.
 | SE-L2 | What does one MANAGE session change, and is the PIN only on KEM INIT? |
 | SE-N1 | If NonSecure is replaced, which NSC calls does it gain, and which keys does it still not see? |
 | SE-T1 | Is factory SH0 still valid on the chip under test? |
-| SE-T4 | Is the live PIN budget still 8, and can tries be made without the MCU? |
+| SE-T4 | Is the live PIN budget still 7 on silicon (`SE_TROPIC_PIN_ROUNDS`; 4 in the host model), and can tries be made without the MCU? |
 | SAE-1 | Who else can open the CDC port while SaeNode is running? |
 | SAE-2 | Does the SAE leaf chain to the CA currently on flash page 21? |
 | SAE-3 | Is pad plaintext present on the SAE host, and who can read it there? |

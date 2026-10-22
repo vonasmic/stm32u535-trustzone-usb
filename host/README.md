@@ -205,7 +205,7 @@ After mTLS:
 
 Shared Secure + NonSecure sources (linked into `se_host`):
 
-`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_aead.c`, `se_tropic_cursor.c`, `se_tropic_otp_xor.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `se_creds.c`, `se_owner.c`, `se_auth.c`, `se_manage.c`, `se_cert_spki.c`, `se_tls_user.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
+`se_tropic.c`, `se_tropic_pin.c`, `se_tropic_aead.c`, `se_tropic_cursor.c`, `se_tropic_otp_xor.c`, `se_tropic_mlkem.c`, `se_tropic_session.c`, `se_nv.c`, `se_nv_peer.c`, `se_ram.c`, `se_xmallo.c`, `se_device_id.c`, `se_creds.c`, `se_owner.c`, `se_auth.c`, `se_manage.c`, `se_cert_spki.c`, `se_tls_user.c`, `secure_qkd_ingest.c`, `secure_otp.c`, `secure_client_key.c`, `se_usb_tls.c`, `se_tls_client.c`, `se_tls_nsc_callable.c`, `wc_port_time.c`, `tls_usb_io.c`.
 
 Host-only (do not exist on silicon):
 
@@ -220,7 +220,7 @@ Host-only (do not exist on silicon):
 | SH0 | prod0 unless `SE_TROPIC_SH0_ENG` | Forced prod0 (`host_libtropic_config.h`) |
 | PIN rounds | silicon default 7 tries / 14 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |
 
-TLS I/O, console parsing, NSC veneers, and wall-clock floor are the firmware sources. Host wolfSSL still uses the process clock (`TIME_OVERRIDES` is firmware-only).
+TLS I/O, console parsing, NSC veneers, and wall-clock floor are the firmware sources. Host wolfSSL uses the process clock (`TIME_OVERRIDES` is firmware-only).
 
 TLS certs/keys/CA come from NV + FLASH_CREDS after unsigned `OWNER SET` / MANAGE CREDS. Provision uplink peers are runtime NV (MANAGE PEER ADD/REMOVE, USB LIST). ENCRYPT/DECRYPT are mTLS and pin the peer to the enrolled owner key. MANAGE is owner-pinned TLS without a device client cert. There is no client CA in firmware.
 

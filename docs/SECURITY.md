@@ -14,7 +14,7 @@ Assume a **cryptanalytically relevant quantum computer** plus ordinary physical/
 - **Not** break **ML-KEM-768**, **ML-DSA-44**, or AES-256-GCM / SHA-384 used as specified here.
 - Read buses (USB, SPI), dump Tropic R-MEM, dump MCU flash if they get SWD / a firmware image, and talk to the CDC console.
 
-They cannot skip **PIN + M&D** (8 live attempts on silicon; each miss burns two M&D slots).
+They cannot skip **PIN + M&D** (7 live attempts on silicon, 4 in the host model; each miss burns two M&D slots).
 
 ---
 
@@ -60,7 +60,7 @@ This document analyses **protocol, TrustZone layout, Tropic binding, and PQ algo
 | Tropic L3 session       | X25519                         | **no**                               |
 |                         |                                |                                      |
 | R-MEM blobs at rest     | AES-256-GCM                    | yes (key secrecy is the issue)       |
-| PIN / M&D               | HMAC-SHA384 (MCU KDF, 512-bit key) + KMAC M&D (chip) | **yes** at the MAC (NIST 192-bit SHA-384); online guess limit is still 8 silicon tries (16 M&D slots) |
+| PIN / M&D               | HMAC-SHA384 (MCU KDF, 512-bit key) + KMAC M&D (chip) | **yes** at the MAC (NIST 192-bit SHA-384); online guess limit is still 7 silicon tries (14 M&D slots) |
 | Factory SH0 in firmware | X25519 (prod0 by default) | **no**                               |
 
 
@@ -187,7 +187,7 @@ The device is a TLS client. **SAE** is the peer for `PROVISION` only. **USER**
 | FLASH_CREDS page 21      | SAE CA, device cert                                                             |
 
 
-A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation. Pads still need the PIN (8 M&D tries on silicon, two hardware slots each). This tree does not put `secure_dwk` in a hardware unique key.
+A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation. Pads still need the PIN (7 M&D tries on silicon, two hardware slots each). This tree does not put `secure_dwk` in a hardware unique key.
 
 ### 7. PIN and MAC-and-Destroy
 
@@ -203,7 +203,7 @@ A PQ attacker who dumps the MCU does **not** need quantum for TLS impersonation.
 
 **Residual:**
 
-- Entropy is small; M&D is the only throttle. 8 guesses of a 4-digit PIN is not enough if the PIN is weak **and** the attacker can run checks (they need live Tropic + MCU). HMAC-SHA384 does not add PIN entropy; a PQ break of Tropic L3 can still observe M&D outputs on the wire.
+- The PIN is 8–16 printable ASCII characters (`0x20–0x7E`; `se_tropic_pin_ascii_ok`, UserApp `SeManage.pinOk`). Its entropy is whatever the user chooses, and M&D is the only throttle. A random 8-character PIN has about 52 bits, so 7 online guesses (4 in the host model) succeed only against a guessable PIN (a word, a date, a reused password), and only for an attacker who can run checks on the live Tropic + MCU. HMAC-SHA384 does not add PIN entropy; a PQ break of Tropic L3 can still observe M&D outputs on the wire.
 - Correct PIN on TLS is visible to USER (encrypt / decrypt / KEM INIT), not to SAE.
 - Changing `secure_dwk` (new firmware blob) invalidates PIN NVM — re-run `KEM INIT` (slot 510 must be empty, so this is a brick unless you wipe Tropic).
 
