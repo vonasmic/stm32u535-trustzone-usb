@@ -42,6 +42,15 @@ _sstack = _estack - _Min_Stack_Size;
 _Min_Heap_Size = 0x200;	/* TLS 1.3 + ML-KEM heap */
 _Min_Stack_Size = 0x2000;	/* TLS + NSC + libtropic session (~3 KB); _sbrk stops the heap here */
 
+/* Reset_Handler zeroes these ranges before SystemInit: all Secure RAM
+ * (SRAM1 + Secure SRAM2, stack included) and all of SRAM4. */
+_swipe_ram   = ORIGIN(RAM);
+_ewipe_ram   = ORIGIN(RAM) + LENGTH(RAM);
+_swipe_sram4 = ORIGIN(SRAM4);
+_ewipe_sram4 = ORIGIN(SRAM4) + LENGTH(SRAM4);
+ASSERT(((_ewipe_ram - _swipe_ram) % 16) == 0, "RAM wipe range must be a multiple of 16 bytes")
+ASSERT(((_ewipe_sram4 - _swipe_sram4) % 16) == 0, "SRAM4 wipe range must be a multiple of 16 bytes")
+
 /* Memories definition */
 MEMORY
 {
@@ -170,7 +179,7 @@ SECTIONS
   } >RAM
 
   /* Static buffers that do not fit on the TLS stack (SE_SRAM4_BSS).
-   * NOLOAD: se_sram4_bss_init() zeros _ssram4.._esram4 before use. */
+   * NOLOAD: Reset_Handler zeroes all of SRAM4 (_swipe_sram4.._ewipe_sram4). */
   .sram4_bss (NOLOAD) :
   {
     . = ALIGN(16);

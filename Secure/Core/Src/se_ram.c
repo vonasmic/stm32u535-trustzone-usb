@@ -19,18 +19,6 @@ static uint8_t s_der_scratch[SE_DER_SCRATCH_SIZE] SE_SRAM4_BSS;
 static uint8_t s_nv_page[SE_NV_PAGE_SIZE] SE_SRAM4_BSS;
 static uint8_t s_nv_page_held;
 
-void se_sram4_bss_init(void)
-{
-    extern uint8_t _ssram4;
-    extern uint8_t _esram4;
-    uintptr_t start = (uintptr_t)&_ssram4;
-    uintptr_t end = (uintptr_t)&_esram4;
-
-    if (end > start) {
-        (void)memset((void *)start, 0, (size_t)(end - start));
-    }
-}
-
 volatile uint32_t se_heap_used;
 volatile uint32_t se_heap_free;
 

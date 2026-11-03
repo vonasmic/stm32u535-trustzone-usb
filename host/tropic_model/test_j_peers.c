@@ -10,6 +10,7 @@
 #include "se_le.h"
 #include "se_nv.h"
 #include "se_tropic.h"
+#include "se_tropic_rmem.h"
 #include "se_tropic_session.h"
 #include "secure_lv.h"
 #include <string.h>
@@ -240,6 +241,15 @@ int main(void)
 
     st = se_tropic_init_session();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "init_session");
+    /* Arm Tropic cursors and ends like se_tropic_qkd_arm_halves: NV commits check them. */
+    TEST_ASSERT_EQ(lt_mcounter_init(se_tropic_handle(), SE_TROPIC_QKD_MCOUNTER_ENCRYPT, 0U), LT_OK,
+                   "arm tropic encrypt cursor");
+    TEST_ASSERT_EQ(lt_mcounter_init(se_tropic_handle(), SE_TROPIC_QKD_MCOUNTER_DECRYPT, 253U), LT_OK,
+                   "arm tropic decrypt cursor");
+    TEST_ASSERT_EQ(lt_mcounter_init(se_tropic_handle(), SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT, 0U),
+                   LT_OK, "arm tropic encrypt end");
+    TEST_ASSERT_EQ(lt_mcounter_init(se_tropic_handle(), SE_TROPIC_QKD_MCOUNTER_END_DECRYPT, 253U),
+                   LT_OK, "arm tropic decrypt end");
     st = se_tropic_keygen();
     TEST_ASSERT_EQ(st, SE_TROPIC_OK, "keygen");
     TEST_ASSERT_EQ(se_creds_set_device_cert(k_dummy_cert, (uint16_t)sizeof(k_dummy_cert)), LT_OK,

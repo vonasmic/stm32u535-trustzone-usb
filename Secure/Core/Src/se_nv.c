@@ -10,6 +10,7 @@
 #include "se_nv_internal.h"
 #include "se_le.h"
 #include "se_tropic_port.h"
+#include "se_tropic_rmem.h"
 #include "se_ram.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
@@ -229,11 +230,240 @@ static lt_ret_t unpack_ops(const uint8_t *ops, se_nv_state_t *out)
     return LT_OK;
 }
 
+/* Tail after the reserved record. 16-byte program units. One provision is
+ * 48 + 16 + 16 + 16 = 96 bytes, and 848 / 96 = 8 with no room for a ninth. */
+#define SE_NV_LOG_OFF      (((SE_NV_REC_END + 15u) / 16u) * 16u)
+#define SE_NV_LOG_FILL_LEN 48u
+#define SE_NV_LOG_STEP_LEN 16u
+#define SE_NV_LOG_FILL     0x01u
+#define SE_NV_LOG_ARM      0x02u
+#define SE_NV_LOG_PAD      0x03u
+#define SE_NV_LOG_ENDS     0x04u
+
+#if (SE_NV_PAGE_SIZE - SE_NV_LOG_OFF) < (8u * (SE_NV_LOG_FILL_LEN + 3u * SE_NV_LOG_STEP_LEN))
+#error "NV provision log holds fewer than 8 fills"
+#endif
+#if (SE_NV_PAGE_SIZE - SE_NV_LOG_OFF) >= (9u * (SE_NV_LOG_FILL_LEN + 3u * SE_NV_LOG_STEP_LEN))
+#error "NV provision log must refuse a 9th fill"
+#endif
+
+static uint16_t log_crc(const uint8_t *slot, uint16_t len)
+{
+    uint16_t s = 0xA55Au;
+    uint16_t i;
+
+    for (i = 0U; i < len; i++) {
+        if ((i == 2U) || (i == 3U)) {
+            continue;
+        }
+        s = (uint16_t)(((s << 1) | (s >> 15)) + slot[i]);
+    }
+    return (s == 0U) ? 1U : s;
+}
+
+static uint16_t log_len(uint8_t type)
+{
+    if (type == SE_NV_LOG_FILL) {
+        return SE_NV_LOG_FILL_LEN;
+    }
+    if ((type == SE_NV_LOG_ARM) || (type == SE_NV_LOG_PAD) || (type == SE_NV_LOG_ENDS)) {
+        return SE_NV_LOG_STEP_LEN;
+    }
+    return 0U;
+}
+
+static void log_apply(se_nv_state_t *st, const uint8_t *slot, uint8_t type)
+{
+    if (st == NULL) {
+        return;
+    }
+    if (type == SE_NV_LOG_FILL) {
+        (void)memcpy(st->fill_id, slot + 4, SE_NV_FILL_ID_LEN);
+        st->cursor_encrypt = 0U;
+        st->cursor_decrypt = 0U;
+        st->base_encrypt = 0U;
+        st->base_decrypt = 0U;
+        st->end_encrypt = 0U;
+        st->end_decrypt = 0U;
+        st->pad_plain = 0U;
+        st->flags |= SE_NV_FLAG_FILL;
+        st->flags &= ~SE_NV_FLAG_OTP;
+    } else if (type == SE_NV_LOG_ARM) {
+        uint16_t base_e = se_u16le(slot + 4);
+        uint16_t base_d = se_u16le(slot + 6);
+
+        st->base_encrypt = base_e;
+        st->base_decrypt = base_d;
+        st->cursor_encrypt = base_e;
+        st->cursor_decrypt = base_d;
+        st->end_encrypt = base_e;
+        st->end_decrypt = base_d;
+        st->flags |= SE_NV_FLAG_OTP;
+    } else if (type == SE_NV_LOG_PAD) {
+        st->pad_plain = se_u16le(slot + 4);
+    } else {
+        st->end_encrypt = se_u16le(slot + 4);
+        st->end_decrypt = se_u16le(slot + 6);
+    }
+}
+
+/** Replay complete slots. @p open is 1 when the next byte is still erased. */
+static lt_ret_t log_walk(se_nv_state_t *st, uint16_t *append_at, int *open)
+{
+    uint16_t off = SE_NV_LOG_OFF;
+
+    if (append_at != NULL) {
+        *append_at = off;
+    }
+    if (open != NULL) {
+        *open = 0;
+    }
+    while ((uint32_t)off + SE_NV_LOG_STEP_LEN <= SE_NV_PAGE_SIZE) {
+        uint8_t slot[SE_NV_LOG_FILL_LEN];
+        uint16_t len;
+        uint8_t type;
+        lt_ret_t ret;
+
+        ret = se_tropic_port_nv_slice_read(off, slot, SE_NV_LOG_STEP_LEN);
+        if (ret != LT_OK) {
+            return ret;
+        }
+        if (slot[0] == 0xffu) {
+            if (append_at != NULL) {
+                *append_at = off;
+            }
+            if (open != NULL) {
+                *open = 1;
+            }
+            return LT_OK;
+        }
+        type = slot[0];
+        len = log_len(type);
+        if ((len == 0U) || ((uint32_t)off + (uint32_t)len > SE_NV_PAGE_SIZE)) {
+            return LT_OK;
+        }
+        if (len > SE_NV_LOG_STEP_LEN) {
+            ret = se_tropic_port_nv_slice_read(off, slot, len);
+            if (ret != LT_OK) {
+                return ret;
+            }
+        }
+        if (se_u16le(slot + 2) != log_crc(slot, len)) {
+            return LT_OK;
+        }
+        log_apply(st, slot, type);
+        off = (uint16_t)(off + len);
+    }
+    return LT_OK;
+}
+
+static lt_ret_t log_append(const uint8_t *slot, uint16_t len)
+{
+    uint8_t wrote[SE_NV_LOG_FILL_LEN];
+    uint16_t at = 0U;
+    int open = 0;
+    lt_ret_t ret;
+
+    ret = log_walk(NULL, &at, &open);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((open == 0) || ((uint32_t)at + (uint32_t)len > SE_NV_PAGE_SIZE)) {
+        return LT_FAIL;
+    }
+    ret = se_tropic_port_nv_program(at, slot, len);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = se_tropic_port_nv_slice_read(at, wrote, len);
+    if ((ret != LT_OK) || (memcmp(wrote, slot, len) != 0)) {
+        return LT_FAIL;
+    }
+    return LT_OK;
+}
+
+static void log_seal(uint8_t *slot, uint16_t len)
+{
+    se_put_u16le(slot + 2, log_crc(slot, len));
+}
+
+static lt_ret_t log_append_fill(const uint8_t fill_id[SE_NV_FILL_ID_LEN])
+{
+    uint8_t slot[SE_NV_LOG_FILL_LEN];
+    lt_ret_t ret;
+
+    (void)memset(slot, 0, sizeof(slot));
+    slot[0] = SE_NV_LOG_FILL;
+    (void)memcpy(slot + 4, fill_id, SE_NV_FILL_ID_LEN);
+    log_seal(slot, SE_NV_LOG_FILL_LEN);
+    ret = log_append(slot, SE_NV_LOG_FILL_LEN);
+    wc_ForceZero(slot, sizeof(slot));
+    return ret;
+}
+
+static lt_ret_t log_append_arm(uint16_t base_e, uint16_t base_d)
+{
+    uint8_t slot[SE_NV_LOG_STEP_LEN];
+
+    (void)memset(slot, 0, sizeof(slot));
+    slot[0] = SE_NV_LOG_ARM;
+    se_put_u16le(slot + 4, base_e);
+    se_put_u16le(slot + 6, base_d);
+    log_seal(slot, SE_NV_LOG_STEP_LEN);
+    return log_append(slot, SE_NV_LOG_STEP_LEN);
+}
+
+static lt_ret_t log_append_pad(uint16_t pad_plain)
+{
+    uint8_t slot[SE_NV_LOG_STEP_LEN];
+
+    (void)memset(slot, 0, sizeof(slot));
+    slot[0] = SE_NV_LOG_PAD;
+    se_put_u16le(slot + 4, pad_plain);
+    log_seal(slot, SE_NV_LOG_STEP_LEN);
+    return log_append(slot, SE_NV_LOG_STEP_LEN);
+}
+
+static lt_ret_t log_append_ends(uint16_t end_e, uint16_t end_d)
+{
+    uint8_t slot[SE_NV_LOG_STEP_LEN];
+
+    (void)memset(slot, 0, sizeof(slot));
+    slot[0] = SE_NV_LOG_ENDS;
+    se_put_u16le(slot + 4, end_e);
+    se_put_u16le(slot + 6, end_d);
+    log_seal(slot, SE_NV_LOG_STEP_LEN);
+    return log_append(slot, SE_NV_LOG_STEP_LEN);
+}
+
 static void rec_init(uint8_t *page)
 {
     (void)memset(page + SE_NV_OFF_MAGIC, 0, SE_NV_REC_END - SE_NV_OFF_MAGIC);
     se_put_u32le(page + SE_NV_OFF_MAGIC, SE_NV_MAGIC);
     se_put_u16le(page + SE_NV_OFF_VER, SE_NV_VERSION);
+}
+
+/** Copy a pending provision log into the base record. The tail is cleared on commit. */
+static lt_ret_t nv_fold_log(void)
+{
+    se_nv_state_t st;
+    uint16_t at = 0U;
+    int open = 0;
+    lt_ret_t ret;
+
+    ret = log_walk(NULL, &at, &open);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((open != 0) && (at == SE_NV_LOG_OFF)) {
+        return LT_OK;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    pack_ops(&st, s_nv_page);
+    return LT_OK;
 }
 
 static lt_ret_t nv_begin_write(void)
@@ -258,19 +488,35 @@ static lt_ret_t nv_begin_write(void)
     if ((slice_blank(s_nv_page + SE_NV_OFF_MAGIC, 6U) != 0) ||
         (se_u32le(s_nv_page + SE_NV_OFF_MAGIC) != SE_NV_MAGIC)) {
         rec_init(s_nv_page);
-        return LT_OK;
-    }
-    if (se_u16le(s_nv_page + SE_NV_OFF_VER) != SE_NV_VERSION) {
+    } else if (se_u16le(s_nv_page + SE_NV_OFF_VER) != SE_NV_VERSION) {
         nv_work_wipe();
         return SE_TROPIC_LT_TAMPERED;
+    }
+    ret = nv_fold_log();
+    if (ret != LT_OK) {
+        nv_work_wipe();
+        return ret;
     }
     return LT_OK;
 }
 
 static lt_ret_t nv_commit_write(void)
 {
+    uint32_t flags;
     lt_ret_t ret;
 
+    flags = se_u32le(s_nv_page + SE_NV_OFF_FLAGS);
+    if ((flags & SE_NV_FLAG_OTP) != 0U) {
+        ret = se_tropic_nv_counters_match(se_u16le(s_nv_page + SE_NV_OFF_CUR_E),
+                                          se_u16le(s_nv_page + SE_NV_OFF_CUR_D),
+                                          se_u16le(s_nv_page + SE_NV_OFF_END_E),
+                                          se_u16le(s_nv_page + SE_NV_OFF_END_D));
+        if (ret != LT_OK) {
+            nv_work_wipe();
+            return ret;
+        }
+    }
+    (void)memset(s_nv_page + SE_NV_LOG_OFF, 0xff, SE_NV_PAGE_SIZE - SE_NV_LOG_OFF);
     ret = se_tropic_port_nv_page_write(s_nv_page);
     nv_work_wipe();
     return ret;
@@ -411,7 +657,7 @@ lt_ret_t se_nv_load(se_nv_state_t *out)
         return ret;
     }
     if (present == 0) {
-        return LT_OK;
+        return log_walk(out, NULL, NULL);
     }
     ret = se_tropic_port_nv_slice_read(SE_NV_OFF_FLAGS, s_ops, SE_NV_OPS_LEN);
     if (ret != LT_OK) {
@@ -420,7 +666,10 @@ lt_ret_t se_nv_load(se_nv_state_t *out)
     }
     ret = unpack_ops(s_ops, out);
     wc_ForceZero(s_ops, sizeof(s_ops));
-    return ret;
+    if (ret != LT_OK) {
+        return ret;
+    }
+    return log_walk(out, NULL, NULL);
 }
 
 lt_ret_t se_nv_store(const se_nv_state_t *in)
@@ -433,99 +682,59 @@ lt_ret_t se_nv_store(const se_nv_state_t *in)
 
 int se_nv_have_fill(void)
 {
-    uint32_t flags = 0U;
-    int present = 0;
-    lt_ret_t ret;
+    se_nv_state_t st;
 
-    ret = nv_rec_present(&present);
-    if ((ret != LT_OK) || (present == 0)) {
+    if (se_nv_load(&st) != LT_OK) {
         return 0;
     }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return 0;
-    }
-    return ((flags & SE_NV_FLAG_FILL) != 0U) ? 1 : 0;
+    return ((st.flags & SE_NV_FLAG_FILL) != 0U) ? 1 : 0;
 }
 
 lt_ret_t se_nv_get_fill_id(uint8_t out[SE_NV_FILL_ID_LEN])
 {
-    uint32_t flags = 0U;
-    int present = 0;
-    lt_ret_t ret;
-
-    if (out == NULL) {
-        return LT_PARAM_ERR;
-    }
-    ret = nv_rec_present(&present);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (present == 0) {
-        return LT_FAIL;
-    }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if ((flags & SE_NV_FLAG_FILL) == 0U) {
-        return LT_FAIL;
-    }
-    return se_tropic_port_nv_slice_read(SE_NV_OFF_FILL, out, SE_NV_FILL_ID_LEN);
-}
-
-lt_ret_t se_nv_get_cursor(se_nv_otp_dir_t dir, uint16_t *cursor)
-{
-    uint32_t flags = 0U;
-    uint16_t off;
-    int present = 0;
-    lt_ret_t ret;
-
-    if ((cursor == NULL) || (otp_dir_ok(dir) == 0)) {
-        return LT_PARAM_ERR;
-    }
-    ret = nv_rec_present(&present);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (present == 0) {
-        return LT_FAIL;
-    }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (((flags & SE_NV_FLAG_FILL) == 0U) || ((flags & SE_NV_FLAG_OTP) == 0U)) {
-        return LT_FAIL;
-    }
-    off = (dir == SE_NV_OTP_DECRYPT) ? SE_NV_OFF_CUR_D : SE_NV_OFF_CUR_E;
-    return nv_read_u16(off, cursor);
-}
-
-lt_ret_t se_nv_commit_fill(const uint8_t fill_id[SE_NV_FILL_ID_LEN])
-{
     se_nv_state_t st;
     lt_ret_t ret;
 
-    if (fill_id == NULL) {
+    if (out == NULL) {
         return LT_PARAM_ERR;
     }
     ret = se_nv_load(&st);
     if (ret != LT_OK) {
         return ret;
     }
-    (void)memcpy(st.fill_id, fill_id, SE_NV_FILL_ID_LEN);
-    st.cursor_encrypt = 0U;
-    st.cursor_decrypt = 0U;
-    st.base_encrypt = 0U;
-    st.base_decrypt = 0U;
-    st.end_encrypt = 0U;
-    st.end_decrypt = 0U;
-    st.pad_plain = 0U;
-    st.flags |= SE_NV_FLAG_FILL;
-    st.flags &= ~SE_NV_FLAG_OTP;
+    if ((st.flags & SE_NV_FLAG_FILL) == 0U) {
+        return LT_FAIL;
+    }
+    (void)memcpy(out, st.fill_id, SE_NV_FILL_ID_LEN);
+    return LT_OK;
+}
+
+lt_ret_t se_nv_get_cursor(se_nv_otp_dir_t dir, uint16_t *cursor)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    if ((cursor == NULL) || (otp_dir_ok(dir) == 0)) {
+        return LT_PARAM_ERR;
+    }
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if (((st.flags & SE_NV_FLAG_FILL) == 0U) || ((st.flags & SE_NV_FLAG_OTP) == 0U)) {
+        return LT_FAIL;
+    }
+    *cursor = *cursor_field(&st, dir);
+    return LT_OK;
+}
+
+lt_ret_t se_nv_commit_fill(const uint8_t fill_id[SE_NV_FILL_ID_LEN])
+{
+    if (fill_id == NULL) {
+        return LT_PARAM_ERR;
+    }
     se_nv_pending_fill_clear();
-    return se_nv_store(&st);
+    return log_append_fill(fill_id);
 }
 
 lt_ret_t se_nv_set_pad_plain(uint16_t pad_plain)
@@ -543,43 +752,26 @@ lt_ret_t se_nv_set_pad_plain(uint16_t pad_plain)
     if ((st.flags & SE_NV_FLAG_FILL) == 0U) {
         return LT_FAIL;
     }
-    st.pad_plain = pad_plain;
-    return se_nv_store(&st);
+    return log_append_pad(pad_plain);
 }
 
 lt_ret_t se_nv_get_pad_plain(uint16_t *pad_plain)
 {
-    uint32_t flags = 0U;
-    uint16_t saved = 0U;
-    int present = 0;
+    se_nv_state_t st;
     lt_ret_t ret;
 
     if (pad_plain == NULL) {
         return LT_PARAM_ERR;
     }
     *pad_plain = 0U;
-    ret = nv_rec_present(&present);
+    ret = se_nv_load(&st);
     if (ret != LT_OK) {
         return ret;
     }
-    if (present == 0) {
+    if (((st.flags & SE_NV_FLAG_FILL) == 0U) || (st.pad_plain == 0U)) {
         return LT_FAIL;
     }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if ((flags & SE_NV_FLAG_FILL) == 0U) {
-        return LT_FAIL;
-    }
-    ret = nv_read_u16(SE_NV_OFF_PAD_PLAIN, &saved);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (saved == 0U) {
-        return LT_FAIL;
-    }
-    *pad_plain = saved;
+    *pad_plain = st.pad_plain;
     return LT_OK;
 }
 
@@ -598,44 +790,27 @@ lt_ret_t se_nv_arm_otp_cursors(uint16_t base_encrypt, uint16_t base_decrypt)
     if ((st.flags & SE_NV_FLAG_FILL) == 0U) {
         return LT_FAIL;
     }
-    st.base_encrypt = base_encrypt;
-    st.base_decrypt = base_decrypt;
-    st.cursor_encrypt = base_encrypt;
-    st.cursor_decrypt = base_decrypt;
-    st.end_encrypt = base_encrypt;
-    st.end_decrypt = base_decrypt;
-    st.flags |= SE_NV_FLAG_OTP;
-    return se_nv_store(&st);
+    return log_append_arm(base_encrypt, base_decrypt);
 }
 
 lt_ret_t se_nv_get_otp_bases(uint16_t *base_encrypt, uint16_t *base_decrypt)
 {
-    uint32_t flags = 0U;
-    int present = 0;
+    se_nv_state_t st;
     lt_ret_t ret;
 
     if ((base_encrypt == NULL) || (base_decrypt == NULL)) {
         return LT_PARAM_ERR;
     }
-    ret = nv_rec_present(&present);
+    ret = se_nv_load(&st);
     if (ret != LT_OK) {
         return ret;
     }
-    if (present == 0) {
+    if (((st.flags & SE_NV_FLAG_FILL) == 0U) || ((st.flags & SE_NV_FLAG_OTP) == 0U)) {
         return LT_FAIL;
     }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (((flags & SE_NV_FLAG_FILL) == 0U) || ((flags & SE_NV_FLAG_OTP) == 0U)) {
-        return LT_FAIL;
-    }
-    ret = nv_read_u16(SE_NV_OFF_BASE_E, base_encrypt);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    return nv_read_u16(SE_NV_OFF_BASE_D, base_decrypt);
+    *base_encrypt = st.base_encrypt;
+    *base_decrypt = st.base_decrypt;
+    return LT_OK;
 }
 
 lt_ret_t se_nv_set_cursor(se_nv_otp_dir_t dir, uint16_t cursor)
@@ -659,30 +834,21 @@ lt_ret_t se_nv_set_cursor(se_nv_otp_dir_t dir, uint16_t cursor)
 
 lt_ret_t se_nv_get_otp_end(se_nv_otp_dir_t dir, uint16_t *end)
 {
-    uint32_t flags = 0U;
-    uint16_t off;
-    int present = 0;
+    se_nv_state_t st;
     lt_ret_t ret;
 
     if ((end == NULL) || (otp_dir_ok(dir) == 0)) {
         return LT_PARAM_ERR;
     }
-    ret = nv_rec_present(&present);
+    ret = se_nv_load(&st);
     if (ret != LT_OK) {
         return ret;
     }
-    if (present == 0) {
+    if (((st.flags & SE_NV_FLAG_FILL) == 0U) || ((st.flags & SE_NV_FLAG_OTP) == 0U)) {
         return LT_FAIL;
     }
-    ret = nv_read_u32(SE_NV_OFF_FLAGS, &flags);
-    if (ret != LT_OK) {
-        return ret;
-    }
-    if (((flags & SE_NV_FLAG_FILL) == 0U) || ((flags & SE_NV_FLAG_OTP) == 0U)) {
-        return LT_FAIL;
-    }
-    off = (dir == SE_NV_OTP_DECRYPT) ? SE_NV_OFF_END_D : SE_NV_OFF_END_E;
-    return nv_read_u16(off, end);
+    *end = (dir == SE_NV_OTP_DECRYPT) ? st.end_decrypt : st.end_encrypt;
+    return LT_OK;
 }
 
 lt_ret_t se_nv_set_otp_ends(uint16_t end_encrypt, uint16_t end_decrypt)
@@ -700,9 +866,7 @@ lt_ret_t se_nv_set_otp_ends(uint16_t end_encrypt, uint16_t end_decrypt)
     if ((end_encrypt < st.base_encrypt) || (end_decrypt < st.base_decrypt)) {
         return LT_PARAM_ERR;
     }
-    st.end_encrypt = end_encrypt;
-    st.end_decrypt = end_decrypt;
-    return se_nv_store(&st);
+    return log_append_ends(end_encrypt, end_decrypt);
 }
 
 lt_ret_t se_nv_set_time_floor(uint32_t unix_utc)

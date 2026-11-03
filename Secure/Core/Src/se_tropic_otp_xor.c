@@ -155,6 +155,18 @@ lt_ret_t se_tropic_OTP_xor_consume(lt_handle_t *h, se_nv_otp_dir_t dir,
         return LT_FAIL;
     }
 
+    /* Second cursor read: both copies must still name the slot just decrypted. */
+    raw_slot = 0U;
+    ret = se_tropic_qkd_cursor_get(h, dir, &raw_slot);
+    if (ret != LT_OK) {
+        wc_ForceZero(s_pad, sizeof(s_pad));
+        return ret;
+    }
+    if (raw_slot != (uint32_t)slot) {
+        wc_ForceZero(s_pad, sizeof(s_pad));
+        return SE_TROPIC_LT_TAMPERED;
+    }
+
     /* Advance before erase: lost pad on power-cut, never reuse. */
     ret = se_tropic_qkd_cursor_advance_from_slot(h, dir, slot);
     if (ret != LT_OK) {

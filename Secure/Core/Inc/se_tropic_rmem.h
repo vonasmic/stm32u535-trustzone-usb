@@ -127,6 +127,13 @@ uint16_t se_tropic_get_rmem_slot_plaintext_max_size(const lt_handle_t *h);
 int se_tropic_slot_is_keystream(uint16_t phys);
 
 /**
+ * Compare MCU cursors with Tropic mcounters 0--3.
+ * @return LT_OK, SE_TROPIC_LT_TAMPERED, or LT_FAIL when the session cannot be read.
+ */
+lt_ret_t se_tropic_nv_counters_match(uint16_t cur_e, uint16_t cur_d,
+                                     uint16_t end_e, uint16_t end_d);
+
+/**
  * SAE pad slot_index (0 = first pad) <-> physical R-MEM slot.
  * STORE, HKDF, and pad binding use slot_index; the cursor stays physical.
  */

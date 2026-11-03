@@ -237,6 +237,47 @@ lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE])
     return flash_program_page(SE_NV_FLASH_ADDR, SE_NV_FLASH_PAGE, src);
 }
 
+lt_ret_t se_tropic_port_nv_program(uint16_t off, const uint8_t *src, uint16_t len)
+{
+    uint8_t qw[16] __attribute__((aligned(16)));
+    const uint8_t *flash;
+    uint16_t i;
+    HAL_StatusTypeDef st;
+
+    if ((src == NULL) || (len == 0U) || ((off & 15U) != 0U) || ((len & 15U) != 0U) ||
+        ((uint32_t)off + (uint32_t)len > SE_NV_PAGE_SIZE)) {
+        return LT_PARAM_ERR;
+    }
+    flash = (const uint8_t *)(SE_NV_FLASH_ADDR + off);
+    for (i = 0U; i < len; i++) {
+        if ((flash[i] & src[i]) != src[i]) {
+            return LT_FAIL;
+        }
+    }
+    if (HAL_FLASH_Unlock() != HAL_OK) {
+        return LT_HAL_ERROR;
+    }
+    __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
+    for (i = 0U; i < len; i = (uint16_t)(i + 16U)) {
+        uint16_t b;
+
+        for (b = 0U; b < 16U; b++) {
+            qw[b] = src[i + b];
+        }
+        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD,
+                               SE_NV_FLASH_ADDR + (uint32_t)off + (uint32_t)i, (uint32_t)qw);
+        if (st != HAL_OK) {
+            (void)HAL_FLASH_Lock();
+            return LT_HAL_ERROR;
+        }
+    }
+    (void)HAL_FLASH_Lock();
+    if (memcmp(flash, src, len) != 0) {
+        return LT_HAL_ERROR;
+    }
+    return LT_OK;
+}
+
 lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE])
 {
     if (dst == NULL) {

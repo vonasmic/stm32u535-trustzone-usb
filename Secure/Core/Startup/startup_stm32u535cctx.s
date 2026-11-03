@@ -60,6 +60,30 @@ defined in linker script */
 Reset_Handler:
   ldr   r0, =_estack
   mov   sp, r0          /* set stack pointer */
+/* Zero Secure SRAM (SRAM1 + Secure SRAM2, which holds the stack) and SRAM4
+ * before any C code runs. Ranges come from the linker script and are 16-byte
+ * multiples. Registers only; nothing is pushed. */
+  movs  r1, #0
+  movs  r2, #0
+  movs  r3, #0
+  movs  r4, #0
+  ldr   r0, =_swipe_ram
+  ldr   r5, =_ewipe_ram
+  b     LoopWipeRam
+WipeRam:
+  stmia r0!, {r1-r4}
+LoopWipeRam:
+  cmp   r0, r5
+  bcc   WipeRam
+  ldr   r0, =_swipe_sram4
+  ldr   r5, =_ewipe_sram4
+  b     LoopWipeSram4
+WipeSram4:
+  stmia r0!, {r1-r4}
+LoopWipeSram4:
+  cmp   r0, r5
+  bcc   WipeSram4
+  dsb
 /* Call the clock system initialization function.*/
   bl  SystemInit
 

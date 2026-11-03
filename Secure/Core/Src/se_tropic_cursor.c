@@ -5,6 +5,7 @@
 #include "se_tropic_rmem.h"
 #include "se_tropic_rmem_internal.h"
 #include "se_tropic_port.h"
+#include "se_tropic.h"
 #include "se_nv.h"
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
@@ -43,14 +44,40 @@ static int is_valid_dir_cursor(uint32_t raw, se_nv_otp_dir_t dir, uint16_t *slot
     return 1;
 }
 
+/** Read both cursor copies back after a write; any difference fails closed as tamper. */
+static lt_ret_t qkd_cursor_verify(lt_handle_t *h, se_nv_otp_dir_t dir, uint16_t expect_mcu,
+                                  uint32_t expect_tropic)
+{
+    uint32_t tropic_raw = 0U;
+    uint16_t mcu_cursor = 0U;
+    lt_ret_t ret;
+
+    ret = se_nv_get_cursor(dir, &mcu_cursor);
+    if (ret != LT_OK) {
+        return (ret == SE_TROPIC_LT_TAMPERED) ? ret : LT_FAIL;
+    }
+    ret = lt_mcounter_get(h, se_tropic_otp_mcounter(dir), &tropic_raw);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((mcu_cursor != expect_mcu) || (tropic_raw != expect_tropic)) {
+        return SE_TROPIC_LT_TAMPERED;
+    }
+    return LT_OK;
+}
+
 static lt_ret_t qkd_cursor_set_exhausted(lt_handle_t *h, se_nv_otp_dir_t dir)
 {
     /* Tropic uses full 32-bit END; MCU NV stores a uint16 non-keystream sentinel. */
+    const uint16_t mcu_end = (uint16_t)(SE_TROPIC_QKD_SLOT_LAST + 1u);
     lt_ret_t ret = lt_mcounter_init(h, se_tropic_otp_mcounter(dir), SE_TROPIC_QKD_CURSOR_END);
     if (ret == LT_OK) {
-        ret = se_nv_set_cursor(dir, (uint16_t)(SE_TROPIC_QKD_SLOT_LAST + 1u));
+        ret = se_nv_set_cursor(dir, mcu_end);
     }
-    return ret;
+    if (ret != LT_OK) {
+        return ret;
+    }
+    return qkd_cursor_verify(h, dir, mcu_end, SE_TROPIC_QKD_CURSOR_END);
 }
 
 /** Advance the keystream cursor by one slot after consume. */
@@ -74,7 +101,12 @@ lt_ret_t se_tropic_qkd_cursor_advance_from_slot(lt_handle_t *h, se_nv_otp_dir_t 
     if (ret != LT_OK) {
         return ret;
     }
-    return se_nv_set_cursor(dir, next);
+    ret = se_nv_set_cursor(dir, next);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    /* Verify-after-write: a skipped or faulted write must not leave a reusable slot. */
+    return qkd_cursor_verify(h, dir, next, (uint32_t)next);
 }
 
 void se_tropic_qkd_set_wiped(uint8_t wiped)
@@ -417,6 +449,43 @@ static uint32_t rmem_slot_has_data(lt_handle_t *h, uint16_t slot)
     }
     /* Non-empty slot when the caller's buffer was too small. */
     return 1U;
+}
+
+/** MCU NV cursor -> expected Tropic mcounter: the exhausted sentinel is CURSOR_END. */
+static uint32_t nv_cursor_raw(uint16_t cur)
+{
+    return (cur == (uint16_t)(SE_TROPIC_QKD_SLOT_LAST + 1u)) ? SE_TROPIC_QKD_CURSOR_END
+                                                             : (uint32_t)cur;
+}
+
+lt_ret_t se_tropic_nv_counters_match(uint16_t cur_e, uint16_t cur_d,
+                                     uint16_t end_e, uint16_t end_d)
+{
+    lt_handle_t *h;
+    uint32_t raw = 0U;
+    lt_ret_t ret;
+
+    if (se_tropic_init_session() != SE_TROPIC_OK) {
+        return LT_FAIL;
+    }
+    h = se_tropic_handle();
+    ret = lt_mcounter_get(h, SE_TROPIC_QKD_MCOUNTER_ENCRYPT, &raw);
+    if ((ret != LT_OK) || (raw != nv_cursor_raw(cur_e))) {
+        return (ret != LT_OK) ? ret : SE_TROPIC_LT_TAMPERED;
+    }
+    ret = lt_mcounter_get(h, SE_TROPIC_QKD_MCOUNTER_DECRYPT, &raw);
+    if ((ret != LT_OK) || (raw != nv_cursor_raw(cur_d))) {
+        return (ret != LT_OK) ? ret : SE_TROPIC_LT_TAMPERED;
+    }
+    ret = lt_mcounter_get(h, SE_TROPIC_QKD_MCOUNTER_END_ENCRYPT, &raw);
+    if ((ret != LT_OK) || (raw != (uint32_t)end_e)) {
+        return (ret != LT_OK) ? ret : SE_TROPIC_LT_TAMPERED;
+    }
+    ret = lt_mcounter_get(h, SE_TROPIC_QKD_MCOUNTER_END_DECRYPT, &raw);
+    if ((ret != LT_OK) || (raw != (uint32_t)end_d)) {
+        return (ret != LT_OK) ? ret : SE_TROPIC_LT_TAMPERED;
+    }
+    return LT_OK;
 }
 
 lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image,

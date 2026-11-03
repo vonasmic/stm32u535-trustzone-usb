@@ -175,6 +175,24 @@ lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE])
     return LT_OK;
 }
 
+lt_ret_t se_tropic_port_nv_program(uint16_t off, const uint8_t *src, uint16_t len)
+{
+    uint16_t i;
+
+    if ((src == NULL) || (len == 0U) || ((off & 15U) != 0U) || ((len & 15U) != 0U) ||
+        ((uint32_t)off + (uint32_t)len > SE_NV_PAGE_SIZE)) {
+        return LT_PARAM_ERR;
+    }
+    nv_host_ensure();
+    for (i = 0U; i < len; i++) {
+        if ((s_nv_page[off + i] & src[i]) != src[i]) {
+            return LT_FAIL;
+        }
+    }
+    (void)memcpy(s_nv_page + off, src, len);
+    return LT_OK;
+}
+
 lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE])
 {
     if (dst == NULL) {

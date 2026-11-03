@@ -6,7 +6,7 @@ Two things live in `host/tropic_model/`:
 
 | Binary | What it is | How you run it |
 | --- | --- | --- |
-| `test_a_session` … `test_k_owner`, `brick_lab` | Unit gates A–K (+ brick lab). Default CTest suite. | `ctest` or `./run_all.sh` |
+| `test_a_session` … `test_l_end_cursor`, `brick_lab` | Unit gates A–L (+ brick lab). Default CTest suite. | `ctest` or `./run_all.sh` |
 | `se_host` | Simulated CDC device: firmware console + TLS over a PTY (`--tty`, default `/tmp/ttyACM0`). **Not** a CTest. | Start `model_server`, start Java, then `./se_host` |
 
 Restarting the model restores a fresh chip. A real TROPIC01 does not.
@@ -52,7 +52,7 @@ bash ../check_firmware_nm.sh /path/to/SE_firmware_Secure.elf
 
 ---
 
-## 3. Run the model tests (A–K)
+## 3. Run the model tests (A–L)
 
 Each test gets a **fresh** `model_server` on `127.0.0.1:28992` (`libtropic/scripts/tropic01_model/model_cfg.yml`). Run them serial:
 
@@ -68,7 +68,7 @@ Or from `host/tropic_model/build` after `make`:
 bash ../run_all.sh
 ```
 
-`run_all.sh` (and `run_one.sh` / `run_direct.sh` / `run_cd.sh`) resolve the firmware tree from the script location. `run_all.sh` rebuilds and runs groups A–K plus `brick_lab`.
+`run_all.sh` (and `run_one.sh` / `run_direct.sh` / `run_cd.sh`) resolve the firmware tree from the script location. `run_all.sh` rebuilds and runs groups A–L plus `brick_lab`.
 
 | Group | Binary | What it gates |
 | --- | --- | --- |
@@ -83,9 +83,10 @@ bash ../run_all.sh
 | I | `test_i_post_tls` | Production `secure_otp_session_feed` encrypt/decrypt consume, OTP reply with slot IDs, 100 KiB encrypt, remaining bytes, decrypt skip-ahead, almost-empty refuse |
 | J | `test_j_peers` | PEER NV add/remove/list, uplink item count `7+3n` |
 | K | `test_k_owner` | First-wins owner, REPLACE, unsigned MANAGE CREDS stream, NV ML-KEM |
+| L | `test_l_end_cursor` | Per-half end cursors, partial-fill quota, exhaust past the written end, NV vs Tropic mismatch, OWNER REPLACE clears ends |
 | brick | `brick_lab` | Config writes + occupied SH0 (**model only**) |
 
-Do **not** run MANAGE `KEYGEN` / `PAIRING`, PIN setup, or R-MEM writes on physical silicon until A–E and H are green.
+Do **not** run MANAGE `KEYGEN` / `PAIRING`, PIN setup, or R-MEM writes on physical silicon until A–E, H, and L are green.
 
 One test with a live model (same helper CTest uses):
 
@@ -189,9 +190,9 @@ On host, `KEM INIT` persists the ML-KEM pub into NV. Tests may also fill `host_f
 
 ## 5. TLS framing (what Java must speak)
 
-Uplink is **v4**. Item 6 (0-based) is the 1184-byte ML-KEM-768 public key. Java encapsulates from that item.
+Uplink is **v5** (`SECURE_LV_UPLINK_VERSION`). Item 6 (0-based) is the 1184-byte ML-KEM-768 public key. Java encapsulates from that item.
 
-QKD downlink is **v2**: item 0 is `kem_ct` (1088 B), item 1 is `decrypt_half` (1 byte: 0 = first pad half for decrypt, 1 = second), then pad images.
+QKD downlink is **v3** (`SECURE_LV_DOWNLINK_VERSION`): item 0 is `kem_ct` (1088 B), item 1 is `decrypt_half` (1 byte: 0 = first pad half for decrypt, 1 = second), item 2 is `pad_plain` (u16 LE plaintext bytes per pad), then pad images. Full item list: [`docs/COMMUNICATION.md`](../docs/COMMUNICATION.md).
 
 After mTLS:
 
@@ -235,13 +236,13 @@ host/
     CMakeLists.txt        Shared runtime + tests + se_host
     download_deps.sh      Fetch wolfSSL / ed25519 into _deps/
     run_with_model.sh     CTest helper: model_server + one exe
-    run_all.sh            Rebuild + A–K + brick (script-relative firmware tree)
+    run_all.sh            Rebuild + A–L + brick (script-relative firmware tree)
     port_posix.c          Platform hooks (TCP, RAM NV, test AEAD key)
     host_fw_mlkem.c       RAM stand-in for fw_mlkem_pk
-    host_usb_debug_stub.c stdout DEBUG for A–K tests
+    host_usb_debug_stub.c stdout DEBUG for A–L tests
     host_cdc/             USBX stubs + PTY CDC for se_host
     se_host_main.c        Device main (`--tty`)
-    test_a_session.c …    Groups A–K
+    test_a_session.c …    Groups A–L (`test_l_end_cursor.c`)
     brick_lab.c           Irreversible config writes (model only)
     sae_qkd.c             SAE-side pad seal helper for tests
 ```

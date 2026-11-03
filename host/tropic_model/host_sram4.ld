@@ -1,6 +1,6 @@
 /* Host stand-in for the firmware SRAM4 NOLOAD region.
- * se_sram4_bss_init() zeros _ssram4.._esram4. The device linker script
- * provides those symbols; this fragment does the same for the host ELF.
+ * On the device Reset_Handler zeroes all of SRAM4; the host ELF loads this
+ * section zero-filled. _ssram4/_esram4 match the device linker script.
  */
 SECTIONS
 {

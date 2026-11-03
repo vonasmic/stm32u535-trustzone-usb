@@ -44,12 +44,14 @@ Boot: Secure init then jump to NonSecure `VTOR_TABLE_NS_START_ADDR = 0x08030000`
 
 | World | Region | Origin | Size |
 | --- | --- | --- | --- |
-| Secure | RAM | `0x30000000` | 192 KB |
-| Secure | SRAM4 | `0x38000000` | 16 KB |
-| NonSecure | RAM | `0x20030000` | 64 KB |
-| NonSecure | SRAM4 | `0x28000000` | 16 KB |
+| Secure | RAM | `0x30000000` | 224 KB (SRAM1 192 KB + low 32 KB of SRAM2; stack at the top) |
+| Secure | SRAM4 | `0x38000000` | 16 KB (`.sram4_bss`, NV work page) |
+| NonSecure | RAM | `0x20038000` | 32 KB (high 32 KB of SRAM2) |
+| NonSecure | SRAM4 | `0x28000000` | 16 KB alias, declared in the NonSecure linker script; no section is placed there |
 
 Secure heap/stack minima in the linker: heap `0x200`, stack `0x2000` (TLS + ML-KEM + libtropic session; `_sbrk` caps the heap at `_estack - _Min_Stack_Size`). NonSecure: heap `0x200` (USBX), stack `0x400`.
+
+The Secure `Reset_Handler` zeroes all of Secure RAM and SRAM4 before `SystemInit` (ranges `_swipe_ram`..`_ewipe_ram` and `_swipe_sram4`..`_ewipe_sram4` from the linker script). With `SRAM_RST=0` and `SRAM2_RST=0` the hardware also erases SRAM on every system reset.
 
 ---
 
@@ -67,8 +69,10 @@ Set these. Commands: **[HOW_TO_RUN.md](HOW_TO_RUN.md)**.
 | `SECWM1_PSTRT` | `0x0` | Secure flash from page 0 |
 | `SECWM1_PEND` | `0x17` | Last Secure page = **23** (includes NSC) |
 | `HDP1EN` | `0x0` | Hide protection off |
-| `BOOT_LOCK` | `0x0` | Lab. Boot follows BOOT0 and the boot addresses stay writable. `0x1` forces boot from flash until an RDP regression ([HOW_TO_RUN.md](HOW_TO_RUN.md)) |
-| `RDP` | `0xAA` | Level 0. Level 1 `0xBB` blocks debug readout and regresses with a mass erase. Level 2 `0xCC` disables SWD permanently ([HOW_TO_RUN.md](HOW_TO_RUN.md)) |
+| `SRAM_RST` | `0x1` | Lab. Production: `0x0`, SRAM1 and SRAM4 are erased on every system reset ([HOW_TO_RUN.md](HOW_TO_RUN.md#lock)) |
+| `SRAM2_RST` | `0x1` | Lab. Production: `0x0`, SRAM2 is erased on every system reset |
+| `BOOT_LOCK` | `0x0` | Lab. Boot follows BOOT0 and the boot addresses stay writable. `0x1` forces boot from flash until an RDP regression to level 0 ([HOW_TO_RUN.md](HOW_TO_RUN.md#boot_lock)) |
+| `RDP` | `0xAA` | Level 0 (lab). Production: level 2 `0xCC` after `OEM1KEY` and `OEM2KEY` are set. `OEM2KEY` regresses level 2 to 1 with flash kept. `OEM1KEY` regresses level 1 to 0 with a mass erase ([HOW_TO_RUN.md](HOW_TO_RUN.md#lockdown-and-reverting)) |
 
 SRAM split and SAU are not option bytes. Secure startup programs them (see below).
 

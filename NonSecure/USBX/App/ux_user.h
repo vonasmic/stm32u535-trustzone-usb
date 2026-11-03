@@ -618,6 +618,14 @@
 
 /* USER CODE BEGIN 2 */
 
+/* Kept in a USER CODE block so CubeMX regeneration does not drop it.
+ * Without it a CDC IN transfer that is an exact multiple of 64 B (FS max packet)
+ * ends without a zero-length packet and the host read never completes: e.g. a
+ * one-pad ENCRYPT reply for a 5 B message (reply + close_notify = 64 B frame). */
+#ifndef UX_DEVICE_CLASS_CDC_ACM_WRITE_AUTO_ZLP
+#define UX_DEVICE_CLASS_CDC_ACM_WRITE_AUTO_ZLP
+#endif
+
 /* USER CODE END 2 */
 
 #endif

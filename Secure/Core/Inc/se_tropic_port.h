@@ -76,6 +76,12 @@ lt_ret_t se_tropic_port_nv_raw_write(const uint8_t *src, uint16_t len);
 lt_ret_t se_tropic_port_nv_page_read(uint8_t dst[SE_NV_PAGE_SIZE]);
 lt_ret_t se_tropic_port_nv_page_write(const uint8_t src[SE_NV_PAGE_SIZE]);
 
+/**
+ * Program @p len bytes at @p off without erasing the page.
+ * @p off and @p len are multiples of 16. Each byte may only change 1 bits to 0.
+ */
+lt_ret_t se_tropic_port_nv_program(uint16_t off, const uint8_t *src, uint16_t len);
+
 /** Copy @p len bytes at @p off from the NV page (no 8 KB work buffer). */
 lt_ret_t se_tropic_port_nv_slice_read(uint16_t off, uint8_t *dst, uint16_t len);
 

@@ -5,11 +5,10 @@
  * NonSecure arms a mode (with Unix time) before handshake. Provision verifies the
  * SAE application CA, streams the session-bound uplink, erases QKD R-MEM slots
  * while SAE fetches keys, sends TROPIC_WIPE_FINISHED, then feeds downlink to
- * secure_qkd_ingest (KB progress every 10 KiB). Encrypt/decrypt verify the
- * client CA; encrypt waits for PIN+plaintext and decrypt for PIN plus the
- * encrypt OTP stream
- * (n_pads then slot/chunk records). Encrypt/decrypt also pin the TLS peer
- * SPKI to the home-PC user key embedded from certs/user/user-cert.pem.
+ * secure_qkd_ingest (KB progress every 10 KiB). Encrypt, decrypt and manage
+ * load no CA: they accept the peer leaf and pin its SPKI to the owner key that
+ * OWNER SET stored in NV. Encrypt waits for PIN+plaintext and decrypt for PIN
+ * plus the encrypt OTP stream (n_pads then slot/chunk records).
  * Encrypt replies include slots. Decrypt replies are n_pads then plaintext
  * chunks only. OTP consume is secure_otp_session_feed (TLS only pumps I/O).
  * After the last application record the client flushes close_notify into the
@@ -540,6 +539,7 @@ static int tls_qkd_finish_and_ack(void)
     uint32_t key_bytes = 0U;
     uint32_t st = secure_qkd_ingest(NULL, 0U, SECURE_QKD_INGEST_FINISH, &key_bytes);
 
+    /* FINISH programs the end-cursor log slot and reads it back before this. */
     if (st != SECURE_QKD_OK) {
         return -1;
     }

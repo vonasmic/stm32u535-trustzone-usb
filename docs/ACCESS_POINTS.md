@@ -1,8 +1,8 @@
 # Access points (SAE and SE)
 
-Inventory of every interface that can reach **SAE** (SaeNode) or **SE** (this board: STM32U535 + TROPIC01). Use it to decide which doors to analyze. It does not restate the protocol; wire formats stay in [COMMUNICATION.md](COMMUNICATION.md), command bytes in [COMMANDS.md](COMMANDS.md), pins and option bytes in [HARDWARE.md](HARDWARE.md), and what each door can actually break in [SECURITY.md](SECURITY.md).
+Inventory of every interface that can reach **SAE** (SaeNode) or **SE** (this board: STM32U535 + TROPIC01). Use it to decide which doors to analyze. It does not restate the protocol; wire formats stay in [COMMUNICATION.md](COMMUNICATION.md), command bytes in [COMMANDS.md](COMMANDS.md), pins and option bytes in [HARDWARE.md](HARDWARE.md), and what each door can actually break in the [security analysis](../../docs/security_analysis.tex).
 
-**SE** is the TS13 DevKit running this firmware. **SAE** is the provisioning peer. SaeNode source is not in this tree; SAE rows below are the contract this firmware implements and the assets [SECURITY.md](SECURITY.md) assigns to SAE. USER (UserApp) is a third role. Its process is not inventoried, but every SE command USER can send is listed under SE, because those commands are doors into the secure element.
+**SE** is the TS13 DevKit running this firmware. **SAE** is the provisioning peer. SaeNode source is in [`JAVA_APPS/modules/sae-node`](../../JAVA_APPS/modules/sae-node/README.md); SAE rows below are the contract this firmware implements and the assets the [security analysis](../../docs/security_analysis.tex) assigns to SAE. USER (UserApp) is a third role. Its process is not inventoried, but every SE command USER can send is listed under SE, because those commands are doors into the secure element.
 
 Lab default (`RDP = 0xAA`, `BOOT_LOCK = 0`, `HDP1EN = 0`) leaves SWD and the bootloader open. A locked production board drops SE-P1 and SE-P2.
 
@@ -24,7 +24,7 @@ Only one host process owns the CDC port. SAE uses it for `PROVISION`. USER uses 
 | **First** | SE-P1, SE-L1, SE-L3, SE-T1, SE-T2 | SWD reads `secure_dwk`, the ML-DSA secret, and the pairing private key. Unsigned USB enrolls the owner and the SAE CA. `PROVISION` is how pads enter the chip. SPI before pairing speaks Tropic L3 with the factory key. |
 | **Next** | SE-T3, SE-T4, SE-L2, SAE-1, SAE-2, SAE-3 | Encrypt/decrypt and MANAGE move the PIN and identity. A compromised SAE holds the CA key and the pad plaintext before it is sealed. |
 | **Later** | SE-L4, SE-N1, SE-P3 | Read-only USB dumps and the NSC veneers. They leak occupancy and public keys. They do not hold pad plaintext by themselves. |
-| **Skip on this board** | — | No UART, Ethernet, BLE, Wi-Fi, or TCP listener. USB is CDC ACM only (no DFU class in the application). `se_host` is a lab stand-in, not a target ([SECURITY.md](SECURITY.md) §9). |
+| **Skip on this board** | — | No UART, Ethernet, BLE, Wi-Fi, or TCP listener. USB is CDC ACM only (no DFU class in the application). `se_host` is a lab stand-in, not a target ([security analysis](../../docs/security_analysis.tex), scope). |
 
 ---
 
@@ -34,8 +34,8 @@ MCU `STM32U535CCT6`, TrustZone on. Pins from `SE_firmware.ioc`. USB is NonSecure
 
 | ID | Access point | Where | Who can use it | Gate today | What it reaches |
 | --- | --- | --- | --- | --- | --- |
-| SE-P1 | SWD / ST-LINK | Debug port | Anyone with the probe | None at RDP 0. RDP 1 blocks readout. RDP 2 disables SWD | Flash, SRAM, option bytes. Pages 21–22 hold the SAE CA, device cert, `secure_dwk`, ML-DSA secret, pairing private key |
-| SE-P2 | BOOT0 → ROM bootloader | BOOT0 pin | Anyone who can strap the pin | `BOOT_LOCK = 0` (lab). `BOOT_LOCK = 1` ignores BOOT0 until an RDP regression | System bootloader. Option bytes and the flash map stay writable. This image does not expose a UART |
+| SE-P1 | SWD / ST-LINK | Debug port | Anyone with the probe | None at RDP 0. RDP 1 blocks readout. RDP 2 disables SWD; only the `OEM2KEY` regression request is accepted under reset ([HOW_TO_RUN.md](HOW_TO_RUN.md#lockdown-and-reverting)) | Flash, SRAM, option bytes. Pages 21–22 hold the SAE CA, device cert, `secure_dwk`, ML-DSA secret, pairing private key |
+| SE-P2 | BOOT0 → ROM bootloader | BOOT0 pin | Anyone who can strap the pin | `BOOT_LOCK = 0` (lab). `BOOT_LOCK = 1` ignores BOOT0 until an RDP regression to level 0 | System bootloader. Option bytes and the flash map stay writable. This image does not expose a UART |
 | SE-P3 | USB full-speed | PA11 `USB_DM`, PA12 `USB_DP` | The host that opens CDC | Cable plus enumeration. No USB login | The whole logical surface below. VID `1155` (`0x0483`), PID `22288` (`0x5710`), CDC ACM, bulk OUT `0x03`, bulk IN `0x82`, interrupt IN `0x81` |
 | SE-P4 | SPI1 to TROPIC01 | PA4 `CS`, PA5 SCK, PA6 MISO, PA7 MOSI | Probe on the board, or Secure firmware | Pins are Secure GPIO/SPI. No application authentication on the wires | Tropic L2/L3, R-MEM, ECC slot 0, pairing, M&D. Factory SH0 private key is in the SDK until MANAGE PAIRING burns it |
 | SE-P5 | Tropic power | PA0 `PWR`, GPIO out, Secure | Secure firmware; a probe can force the rail | Driven high in `se_tropic_port_hw_init` | Power-cut and glitch on the secure element. Not a data API |
@@ -108,7 +108,7 @@ These are reachable only after NonSecure or the debug probe is already on the de
 | SE-N1 | NSC veneers (`SECURE_*_nsc_call` in [se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.h)) | NonSecure | CMSE entry, 64-byte packets | Arm TLS mode and Unix time, USB RX/TX, OWNER SET begin, read-only Tropic/peer dumps, console TX. KEYGEN / KEM INIT / PEER ADD are not NSC entries |
 | SE-N2 | Secure flash page 21 | Secure code; SWD | TrustZone. Not in the ELF | SAE CA, device certificate |
 | SE-N3 | Secure flash page 22 | Secure code; SWD | TrustZone. Plaintext record | `secure_dwk`, `fill_id`, cursors, owner SPKI, password hash, pairing private key, ML-DSA secret, ML-KEM public key |
-| SE-N4 | Secure RAM | Secure code; SWD at RDP 0 | TrustZone | Live TLS keys, PIN `final_key`, session exporter. Wiped after use on the paths that copy them |
+| SE-N4 | Secure RAM | Secure code; SWD at RDP 0 | TrustZone | Live TLS keys, PIN `final_key`, session exporter. Wiped after use on the paths that copy them. Zeroed by `Reset_Handler` at every boot; erased on reset by `SRAM_RST=0x0 SRAM2_RST=0x0` and on internal tamper |
 
 NonSecure cannot read Secure RAM or those two pages. It can still point `PROVISION` at the wrong time and proxy USB bytes.
 
@@ -134,7 +134,7 @@ SaeNode opens the SE CDC port and is the TLS server for mode 1 only. It does not
 | SAE-2 | TLS 1.3 server on that byte stream | After `PROVISION` | ML-KEM-768, `TLS13-AES256-GCM-SHA384`, peer cert checked against the SAE CA stored on the SE | Uplink v5 in, downlink v3 out |
 | SAE-3 | Downlink v3 | SAE → SE inside SAE-2 | SE checks version, lengths, and AEAD under the ML-KEM shared secret. It does not have a second signature on each pad image | `kem_ct` (1088 B), `decrypt_half`, `pad_plain`, up to 507 pad images. This is how keystream enters R-MEM |
 | SAE-4 | Uplink v5 | SE → SAE inside SAE-2 | SAE recomputes the client hash from the mTLS client cert and checks the P-256 signature over `SHA384(client_hash \|\| exporter)` | Session signature, Tropic P-256 pub, client hash, slot size, pad count 507, pending `fill_id`, ML-KEM public key (1184 B), peer table |
-| SAE-5 | SAE CA private key | On the SAE host (the SE stores only the CA certificate) | Host protection. Not visible on the SE USB console | Whoever holds it can sign a leaf the SE will accept on `PROVISION`, until CREDS SAE or OWNER SET replaces the CA |
+| SAE-5 | SAE CA private key | On the SAE host (the SE stores only the CA certificate) | Host protection. Not visible on the SE USB console | Whoever holds it can sign a leaf the SE will accept on `PROVISION`, until the owner replaces the CA with CREDS SAE (MANAGE, owner key only, no PIN) or an `OWNER SET` retry installs a new one |
 | SAE-6 | Pad plaintext and encapsulation | SAE memory before SAE-3 is sent | Host protection | The keystream SAE seals into the downlink. The SE will not release it later without PIN + mTLS |
 
 Progress lines (`TROPIC_WIPE_FINISHED`, integer KiB, `SE_OK`) travel on SAE-2 and are not a second API.

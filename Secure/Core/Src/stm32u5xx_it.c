@@ -22,6 +22,7 @@
 #include "stm32u5xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "se_tamper.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -214,5 +215,11 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
-
+/**
+  * @brief This function handles the TAMP interrupt (confirmed internal tamper).
+  */
+void TAMP_IRQHandler(void)
+{
+  se_tamper_event();
+}
 /* USER CODE END 1 */

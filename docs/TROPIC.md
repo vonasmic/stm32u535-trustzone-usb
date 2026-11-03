@@ -8,7 +8,7 @@ Sources: [se_tropic_rmem.h](../Secure/Core/Inc/se_tropic_rmem.h), [se_nv.h](../S
 
 Tropic L3 (X25519 + AES-GCM + HMAC) is **classical**. Pad confidentiality is **ML-KEM-768 + MCU `secure_dwk`**. Do not treat a Tropic dump as equivalent to pad plaintext.
 
-PQ attack surfaces (TLS, USB, NSC, SPI, flash dump, PIN): **[SECURITY.md](SECURITY.md)**.
+PQ attack surfaces (TLS, USB, NSC, SPI, flash dump, PIN): **[security analysis](../../docs/security_analysis.tex)**.
 
 ---
 
@@ -77,7 +77,9 @@ Each direction stays inside `[base, end)`, and `end` is at most `last + 1` (`las
 match MCU vs Tropic cursor
 → read pad blob
 → decrypt (ML-KEM ss + fill_id)
+→ read both cursors again (must still name this slot)
 → advance Tropic mcounter, then MCU NV
+→ read both cursors back (must equal the new value)
 → erase R-MEM slot
 → XOR
 ```
@@ -97,7 +99,7 @@ Plaintext record on Secure flash **page 22** (`0x0C02C000`). The page is **8 KB*
 
 Magic `SENV` (`0x53454E56`) + version **9** (v9 added the two end cursors after `pad_plain` and shifted every later field by 4 bytes). Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Older records (v3–v8) are **not** migrated: after flashing v9 firmware over a v8 record every NV read returns `DEVICE_TAMPERED`, so erase the flash (the normal mass-erase download blanks page 22) and set the device up again from scratch. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
 
-Reads copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. Writes erase the whole 8 KB page (RMW work buffer, then `ForceZero`).
+Reads replay the provision log, then copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. A provision appends fill, arm, pad length, and the end cursors into the blank tail (eight fills, then the next provision is refused). Encrypt, decrypt, and other full-page updates erase the page, fold a log that matches the Tropic counters into the record, and clear the tail. `secure_dwk` is in the SRAM4 work buffer only for that erase. `SE_OK` is sent after the end-cursor slot has been read back.
 
 Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER sit at the end of the record.
 
@@ -202,6 +204,7 @@ Opened ML-KEM public key must match the NV copy when present (`mlkem_check_pk`).
 | --- | --- |
 | MCU-authoritative `fill_id` and cursors | Tropic R-MEM is not trusted alone if L3 ECC is broken |
 | Dual cursor check | MCU vs mcounter mismatch → tamper |
+| Cursor re-read and verify-after-write | Consume reads both cursors again before the advance and reads them back after it; any difference → tamper |
 | `fill_id` in kem_ct and pad HKDF | Restored old blobs fail decrypt |
 | Advance-before-erase | Power-cut loses a pad; never reuse |
 | No decrypt rewind; skip-ahead burns | Holes are consumed |

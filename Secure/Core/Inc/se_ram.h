@@ -31,7 +31,7 @@
 extern volatile uint32_t se_heap_used;
 extern volatile uint32_t se_heap_free;
 
-/** BSS that does not fit on the TLS stack. Startup does not zero SRAM4. */
+/** BSS that does not fit on the TLS stack. NOLOAD; Reset_Handler zeroes all of SRAM4. */
 #define SE_SRAM4_BSS __attribute__((section(".sram4_bss"), aligned(8)))
 
 /**
@@ -41,7 +41,6 @@ extern volatile uint32_t se_heap_free;
  */
 #define SE_DER_SCRATCH_SIZE 4096u
 
-void se_sram4_bss_init(void);
 /** SRAM4 DER scratch. Not exclusive; callers must not nest. */
 uint8_t *se_der_scratch(void);
 

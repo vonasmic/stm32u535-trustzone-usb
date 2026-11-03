@@ -41,6 +41,14 @@ _sstack = _estack - _Min_Stack_Size;
 _Min_Heap_Size = 0x200;	/* required amount of heap  */
 _Min_Stack_Size = 0x400;	/* required amount of stack */
 
+/* Reset_Handler wipe ranges. This image executes from RAM, so the RAM range
+ * is empty; SRAM4 holds no code and is zeroed in full. */
+_swipe_ram   = ORIGIN(RAM);
+_ewipe_ram   = ORIGIN(RAM);
+_swipe_sram4 = ORIGIN(SRAM4);
+_ewipe_sram4 = ORIGIN(SRAM4) + LENGTH(SRAM4);
+ASSERT(((_ewipe_sram4 - _swipe_sram4) % 16) == 0, "SRAM4 wipe range must be a multiple of 16 bytes")
+
 /* Memories definition */
 MEMORY
 {

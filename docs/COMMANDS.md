@@ -41,7 +41,7 @@ Clock + TLS arm happen together on `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE
 | `PROVISION` / `ENCRYPT` / `DECRYPT` / `MANAGE`                                            | **Never** — PIN (when used) is only inside TLS                                                         |
 | `HELP` / `PING` / `INFO` / `PUB` / `CLIENT HASH` / `CLIENT CSR` / `KEM PUB` / `PEER LIST` / `TROPIC PAD LEN` | Unsigned, read-only                                                                                    |
 | MANAGE KEYGEN / KEM INIT / PEER ADD / REMOVE / CREDS / OWNER REPLACE / PAIRING / PAIRING LOAD | Unsigned request over owner-pinned TLS. PIN only on KEM INIT. **No ML-DSA.** |
-| `OWNER SET`                                                                               | Unsigned USB blob (password + SPKI + optional SAE CA). First-wins. Device ML-DSA is generated on-chip. |
+| `OWNER SET`                                                                               | Unsigned USB blob (password + SPKI + optional SAE CA). First-wins: refused once the owner and the device ML-DSA key exist. If key generation failed, a retry keeps the stored owner and password and installs the SAE CA from the blob. Device ML-DSA is generated on-chip. |
 
 
 Tropic PIN (KEM INIT / ENCRYPT / DECRYPT): **8–16** printable ASCII (`0x20–0x7E`). The same bytes are used on MANAGE KEM INIT and on ENCRYPT/DECRYPT.

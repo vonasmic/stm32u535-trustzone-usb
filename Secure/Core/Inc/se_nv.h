@@ -3,8 +3,10 @@
  * @brief   MCU NV: fill_id, OTP cursors, TIME floor, pairing, peers, identity
  *
  * Page 22 is plaintext at fixed offsets (no NV AEAD). Tropic R-MEM / PIN /
- * ML-KEM KEK still use generate-once secure_dwk. Reads copy only the fields
- * needed; pairing priv and the device SK are not loaded on OTP/peer paths.
+ * ML-KEM KEK still use generate-once secure_dwk. Provision appends fill, arm,
+ * pad length, and end cursors to the blank tail (eight fills). A later
+ * full-page write folds that log into the record. Reads replay the log.
+ * Pairing priv and the device SK are not loaded on OTP/peer paths.
  */
 #ifndef SE_NV_H
 #define SE_NV_H

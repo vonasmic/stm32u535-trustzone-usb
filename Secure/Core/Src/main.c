@@ -27,6 +27,7 @@
 #include "se_tls_client.h"
 #include "se_tropic.h"
 #include "se_time.h"
+#include "se_tamper.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -116,6 +117,7 @@ int main(void)
   MX_SAU_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+  se_tamper_init(&hrtc);
   /* SPI1: CubeMX supplies MSP + GPIO; libtropic lt_port_init() calls HAL_SPI_Init(). */
   (void)hspi1;
   Secure_WolfSSL_Init();
