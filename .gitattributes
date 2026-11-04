@@ -1,0 +1,2 @@
+# Shell scripts must keep LF line endings, or bash fails (e.g. "set: pipefail: invalid option name").
+*.sh text eol=lf

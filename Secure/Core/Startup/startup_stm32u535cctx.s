@@ -60,6 +60,19 @@ defined in linker script */
 Reset_Handler:
   ldr   r0, =_estack
   mov   sp, r0          /* set stack pointer */
+/* Hardware stack limit for the Secure MSP: any push below _sstack
+ * (= _estack - _Min_Stack_Size, STM32U535CCTX_FLASH.ld) raises a STKOF
+ * UsageFault instead of silently overwriting heap/.bss. */
+  ldr   r0, =_sstack
+  msr   msplim, r0
+/* Enable the Secure UsageFault (SCB->SHCSR.USGFAULTENA, bit 18) so STKOF is
+ * reported as UsageFault rather than escalated to HardFault. */
+  ldr   r0, =0xE000ED24
+  ldr   r1, [r0]
+  orr   r1, r1, #0x40000
+  str   r1, [r0]
+  dsb
+  isb
 /* Zero Secure SRAM (SRAM1 + Secure SRAM2, which holds the stack) and SRAM4
  * before any C code runs. Ranges come from the linker script and are 16-byte
  * multiples. Registers only; nothing is pushed. */

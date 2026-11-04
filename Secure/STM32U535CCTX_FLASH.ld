@@ -37,10 +37,11 @@ ENTRY(Reset_Handler)
 
 /* Highest address of the user mode stack */
 _estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
-_sstack = _estack - _Min_Stack_Size;
+_sstack = _estack - _Min_Stack_Size;	/* bottom of Secure MSP; Reset_Handler loads it into MSPLIM_S */
 
 _Min_Heap_Size = 0x200;	/* TLS 1.3 + ML-KEM heap */
-_Min_Stack_Size = 0x2000;	/* TLS + NSC + libtropic session (~3 KB); _sbrk stops the heap here */
+_Min_Stack_Size = 0x4000;	/* 16 KB: TLS + NSC + libtropic; storage-blob AEAD frames ~8.6 KB; _sbrk stops the heap here */
+ASSERT((_sstack % 8) == 0, "_sstack (MSPLIM_S) must be 8-byte aligned")
 
 /* Reset_Handler zeroes these ranges before SystemInit: all Secure RAM
  * (SRAM1 + Secure SRAM2, stack included) and all of SRAM4. */

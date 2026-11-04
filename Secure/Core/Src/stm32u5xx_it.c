@@ -37,12 +37,33 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+/* Record fault status for the debugger. Expanded inline (no call, no push):
+ * after a STKOF the handler runs with MSP_S == MSPLIM_S, so any push would
+ * fault again and lock up the core. 'src' (1 = HardFault, 2 = UsageFault)
+ * also keeps the two handlers distinct so GCC does not fold one into a
+ * call to the other (that call would push LR). */
+#define SE_RECORD_FAULT(src)                                    \
+  do {                                                          \
+    se_fault_source = (src);                                    \
+    uint32_t cfsr_ = SCB->CFSR;                                 \
+    se_fault_cfsr = cfsr_;                                      \
+    se_fault_hfsr = SCB->HFSR;                                  \
+    se_fault_msp = __get_MSP();                                 \
+    if ((cfsr_ & SCB_CFSR_STKOF_Msk) != 0U) {                   \
+      se_stack_overflow_flag = 1U;                              \
+    }                                                           \
+  } while (0)
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+/* Secure fault record, inspect in the debugger. se_stack_overflow_flag = 1
+ * means the Secure MSP hit MSPLIM_S (CFSR.UFSR.STKOF). */
+volatile uint32_t se_stack_overflow_flag = 0U;
+volatile uint32_t se_fault_cfsr = 0U;
+volatile uint32_t se_fault_hfsr = 0U;
+volatile uint32_t se_fault_msp = 0U;
+volatile uint32_t se_fault_source = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,7 +106,7 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  SE_RECORD_FAULT(1U);
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -130,7 +151,7 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+  SE_RECORD_FAULT(2U);
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
