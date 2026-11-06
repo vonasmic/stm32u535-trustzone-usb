@@ -64,6 +64,8 @@
                          + TLS_UPLINK_ITEM(SE_NV_PEER_NAME_MAX) \
                          + TLS_UPLINK_ITEM(SECURE_LV_PAD_PLAIN_LEN))))
 #define TLS_SHUTDOWN_MS    3000u
+/** Quiet time in TLS_ST_DROP_RESP before close. The host is still writing. */
+#define TLS_DROP_QUIET_MS  2000u
 /* Backup if HAL_GetTick freezes (seen after long flash/Tropic work on U5). */
 #define TLS_SHUTDOWN_POLLS_MAX 60000u
 
@@ -77,6 +79,7 @@ typedef enum {
     TLS_ST_WIPE_TROPIC,
     TLS_ST_WRITE_LINE,
     TLS_ST_READ_RESP,
+    TLS_ST_DROP_RESP,
     TLS_ST_READ_OTP,
     TLS_ST_WRITE_OTP,
     TLS_ST_READ_MANAGE,
@@ -106,6 +109,7 @@ static uint8_t s_line_tx[TLS_LINE_MAX];
 static uint16_t s_line_tx_len;
 static uint16_t s_line_tx_off;
 static TlsState s_line_next;
+static uint32_t s_drop_tick;
 static uint16_t s_wipe_slot;
 static uint32_t s_dl_bytes;
 static uint32_t s_shutdown_tick;
@@ -645,6 +649,39 @@ static int tls_uplink_capture(const uint8_t *data, uint32_t len, void *ctx)
     return 0;
 }
 
+/** Tell the host why the download stopped, then keep reading so its write can finish. */
+static void tls_provision_fail(uint32_t st)
+{
+    char tmp[10];
+    char line[20];
+    uint16_t n = 0U;
+    uint16_t i;
+    uint32_t v = st;
+
+    se_tls_die = 13U;
+    se_tls_die_err = (int)st;
+    secure_qkd_discard();
+    s_drop_tick = 0U;
+    do {
+        tmp[n++] = (char)('0' + (uint8_t)(v % 10U));
+        v /= 10U;
+    } while ((v != 0U) && (n < 10U));
+    line[0] = 'S';
+    line[1] = 'E';
+    line[2] = '_';
+    line[3] = 'F';
+    line[4] = 'A';
+    line[5] = 'I';
+    line[6] = 'L';
+    line[7] = ' ';
+    for (i = 0U; i < n; i++) {
+        line[8U + i] = tmp[(uint16_t)(n - 1U - i)];
+    }
+    line[8U + n] = '\n';
+    line[9U + n] = '\0';
+    tls_line_begin(line, TLS_ST_DROP_RESP);
+}
+
 static void tls_app_provision_service(void)
 {
     int n;
@@ -658,7 +695,7 @@ static void tls_app_provision_service(void)
                 se_tls_die = 11U;
                 se_tls_die_err = -127;
                 tls_wipe_uplink();
-                se_tls_abort();
+                tls_provision_fail(SECURE_QKD_UPLINK);
                 break;
             }
             s_uplink_ready = 1U;
@@ -686,20 +723,20 @@ static void tls_app_provision_service(void)
         if (se_tropic_init_session() != SE_TROPIC_OK) {
             se_tls_die = 12U;
             se_tls_die_err = se_tropic_die;
-            se_tls_abort();
+            tls_provision_fail(SECURE_QKD_WIPE);
             break;
         }
         h = se_tropic_handle();
         if (h == NULL) {
             se_tls_die = 12U;
-            se_tls_abort();
+            tls_provision_fail(SECURE_QKD_WIPE);
             break;
         }
         ret = lt_r_mem_data_erase(h, s_wipe_slot);
         if (ret != LT_OK) {
             se_tls_die = 12U;
             se_tls_die_err = (int)ret;
-            se_tls_abort();
+            tls_provision_fail(SECURE_QKD_WIPE);
             break;
         }
         if (s_wipe_slot >= (uint16_t)SE_TROPIC_QKD_SLOT_LAST) {
@@ -729,10 +766,36 @@ static void tls_app_provision_service(void)
         s_state = s_line_next;
         if ((s_state == TLS_ST_READ_RESP) && (secure_qkd_ready_to_finish() != 0U)) {
             if (tls_qkd_finish_and_ack() != 0) {
-                se_tls_abort();
+                tls_provision_fail(SECURE_QKD_STORE);
             }
         }
         break;
+
+    case TLS_ST_DROP_RESP: {
+        uint8_t junk[128];
+
+        n = wolfSSL_read(s_ssl, junk, (int)sizeof(junk));
+        wc_ForceZero(junk, sizeof(junk));
+        if (n > 0) {
+            s_drop_tick = 0U;
+            break;
+        }
+        err = wolfSSL_get_error(s_ssl, n);
+        if (err == WOLFSSL_ERROR_WANT_READ || err == WOLFSSL_ERROR_WANT_WRITE) {
+            uint32_t now = HAL_GetTick();
+
+            if (s_drop_tick == 0U) {
+                s_drop_tick = (now == 0U) ? 1U : now;
+                break;
+            }
+            if ((now - s_drop_tick) >= TLS_DROP_QUIET_MS) {
+                tls_enter_shutdown();
+            }
+            break;
+        }
+        tls_enter_shutdown();
+        break;
+    }
 
     case TLS_ST_READ_RESP: {
         uint8_t chunk[TLS_APP_READ_CHUNK];
@@ -746,7 +809,7 @@ static void tls_app_provision_service(void)
             st = secure_qkd_ingest(chunk, (uint32_t)n, SECURE_QKD_INGEST_CHUNK, NULL);
             wc_ForceZero(chunk, sizeof(chunk));
             if (st != SECURE_QKD_OK) {
-                se_tls_abort();
+                tls_provision_fail(st);
                 break;
             }
             old_bytes = s_dl_bytes;
@@ -759,7 +822,7 @@ static void tls_app_provision_service(void)
             }
             if (secure_qkd_ready_to_finish() != 0U) {
                 if (tls_qkd_finish_and_ack() != 0) {
-                    se_tls_abort();
+                    tls_provision_fail(SECURE_QKD_STORE);
                 }
             }
             break;

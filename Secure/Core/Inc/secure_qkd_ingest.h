@@ -36,6 +36,10 @@ extern "C" {
 #define SECURE_QKD_WRONG_VERSION  4u
 /** Tropic write failed (session, store, tamper, occupied slot). */
 #define SECURE_QKD_STORE          5u
+/** Uplink could not be built. */
+#define SECURE_QKD_UPLINK         6u
+/** Tropic slot wipe failed. */
+#define SECURE_QKD_WIPE           7u
 
 /**
  * Max sum of key bytes for a full fill: kem_ct + every pad slot image.

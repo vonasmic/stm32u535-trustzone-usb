@@ -357,9 +357,41 @@ static lt_ret_t log_walk(se_nv_state_t *st, uint16_t *append_at, int *open)
     return LT_OK;
 }
 
-static lt_ret_t log_append(const uint8_t *slot, uint16_t len)
+/**
+ * A full-page program used to write the tail as 0xFF, which sets ECC and makes
+ * the next append fail even though the bytes still read as erased. Fold the
+ * current record and erase the page so the tail is blank again.
+ */
+static lt_ret_t log_blank_tail(void)
+{
+    se_nv_state_t st;
+    lt_ret_t ret;
+
+    ret = se_nv_load(&st);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    return se_nv_store(&st);
+}
+
+static lt_ret_t log_program_at(uint16_t at, const uint8_t *slot, uint16_t len)
 {
     uint8_t wrote[SE_NV_LOG_FILL_LEN];
+    lt_ret_t ret;
+
+    ret = se_tropic_port_nv_program(at, slot, len);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    ret = se_tropic_port_nv_slice_read(at, wrote, len);
+    if ((ret != LT_OK) || (memcmp(wrote, slot, len) != 0)) {
+        return LT_FAIL;
+    }
+    return LT_OK;
+}
+
+static lt_ret_t log_append(const uint8_t *slot, uint16_t len)
+{
     uint16_t at = 0U;
     int open = 0;
     lt_ret_t ret;
@@ -371,15 +403,27 @@ static lt_ret_t log_append(const uint8_t *slot, uint16_t len)
     if ((open == 0) || ((uint32_t)at + (uint32_t)len > SE_NV_PAGE_SIZE)) {
         return LT_FAIL;
     }
-    ret = se_tropic_port_nv_program(at, slot, len);
+    ret = log_program_at(at, slot, len);
+    if (ret == LT_OK) {
+        return LT_OK;
+    }
+    /* ECC-locked 0xFF (LT_HAL_ERROR) or a tail that is not programmable
+     * (LT_FAIL). One rewrite, then append at the blank tail. */
+    if ((ret != LT_HAL_ERROR) && (ret != LT_FAIL)) {
+        return ret;
+    }
+    ret = log_blank_tail();
     if (ret != LT_OK) {
         return ret;
     }
-    ret = se_tropic_port_nv_slice_read(at, wrote, len);
-    if ((ret != LT_OK) || (memcmp(wrote, slot, len) != 0)) {
+    ret = log_walk(NULL, &at, &open);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    if ((open == 0) || ((uint32_t)at + (uint32_t)len > SE_NV_PAGE_SIZE)) {
         return LT_FAIL;
     }
-    return LT_OK;
+    return log_program_at(at, slot, len);
 }
 
 static void log_seal(uint8_t *slot, uint16_t len)

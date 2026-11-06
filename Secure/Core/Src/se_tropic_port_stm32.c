@@ -195,14 +195,26 @@ static lt_ret_t flash_program_page(uint32_t addr, uint32_t page, const uint8_t *
     off = 0U;
     while (off < SE_NV_PAGE_SIZE) {
         uint16_t i;
+        int blank = 1;
 
+        /* A quadword programs once per erase (ECC). Programming 0xFF still
+         * sets that ECC, and the provision log can never append there.
+         * An erased quadword already reads as 0xFF, so leave it erased. */
         for (i = 0U; i < 16U; i++) {
-            qw[i] = src[off + i];
+            if (src[off + i] != 0xffu) {
+                blank = 0;
+                break;
+            }
         }
-        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, addr + off, (uint32_t)qw);
-        if (st != HAL_OK) {
-            (void)HAL_FLASH_Lock();
-            return LT_HAL_ERROR;
+        if (blank == 0) {
+            for (i = 0U; i < 16U; i++) {
+                qw[i] = src[off + i];
+            }
+            st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_QUADWORD, addr + off, (uint32_t)qw);
+            if (st != HAL_OK) {
+                (void)HAL_FLASH_Lock();
+                return LT_HAL_ERROR;
+            }
         }
         off += 16U;
     }
