@@ -61,3 +61,9 @@ host/                    Model tests + se_host — see host/README.md
 docs/                    Firmware documentation (this index)
 scripts/                 Host verify helpers (session uplink)
 ```
+
+## License
+
+Original code in this tree is Apache-2.0. Third-party terms are collected in [LICENSE.txt](LICENSE.txt). HAL is BSD-3-Clause, CMSIS is Apache-2.0, libtropic is Clear BSD, nanopb is zlib-style, USBX is the Microsoft Azure RTOS license, and wolfSSL is GPLv3 or later unless you have a commercial wolfSSL license.
+
+Secure and NonSecure are separate images. The Secure image links wolfSSL and is conveyed under GPLv3. The NonSecure image links USBX and stays under the Microsoft terms. See [LICENSE.txt](LICENSE.txt).
