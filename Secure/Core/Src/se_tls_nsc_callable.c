@@ -101,7 +101,9 @@ uint32_t CSME_NSE_API SECURE_UsbRx_nsc_call(const uint8_t *buf, uint32_t len)
             return SECURE_USB_ERR;
         }
         if (se_usb_tls_rx_push(ns_buf, len) < 0) {
-            if (se_tls_session_active() != 0) {
+            /* OWNER SET is not a TLS session. A full ring must wait; dropping
+             * the tail makes the length parser answer "failed parse". */
+            if ((se_tls_session_active() != 0) || (se_auth_active() != 0)) {
                 return SECURE_USB_BUSY;
             }
             se_tls_die = 5U;

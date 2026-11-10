@@ -56,7 +56,8 @@ extern "C" {
  * Shared ingest buffer for USB OWNER SET and TLS MANAGE (never concurrent).
  * malloc on first use; wiped/freed on se_manage_buf_wipe().
  */
-#define SE_MANAGE_BUF_MAX 6400u
+/* Max OWNER SET is 8021 bytes (64-byte password, 1952-byte ML-DSA-65 SPKI, 6000-byte CA). */
+#define SE_MANAGE_BUF_MAX 16384u
 
 uint8_t *se_manage_buf(void);
 uint32_t se_manage_buf_cap(void);

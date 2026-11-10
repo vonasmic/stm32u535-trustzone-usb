@@ -1,6 +1,6 @@
 /**
  * @file    se_device_id.c
- * @brief   Generate/export ML-DSA-44 device identity in Secure NV
+ * @brief   Generate/export ML-DSA-65 device identity in Secure NV
  */
 #include "se_device_id.h"
 #include "se_cert_spki.h"
@@ -23,34 +23,32 @@ static uint8_t s_id_pub[SE_DEVICE_ID_PUB_MAX];
 static void id_wipe_key(void)
 {
     wc_dilithium_free(&s_id_key);
+    wc_ForceZero(&s_id_key, sizeof(s_id_key));
     wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
     wc_ForceZero(s_id_pub, sizeof(s_id_pub));
 }
 
-static lt_ret_t id_load_sk(uint16_t *der_len)
+static lt_ret_t id_load_sk(void)
 {
-    int rc;
-    word32 idx = 0U;
     uint16_t n = 0U;
-    lt_ret_t ret;
+    int rc;
+    lt_ret_t ret = se_nv_get_device_seed(se_der_scratch(), &n, SE_NV_DEVICE_SEED_LEN);
 
-    ret = se_nv_get_device_sk(se_der_scratch(), &n, SE_NV_SK_MAX);
     if (ret != LT_OK) {
+        wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
         return ret;
     }
     rc = wc_dilithium_init_ex(&s_id_key, NULL, INVALID_DEVID);
     if (rc == 0) {
-        rc = wc_dilithium_set_level(&s_id_key, WC_ML_DSA_44);
+        rc = wc_dilithium_set_level(&s_id_key, WC_ML_DSA_65);
     }
     if (rc == 0) {
-        rc = wc_Dilithium_PrivateKeyDecode(se_der_scratch(), &idx, &s_id_key, n);
+        rc = wc_dilithium_make_key_from_seed(&s_id_key, se_der_scratch());
     }
+    wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
     if (rc != 0) {
         id_wipe_key();
         return LT_CRYPTO_ERR;
-    }
-    if (der_len != NULL) {
-        *der_len = n;
     }
     return LT_OK;
 }
@@ -59,47 +57,44 @@ lt_ret_t se_device_id_ensure(void)
 {
     WC_RNG rng;
     int rc;
-    int der_sz;
     lt_ret_t ret;
 
-    if (se_nv_has_device_sk() != 0) {
+    if (se_nv_has_device_seed() != 0) {
         return LT_OK;
     }
-
     (void)memset(&rng, 0, sizeof(rng));
-    rc = wc_dilithium_init_ex(&s_id_key, NULL, INVALID_DEVID);
+    rc = wc_InitRng(&rng);
     if (rc == 0) {
-        rc = wc_dilithium_set_level(&s_id_key, WC_ML_DSA_44);
-    }
-    if (rc == 0) {
-        rc = wc_InitRng(&rng);
-    }
-    if (rc == 0) {
-        rc = wc_dilithium_make_key(&s_id_key, &rng);
-    }
-    der_sz = 0;
-    if (rc == 0) {
-        /* Priv-only DER does not set pubKeySet on decode; CLIENT CSR needs the pub. */
-        der_sz = wc_Dilithium_KeyToDer(&s_id_key, se_der_scratch(), SE_NV_SK_MAX);
-        if (der_sz <= 0) {
-            rc = der_sz;
-        }
+        rc = wc_RNG_GenerateBlock(&rng, se_der_scratch(), SE_NV_DEVICE_SEED_LEN);
     }
     wc_FreeRng(&rng);
     if (rc != 0) {
         se_owner_die = 6U;
         se_owner_die_err = rc;
-        id_wipe_key();
+        wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
         return LT_CRYPTO_ERR;
     }
-    ret = se_nv_set_device_sk(se_der_scratch(), (uint16_t)der_sz);
-    id_wipe_key();
+    ret = se_nv_set_device_seed(se_der_scratch(), SE_NV_DEVICE_SEED_LEN);
+    wc_ForceZero(se_der_scratch(), SE_DER_SCRATCH_SIZE);
     if (ret != LT_OK) {
         se_owner_die = 6U;
         se_owner_die_err = (int)ret;
-        return ret;
     }
-    return LT_OK;
+    return ret;
+}
+
+int se_device_id_export_private_der(uint8_t *out, uint16_t cap)
+{
+    int n;
+    if ((out == NULL) || (cap < 6016u)) {
+        return -1;
+    }
+    if (id_load_sk() != LT_OK) {
+        return -1;
+    }
+    n = wc_Dilithium_KeyToDer(&s_id_key, out, cap);
+    id_wipe_key();
+    return n;
 }
 
 lt_ret_t se_device_id_open_pub(const uint8_t **pub, uint16_t *len)
@@ -113,7 +108,7 @@ lt_ret_t se_device_id_open_pub(const uint8_t **pub, uint16_t *len)
     }
     *pub = NULL;
     *len = 0U;
-    ret = id_load_sk(NULL);
+    ret = id_load_sk();
     if (ret != LT_OK) {
         return ret;
     }

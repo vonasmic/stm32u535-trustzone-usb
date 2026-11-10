@@ -1,6 +1,6 @@
 /**
  * @file    secure_client_key.h
- * @brief   Load the device ML-DSA private key from NV into wolfSSL
+ * @brief   Regenerate the ML-DSA-65 private key from the NV seed for wolfSSL
  */
 #ifndef SECURE_CLIENT_KEY_H
 #define SECURE_CLIENT_KEY_H

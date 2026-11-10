@@ -18,7 +18,7 @@
 static uint8_t *s_nv_page; /* se_nv_page_acquire, not the arena */
 
 #define SE_NV_MAGIC   0x53454E56u /* SENV */
-#define SE_NV_VERSION 9u
+#define SE_NV_VERSION 10u
 
 #define SE_NV_PEER_SLOT_LEN (1u + SE_NV_PEER_NAME_MAX + SE_NV_PEER_HASH_LEN + 2u)
 
@@ -40,14 +40,24 @@ static uint8_t *s_nv_page; /* se_nv_page_acquire, not the arena */
 #define SE_NV_OFF_PEERS     126u
 #define SE_NV_OFF_OWNER_LEN 662u
 #define SE_NV_OFF_OWNER     664u
-#define SE_NV_OFF_MLKEM_LEN 1976u
-#define SE_NV_OFF_MLKEM     1978u
-#define SE_NV_OFF_PW        3162u
-#define SE_NV_OFF_P_PRIV    3210u
-#define SE_NV_OFF_SK_LEN    3242u
-#define SE_NV_OFF_SK        3244u
-#define SE_NV_REC_END       (SE_NV_OFF_SK + SE_NV_SK_MAX)
+#define SE_NV_OFF_MLKEM_LEN 2616u
+#define SE_NV_OFF_MLKEM     2618u
+#define SE_NV_OFF_PW        3802u
+#define SE_NV_OFF_P_PRIV    3850u
+#define SE_NV_OFF_SK_LEN    3882u
+#define SE_NV_OFF_SK        3884u
+#define SE_NV_REC_END       (SE_NV_OFF_SK + SE_NV_DEVICE_SEED_LEN)
 #define SE_NV_OPS_LEN       (SE_NV_OFF_OWNER_LEN - SE_NV_OFF_FLAGS)
+
+_Static_assert(SE_NV_OFF_OWNER + SE_NV_OWNER_SPKI_MAX == SE_NV_OFF_MLKEM_LEN,
+               "owner capacity does not match NV layout");
+_Static_assert(SE_NV_OFF_MLKEM + SE_NV_MLKEM_MAX == SE_NV_OFF_PW,
+               "ML-KEM capacity does not match NV layout");
+_Static_assert(SE_NV_OFF_PW + SE_NV_PW_HASH_LEN == SE_NV_OFF_P_PRIV,
+               "password hash does not end at pairing private key");
+_Static_assert(SE_NV_OFF_P_PRIV + SE_NV_PAIRING_KEY_LEN == SE_NV_OFF_SK_LEN,
+               "pairing key does not end at seed length");
+_Static_assert(SE_NV_DEVICE_SEED_LEN == 32u, "ML-DSA seed must be 32 bytes");
 
 #if SE_NV_REC_END > SE_NV_PAGE_SIZE
 #error "NV record does not fit in the flash page"
@@ -232,7 +242,10 @@ static lt_ret_t unpack_ops(const uint8_t *ops, se_nv_state_t *out)
 
 /* Tail after the reserved record. 16-byte program units. One provision is
  * 48 + 16 + 16 + 16 = 96 bytes, and 848 / 96 = 8 with no room for a ninth. */
-#define SE_NV_LOG_OFF      (((SE_NV_REC_END + 15u) / 16u) * 16u)
+#define SE_NV_LOG_OFF      7344u /* fixed eight-fill tail; bytes after seed are reserved */
+#if SE_NV_REC_END > SE_NV_LOG_OFF
+#error "NV record overlaps the provision log"
+#endif
 #define SE_NV_LOG_FILL_LEN 48u
 #define SE_NV_LOG_STEP_LEN 16u
 #define SE_NV_LOG_FILL     0x01u
@@ -633,7 +646,7 @@ static lt_ret_t nv_set_sk_cb(void *ctx)
 {
     const nv_blob_ctx_t *c = ctx;
 
-    (void)memset(s_nv_page + SE_NV_OFF_SK, 0, SE_NV_SK_MAX);
+    (void)memset(s_nv_page + SE_NV_OFF_SK, 0, SE_NV_DEVICE_SEED_LEN);
     se_put_u16le(s_nv_page + SE_NV_OFF_SK_LEN, c->len);
     (void)memcpy(s_nv_page + SE_NV_OFF_SK, c->der, c->len);
     return LT_OK;
@@ -1075,9 +1088,9 @@ int se_nv_has_owner(void)
     return nv_has_u16(SE_NV_OFF_OWNER_LEN, 1U, SE_NV_OWNER_SPKI_MAX);
 }
 
-int se_nv_has_device_sk(void)
+int se_nv_has_device_seed(void)
 {
-    return nv_has_u16(SE_NV_OFF_SK_LEN, 1U, SE_NV_SK_MAX);
+    return nv_has_u16(SE_NV_OFF_SK_LEN, SE_NV_DEVICE_SEED_LEN, SE_NV_DEVICE_SEED_LEN);
 }
 
 int se_nv_has_mlkem(void)
@@ -1158,7 +1171,7 @@ lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN])
     return se_tropic_port_nv_slice_read(SE_NV_OFF_PW, out, SE_NV_PW_HASH_LEN);
 }
 
-lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap)
+lt_ret_t se_nv_get_device_seed(uint8_t *out, uint16_t *len, uint16_t cap)
 {
     uint16_t n = 0U;
     int present = 0;
@@ -1179,8 +1192,8 @@ lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap)
     if (ret != LT_OK) {
         return ret;
     }
-    if ((n == 0U) || (n > SE_NV_SK_MAX)) {
-        return (n > SE_NV_SK_MAX) ? SE_TROPIC_LT_TAMPERED : LT_FAIL;
+    if (n != SE_NV_DEVICE_SEED_LEN) {
+        return (n == 0U) ? LT_FAIL : SE_TROPIC_LT_TAMPERED;
     }
     if (cap < n) {
         return LT_PARAM_ERR;
@@ -1193,14 +1206,14 @@ lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap)
     return LT_OK;
 }
 
-lt_ret_t se_nv_set_device_sk(const uint8_t *der, uint16_t len)
+lt_ret_t se_nv_set_device_seed(const uint8_t *seed, uint16_t len)
 {
     nv_blob_ctx_t ctx;
 
-    if ((der == NULL) || (len == 0U) || (len > SE_NV_SK_MAX)) {
+    if ((seed == NULL) || len != SE_NV_DEVICE_SEED_LEN) {
         return LT_PARAM_ERR;
     }
-    ctx.der = der;
+    ctx.der = seed;
     ctx.len = len;
     return nv_mutate(nv_set_sk_cb, &ctx);
 }

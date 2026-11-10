@@ -446,10 +446,8 @@ extern "C" {
     #define HAVE_AES_DECRYPT
     /* Bitsliced AES: S-box is a boolean circuit, no Te/Td/Tsbox in FLASH.
      * HAVE_AES_ECB is required by wolfSSL for that implementation.
-     * bs_key is 15 * 16 * WC_AES_BS_WORD_SIZE slices. 32-bit slices are
-     * 30 KB per Aes; TLS keeps encrypt and decrypt, about 60 KB, and the
-     * ML-DSA-44 CertificateVerify scratch (16200 bytes) then fails with
-     * MEMORY_E. 16-bit slices are 7680 bytes per Aes. */
+     * 16-bit slices use 7680 bytes per Aes schedule, preserving arena
+     * headroom for ML-DSA-65 authentication and the two TLS directions. */
     #define WC_AES_BITSLICED
     #define HAVE_AES_ECB
     #define WC_AES_BS_WORD_SIZE 16
@@ -550,10 +548,11 @@ extern "C" {
     #define WOLFSSL_SHA3
 #endif
 
-/* ML-DSA-44 (FIPS 204) — smallest parameter set only */
+/* ML-DSA-65 (FIPS 204), category 3 only; compact code */
 #define WOLFSSL_HAVE_MLDSA
 #define HAVE_DILITHIUM
-#define WOLFSSL_NO_ML_DSA_65
+#define WOLFSSL_NO_ML_DSA_44
+#define WOLFSSL_MLDSA_SMALL
 #define WOLFSSL_NO_ML_DSA_87
 /* There is no WOLFSSL_MLDSA_SIGN_SMALLEST_MEM. Sign small-mem is ~16 KB
  * instead of the default 50176. Verify smallest-mem streams z (5.9.4, PR

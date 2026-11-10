@@ -243,9 +243,9 @@ def self_test() -> int:
         r, s = utils.decode_dss_signature(der)
         return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
-    client_spki = b"\xa5" * 1312
+    client_spki = b"\xa5" * 1952
     exporter = bytes(range(EXPORTER_LEN))
-    peers = [("Alice", b"\x11" * 1312), ("Bob", b"\x22" * 1312)]
+    peers = [("Alice", b"\x11" * 1952), ("Bob", b"\x22" * 1952)]
     registry = dict(peers)
 
     uplink = build_uplink(sign, ecc_pub, client_spki, exporter, peers)
@@ -267,12 +267,12 @@ def self_test() -> int:
     expect_reject("forwarded uplink (different exporter)",
                   lambda: verify_uplink(uplink, bytes(EXPORTER_LEN), client_spki, registry))
     expect_reject("wrong mTLS identity",
-                  lambda: verify_uplink(uplink, exporter, b"\xa6" * 1312, registry))
+                  lambda: verify_uplink(uplink, exporter, b"\xa6" * 1952, registry))
     expect_reject("unknown peer",
-                  lambda: verify_uplink(uplink, exporter, client_spki, {"Alice": b"\x11" * 1312}))
+                  lambda: verify_uplink(uplink, exporter, client_spki, {"Alice": b"\x11" * 1952}))
     expect_reject("peer name/hash mismatch",
                   lambda: verify_uplink(uplink, exporter, client_spki,
-                                        {"Alice": b"\x11" * 1312, "Mallory": b"\x22" * 1312}))
+                                        {"Alice": b"\x11" * 1952, "Mallory": b"\x22" * 1952}))
     expect_reject("truncated uplink",
                   lambda: verify_uplink(uplink[:-1], exporter, client_spki, registry))
 

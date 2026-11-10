@@ -75,7 +75,7 @@ The map command writes `BOOT_LOCK=0x0`. Boot then follows the BOOT0 pin, and `SE
 
 ### 3. Program both images
 
-Erase the whole flash, then program both images. Pages 21 and 22 (creds and NV) are not in the ELFs, so they stay blank. `-e all` does not change option bytes.
+Erase the whole flash, then program both images. Pages 20–22 (credentials and NV) are not in the ELFs, so they stay blank. `-e all` does not change option bytes.
 
 ```text
 STM32_Programmer_CLI.exe -c port=SWD mode=UR -e all
@@ -108,7 +108,7 @@ MANAGE <unix>    # KEYGEN (empty body)
 MANAGE <unix>    # KEM INIT (unsigned PIN + empty body)
 ```
 
-This creates the owner key, on-chip device ML-DSA, PIN, and ML-KEM key. `CLIENT CSR` dumps the device public key; a client-CA-signed cert is installed with MANAGE INSERT SIGNED CSR. The 1184-byte ML-KEM-768 public key is stored in NV.
+This creates the owner key, on-chip device ML-DSA-65 seed, PIN, and ML-KEM key. `CLIENT CSR` dumps the device public key; a client-CA-signed cert is installed with MANAGE INSERT SIGNED CSR. The 1184-byte ML-KEM-768 public key is stored in NV.
 
 To replace an occupied P-256 key:
 
@@ -143,7 +143,7 @@ After a successful arm, type `0x01` frames carry TLS until the session ends. A t
 
 ## Lockdown and reverting
 
-A production board ends at RDP level 2 with both OEM keys set. Level 2 is the strongest readout protection on the U535: debug and the system bootloader are off and the option bytes are frozen. The two OEM keys keep every step reversible for the key holder. Without `OEM2KEY`, level 2 is permanent. Do this after [step 7](#7-first-user-peers-then-first-sae-provision), on a board that runs both images.
+A production board ends at RDP level 2 with both OEM keys set and `BOOT_LOCK=0x1`. Level 2 is the strongest readout protection on the U535: debug and the system bootloader are off and the option bytes are frozen. The two OEM keys keep every step reversible for the key holder. Without `OEM2KEY`, level 2 is permanent. Do this after [step 7](#7-first-user-peers-then-first-sae-provision), on a board that runs both images.
 
 | Level | `RDP`  | What it does |
 | ----- | ------ | ------------ |
@@ -166,7 +166,7 @@ The keys are write-only. Once set, `OEM1LOCK` and `OEM2LOCK` in `FLASH_NSSR` rea
 - The commands below read them from environment variables set for one shell session, for example `$env:OEM1_W0 = Read-Host` in PowerShell. Close the shell afterwards.
 - Pass the words in the same order to lock and unlock (`W0` is key bits 31:0, `W1` is bits 63:32).
 - Losing `OEM2KEY` makes level 2 permanent. Losing `OEM1KEY` makes level 0 unreachable, so the Secure image can never be replaced.
-- Whoever holds `OEM2KEY` can regress the board to level 1 and then to 0.5, which erases and replaces the NonSecure image while Secure flash and pages 21–22 stay. Whoever holds `OEM1KEY` can mass-erase the board. Guard both like the owner key.
+- Whoever holds `OEM2KEY` can regress the board to level 1 and then to 0.5, which erases and replaces the NonSecure image while Secure flash and pages 20–22 stay. Whoever holds `OEM1KEY` can mass-erase the board. Guard both like the owner key.
 
 ### Lock
 
@@ -183,7 +183,7 @@ STM32_Programmer_CLI.exe -c port=SWD mode=HOTPLUG -lockrdp2 $env:OEM2_W0 $env:OE
 STM32_Programmer_CLI.exe -c port=SWD mode=HOTPLUG -r32 0x40022020 4
 ```
 
-3. Optional `BOOT_LOCK=0x1` (see [BOOT_LOCK](#boot_lock)).
+3. Set `BOOT_LOCK=0x1` for production (mandatory; see [BOOT_LOCK](#boot_lock)).
 
 4. SRAM erase on every system reset. `SRAM_RST=0x0` erases SRAM1 and SRAM4, `SRAM2_RST=0x0` erases SRAM2. Level 2 freezes these bits, so set them now. Power-cycle and check `-ob displ`:
 
@@ -217,7 +217,7 @@ The Secure image arms the TAMP internal tampers at every boot: backup-domain vol
 STM32_Programmer_CLI.exe -c port=SWD mode=UR -ob BOOT_LOCK=0x1 -rst
 ```
 
-With `BOOT_LOCK=0x1` and Secure boot in Secure flash (`SECBOOTADD0`), a regression works only through a hot-plug connection into the running NonSecure image. Such a board can go 2 → 1 → 0, but not to 0.5, because 0.5 erases the NonSecure image. Leave `BOOT_LOCK=0x0` on a board that may need the 0.5 path.
+With `BOOT_LOCK=0x1` and Secure boot in Secure flash (`SECBOOTADD0`), a regression works only through a hot-plug connection into the running NonSecure image. Such a board can go 2 → 1 → 0, but not to 0.5, because 0.5 erases the NonSecure image. `BOOT_LOCK=0x0` is a laboratory-only setting for boards that need the 0.5 path; it is not the production configuration.
 
 ### Reverting
 
@@ -235,7 +235,7 @@ The CLI then reports that it cannot connect; that is expected. Power-cycle, then
 STM32_Programmer_CLI.exe -c port=SWD mode=HOTPLUG -ob RDP=0xBB
 ```
 
-**Level 1 → 0.5 with `OEM2KEY`: new NonSecure image.** NonSecure flash is erased. Secure flash, pages 21–22, and the enrolment are kept. Only on a board with `BOOT_LOCK=0x0`: with no NonSecure code the CPU stays Secure, so set BOOT0 high (boot from the RSS) before you program. Do not run `-e all` here.
+**Level 1 → 0.5 with `OEM2KEY`: new NonSecure image.** NonSecure flash is erased. Secure flash, pages 20–22, and the enrolment are kept. Only on a board with `BOOT_LOCK=0x0`: with no NonSecure code the CPU stays Secure, so set BOOT0 high (boot from the RSS) before you program. Do not run `-e all` here.
 
 ```text
 STM32_Programmer_CLI.exe -c port=SWD mode=HOTPLUG -unlockrdp1 $env:OEM2_W0 $env:OEM2_W1
@@ -245,7 +245,7 @@ STM32_Programmer_CLI.exe -c port=SWD mode=UR -w "NonSecure\Debug\SE_firmware_Non
 
 Set BOOT0 low and raise the level with `-ob RDP=0xBB`, then Lock step 6. Level 0.5 cannot go to level 0 directly; go through level 1.
 
-**Level 1 → 0 with `OEM1KEY`: full mass erase.** All flash is erased, including Secure pages 21–22 (SAE CA, device cert, `secure_dwk`, ML-DSA secret, pairing private key, NV state), SRAM2, and the backup registers. `TZEN` stays 1 and the flash map stays.
+**Level 1 → 0 with `OEM1KEY`: full mass erase.** All flash is erased, including Secure pages 20–22 (SAE CA, device cert, `secure_dwk`, 32-byte ML-DSA-65 seed, pairing private key, NV state), SRAM2, and the backup registers. `TZEN` stays 1 and the flash map stays.
 
 ```text
 STM32_Programmer_CLI.exe -c port=SWD mode=HOTPLUG -unlockrdp1 $env:OEM1_W0 $env:OEM1_W1
@@ -292,7 +292,7 @@ Disconnect, DTR off, TLS error, or session end returns to command mode.
 
 ## Lab extras (not a USER or SAE TLS session)
 
-- `CLIENT CSR` — dump on-chip ML-DSA-44 public key.
+- `CLIENT CSR` — dump on-chip ML-DSA-65 public key.
 - `TROPIC PUB` / `CLIENT HASH` / `TROPIC KEM PUB` / `TROPIC PAD LEN` — dump P-256 pub, device `client_hash`, ML-KEM public key, or plaintext pad ceiling.
 
 ---

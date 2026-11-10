@@ -126,8 +126,8 @@ void se_tropic_port_print_chip_id(const lt_chip_id_t *chip_id)
 /* Page 22: 0x0C02C000 — FLASH_NV. Not in the ELF; a download erases it. */
 #define SE_NV_FLASH_ADDR    0x0C02C000u
 #define SE_NV_FLASH_PAGE    22u
-#define SE_CREDS_FLASH_ADDR 0x0C02A000u
-#define SE_CREDS_FLASH_PAGE 21u
+#define SE_CREDS_FLASH_ADDR 0x0C028000u
+#define SE_CREDS_FLASH_PAGE 20u
 
 static int page_dwk_blank(const uint8_t *p)
 {
@@ -301,7 +301,12 @@ lt_ret_t se_tropic_port_creds_page_read(uint8_t dst[SE_CREDS_PAGE_SIZE])
 
 lt_ret_t se_tropic_port_creds_page_write(const uint8_t src[SE_CREDS_PAGE_SIZE])
 {
-    return flash_program_page(SE_CREDS_FLASH_ADDR, SE_CREDS_FLASH_PAGE, src);
+    lt_ret_t ret = flash_program_page(SE_CREDS_FLASH_ADDR, SE_CREDS_FLASH_PAGE, src);
+    if (ret != LT_OK) {
+        return ret;
+    }
+    return flash_program_page(SE_CREDS_FLASH_ADDR + SE_NV_PAGE_SIZE,
+                              SE_CREDS_FLASH_PAGE + 1u, src + SE_NV_PAGE_SIZE);
 }
 
 lt_ret_t se_tropic_port_nv_raw_read(uint8_t *dst, uint16_t len)

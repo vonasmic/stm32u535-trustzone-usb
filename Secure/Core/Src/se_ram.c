@@ -1,9 +1,9 @@
 /**
  * @file    se_ram.c
- * @brief   SRAM4 NV page and DER scratch; creds workspace on the arena
+ * @brief   SRAM4 NV page; main-RAM DER scratch; arena creds workspace
  *
- * The NV flash image and the shared DER scratch live in SRAM4. The arena
- * workspace is only the creds page (8 KB, or 8 KB plus a spare DER).
+ * The NV flash image lives in SRAM4; the 6 KiB DER scratch is in main RAM.
+ * The arena workspace holds 16 KiB credentials plus an optional spare DER.
  */
 #include "se_ram.h"
 #include "se_nv.h"
@@ -12,10 +12,10 @@
 #include <string.h>
 #include <wolfssl/wolfcrypt/memory.h>
 
-_Static_assert(SE_DER_SCRATCH_SIZE == SE_NV_SK_MAX, "DER scratch must hold the device SK");
+_Static_assert(SE_DER_SCRATCH_SIZE >= 6016u, "DER scratch must hold expanded ML-DSA-65 PKCS#8");
 _Static_assert(SE_DER_SCRATCH_SIZE >= SE_CREDS_DER_MAX, "DER scratch must hold a cert");
 
-static uint8_t s_der_scratch[SE_DER_SCRATCH_SIZE] SE_SRAM4_BSS;
+static uint8_t s_der_scratch[SE_DER_SCRATCH_SIZE];
 static uint8_t s_nv_page[SE_NV_PAGE_SIZE] SE_SRAM4_BSS;
 static uint8_t s_nv_page_held;
 

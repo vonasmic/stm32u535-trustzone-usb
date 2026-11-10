@@ -12,11 +12,12 @@
 
 #include <stdint.h>
 
-#define SE_USB_RX_RING_SIZE 8192u
+/* Must hold one OWNER SET blob (8021 bytes) with margin. TX replies are short. */
+#define SE_USB_RX_RING_SIZE 16384u
 #define SE_USB_TX_RING_SIZE 8192u
 
-/** Largest console hex body: raw ML-DSA-44 pub (CLIENT CSR). */
-#define SE_USB_REPLY_BODY_MAX 1312u
+/** Largest console hex body: raw ML-DSA-65 pub (CLIENT CSR). */
+#define SE_USB_REPLY_BODY_MAX 1952u
 
 typedef struct {
     uint8_t  buf[SE_USB_RX_RING_SIZE];

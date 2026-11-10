@@ -6,7 +6,7 @@
  * ML-KEM KEK still use generate-once secure_dwk. Provision appends fill, arm,
  * pad length, and end cursors to the blank tail (eight fills). A later
  * full-page write folds that log into the record. Reads replay the log.
- * Pairing priv and the device SK are not loaded on OTP/peer paths.
+ * Pairing priv and the device seed are not loaded on OTP/peer paths.
  */
 #ifndef SE_NV_H
 #define SE_NV_H
@@ -30,10 +30,10 @@ extern "C" {
 #define SE_NV_FLAG_PAIRING 0x00000004u
 #define SE_NV_FLAG_OTP     0x00000008u
 
-#define SE_NV_OWNER_SPKI_MAX 1312u
+#define SE_NV_OWNER_SPKI_MAX 1952u
 #define SE_NV_PW_HASH_LEN    48u
-/** ML-DSA-44 PKCS#8 with public key (wolfSSL BOTH_KEY_DER is 3904). */
-#define SE_NV_SK_MAX         4096u
+/** FIPS 204 ML-DSA-65 key-generation seed; expanded keys exist only in RAM. */
+#define SE_NV_DEVICE_SEED_LEN 32u
 #define SE_NV_MLKEM_MAX      1184u
 
 /**
@@ -60,7 +60,7 @@ typedef struct {
     uint16_t pad_plain; /* peer Tropic plaintext bytes per pad */
 } se_nv_peer_t;
 
-/** Operational NV (no pairing priv, no device SK). */
+/** Operational NV (no pairing priv, no device seed). */
 typedef struct {
     uint8_t fill_id[SE_NV_FILL_ID_LEN];
     uint16_t cursor_encrypt;
@@ -187,14 +187,14 @@ int se_nv_pending_fill_take(uint8_t fill_id[SE_NV_FILL_ID_LEN]);
 void se_nv_pending_fill_clear(void);
 
 int se_nv_has_owner(void);
-int se_nv_has_device_sk(void);
+int se_nv_has_device_seed(void);
 int se_nv_has_mlkem(void);
 lt_ret_t se_nv_get_owner_spki(uint8_t *out, uint16_t *len);
 lt_ret_t se_nv_set_owner(const uint8_t *spki, uint16_t spki_len,
                          const uint8_t pw_hash[SE_NV_PW_HASH_LEN]);
 lt_ret_t se_nv_get_pw_hash(uint8_t out[SE_NV_PW_HASH_LEN]);
-lt_ret_t se_nv_get_device_sk(uint8_t *out, uint16_t *len, uint16_t cap);
-lt_ret_t se_nv_set_device_sk(const uint8_t *der, uint16_t len);
+lt_ret_t se_nv_get_device_seed(uint8_t *out, uint16_t *len, uint16_t cap);
+lt_ret_t se_nv_set_device_seed(const uint8_t *seed, uint16_t len);
 lt_ret_t se_nv_get_mlkem_pk(uint8_t *out, uint16_t *len);
 lt_ret_t se_nv_set_mlkem_pk(const uint8_t *pk, uint16_t len);
 

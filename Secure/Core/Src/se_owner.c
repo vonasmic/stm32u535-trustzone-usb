@@ -87,7 +87,7 @@ lt_ret_t se_owner_set(const uint8_t *pw, uint16_t pw_len, const uint8_t *spki, u
     uint8_t hash[SE_NV_PW_HASH_LEN];
     lt_ret_t ret;
 
-    if ((spki == NULL) || (spki_len == 0U) || (spki_len > SE_NV_OWNER_SPKI_MAX) ||
+    if ((spki == NULL) || (spki_len != SE_NV_OWNER_SPKI_MAX) ||
         (se_owner_pw_ok(pw, pw_len) == 0)) {
         se_owner_die = 3U;
         se_owner_die_err = (int)LT_PARAM_ERR;
@@ -120,7 +120,7 @@ lt_ret_t se_owner_replace(const uint8_t *old_pw, uint16_t old_len, const uint8_t
     uint8_t hash[SE_NV_PW_HASH_LEN];
     lt_ret_t ret;
 
-    if ((spki == NULL) || (spki_len == 0U) || (spki_len > SE_NV_OWNER_SPKI_MAX) ||
+    if ((spki == NULL) || (spki_len != SE_NV_OWNER_SPKI_MAX) ||
         (se_owner_pw_ok(new_pw, new_len) == 0)) {
         return LT_PARAM_ERR;
     }

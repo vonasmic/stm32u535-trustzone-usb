@@ -35,13 +35,13 @@ extern volatile uint32_t se_heap_free;
 #define SE_SRAM4_BSS __attribute__((section(".sram4_bss"), aligned(8)))
 
 /**
- * Short-lived DER scratch in SRAM4 (device SK encoding, TLS cert, client-hash cert).
+ * Short-lived main-RAM DER scratch (seed regeneration, TLS cert, client-hash cert).
  * One buffer: each caller finishes and wipes before returning. Do not nest.
- * Same size as SE_NV_SK_MAX. Cert callers pass SE_CREDS_DER_MAX as the cap.
+ * Holds expanded ML-DSA-65 PKCS#8 transiently. Cert callers use SE_CREDS_DER_MAX.
  */
-#define SE_DER_SCRATCH_SIZE 4096u
+#define SE_DER_SCRATCH_SIZE 6144u
 
-/** SRAM4 DER scratch. Not exclusive; callers must not nest. */
+/** Secure main-RAM DER scratch. Not exclusive; callers must not nest. */
 uint8_t *se_der_scratch(void);
 
 /**
@@ -68,7 +68,7 @@ void se_mem_session_begin(void);
 /** Record bytes still held. Call after the TLS session is torn down. */
 void se_mem_session_end(void);
 
-/** Creds-page workspace on the arena (8 KB, or 8 KB plus a spare DER). */
+/** Credentials workspace on the arena (16 KiB, optionally plus a spare 6000-byte DER). */
 void *se_workspace_acquire(size_t n);
 void se_workspace_release(void);
 

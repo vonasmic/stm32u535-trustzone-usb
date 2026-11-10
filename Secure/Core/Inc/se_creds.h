@@ -1,6 +1,6 @@
 /**
  * @file    se_creds.h
- * @brief   Runtime SAE CA + device client cert (Secure flash page 21)
+ * @brief   Runtime SAE CA + device client cert (Secure flash pages 20-21)
  */
 #ifndef SE_CREDS_H
 #define SE_CREDS_H
@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SE_CREDS_DER_MAX 4000u
+#define SE_CREDS_DER_MAX 6000u
 
 int se_creds_has_sae_ca(void);
 int se_creds_has_device_cert(void);

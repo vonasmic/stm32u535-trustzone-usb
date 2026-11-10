@@ -1,5 +1,7 @@
 # SE_firmware
 
+The Secure image uses ML-DSA-65 only with compact/small-memory wolfSSL options. Flash code occupies pages 0–19 (160 KiB); credentials occupy pages 20–21 (16 KiB); NV stays on page 22 and NSC on page 23. The device identity is a 32-byte seed in NV. Certificate limits are 6000 bytes, DER scratch 6144 bytes in main Secure RAM, and OWNER SET ingest 8192 bytes. USB framing stays unchanged.
+
 TrustZone firmware for **STM32U535** (TS13 DevKit) with a **TROPIC01** secure element.
 
 - **Secure** — wolfSSL TLS 1.3 client, libtropic / SPI to TROPIC01, NSC API, MCU NV

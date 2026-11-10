@@ -17,6 +17,14 @@
 static uint8_t s_armed;
 static uint32_t s_got;
 
+/* 1 + pw + u16 spki_len + spki + u16 ca_len + ca. */
+#define SE_OWNER_SET_MAX \
+    (1u + SE_OWNER_PW_MAX + 2u + SE_NV_OWNER_SPKI_MAX + 2u + SE_CREDS_DER_MAX)
+
+_Static_assert(SE_OWNER_SET_MAX == 8021u, "OWNER SET wire size");
+_Static_assert(SE_OWNER_SET_MAX <= SE_MANAGE_BUF_MAX, "OWNER SET fits ingest buffer");
+_Static_assert(SE_OWNER_SET_MAX <= SE_USB_RX_RING_SIZE, "OWNER SET fits USB RX ring");
+
 int se_auth_active(void)
 {
     return (s_armed != 0U) ? 1 : 0;
@@ -39,7 +47,7 @@ uint32_t se_auth_begin_owner(void)
         return SE_AUTH_ERR;
     }
     /* A failed keygen still leaves the owner record. Retry must reach the id step. */
-    if ((se_nv_has_owner() != 0) && (se_nv_has_device_sk() != 0)) {
+    if ((se_nv_has_owner() != 0) && (se_nv_has_device_seed() != 0)) {
         se_owner_die = 1U;
         se_owner_die_err = 1;
         return SE_AUTH_ERR;

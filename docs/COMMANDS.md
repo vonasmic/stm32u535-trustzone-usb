@@ -74,7 +74,7 @@ Reply: `u8 status | u16le msg_len | msg` (ASCII, no NUL on the wire, max 160). P
 | `OWNER SET`        | yes   | yes   | then type `0x01` blob | First USB wins if the owner slot is empty; else type `0x00` `refused`. Begin and apply `ok`/`failed` are type `0x00` ASCII. The blob is type `0x01`. Blob is password + owner SPKI + optional SAE CA. Device ML-DSA is generated on-chip. |
 | `PEER LIST`        | yes   | yes   | —                     | ASCII lines `name` + 96 hex hash + decimal pad_plain, or `empty`                                                                                                                                                                                  |
 | `CLIENT HASH`      | yes   | yes   | —                     | Dump 48-byte `SHA384(device_cert_spki || ecc_pub)`                                                                                                                                                                                                |
-| `CLIENT CSR`       | yes   | yes   | —                     | Dump raw ML-DSA-44 pub (1312 B)                                                                                                                                                                                                                   |
+| `CLIENT CSR`       | yes   | yes   | —                     | Dump raw ML-DSA-65 pub (1952 B)                                                                                                                                                                                                                   |
 | `TROPIC PAD LEN`   | yes   | yes   | —                     | Decimal plaintext OTP bytes per pad (chip slot size minus 29-byte AEAD overhead)                                                                                                                                                                  |
 | `TROPIC …`         | yes   | yes   | subcommand            | Flat table: PING/INFO/PUB/KEM PUB/OTP STATUS/PAD LEN                                                                                                                                                                                              |
 
@@ -107,7 +107,7 @@ Tropic PIN is only cmd 1 (KEM INIT): **8–16** printable ASCII (`0x20–0x7E`).
 | 2   | KEYGEN            | empty                                                         | `KEYGEN ok`            |
 | 3   | PEER ADD          | `u8 nlen | name | 48-byte hash | u16 LE pad_plain`            | `PEER ADD ok`          |
 | 4   | PEER REMOVE       | `u8 nlen | name`                                              | `PEER REMOVE ok`       |
-| 5   | CREDS SAE         | SAE CA DER (1–4000 bytes)                                     | `CREDS SAE ok`         |
+| 5   | CREDS SAE         | SAE CA DER (1–6000 bytes)                                     | `CREDS SAE ok`         |
 | 6   | INSERT SIGNED CSR | `u16le cert_len | cert DER`                                   | `INSERT SIGNED CSR ok` |
 | 7   | OWNER REPLACE     | `u8 old_len | old | u8 new_len | new | u16le spki_len | spki` | `OWNER REPLACE ok`     |
 | 8   | PAIRING           | one byte, slot **1–3**                                        | `PAIRING ok <slot> <64 hex priv> <64 hex pub>` |

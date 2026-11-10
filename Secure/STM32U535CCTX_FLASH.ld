@@ -57,8 +57,8 @@ MEMORY
 {
   RAM	(xrw)	 : ORIGIN = 0x30000000,	LENGTH = 224K     /* SRAM1 192K + low 32K of SRAM2. High 32K of SRAM2 is NonSecure. */
   SRAM4	(xrw)    : ORIGIN = 0x38000000,	LENGTH = 16K
-  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 168K    /* pages 0-20, 8KB pages */
-  FLASH_CREDS	(r)	 : ORIGIN = 0x0C02A000,	LENGTH = 8K      /* page 21, SAE CA + device cert */
+  FLASH	(rx)	 : ORIGIN = 0x0C000000,	LENGTH = 160K    /* pages 0-19, 8KB pages */
+  FLASH_CREDS	(r)	 : ORIGIN = 0x0C028000,	LENGTH = 16K     /* pages 20-21, SAE CA + device cert */
   FLASH_NV	(r)	 : ORIGIN = 0x0C02C000,	LENGTH = 8K      /* page 22, dwk + plaintext NV */
   FLASH_NSC	(rx) : ORIGIN = 0x0C02E000,	LENGTH = 8K      /* page 23, Secure+NSC */
 }
@@ -91,7 +91,7 @@ SECTIONS
    * table. Must appear before FLASH .rodata so *(.rodata*) does not claim
    * them. -fdata-sections names literals .rodata.<fn>.str1.1, not
    * .rodata.str1.1. _ctype_ is 257 bytes and is what made .data overflow
-   * the 168K FLASH region. */
+   * the 160K FLASH region. */
   .gnu.sgstubs :
   {
     . = ALIGN(4);

@@ -54,7 +54,7 @@ Every CDC byte is a frame: `u16le magic 0x6767 | u8 type | u16le length | payloa
 | --- | --- | --- | --- | --- |
 | SE-L1 | Console commands | `0x00`, max 160 bytes | **None.** Unknown lines return `failed` | Table below. A command that arrives during TLS is queued (4 deep) and runs after idle |
 | SE-L2 | Secure pipe | `0x01`, host splits at 1024 bytes | Open only after `OWNER SET` begin or a successful TLS arm. Idle `0x01` is dropped | OWNER SET blob, or the TLS byte stream (RX ring 16 KiB, TX ring 8 KiB) |
-| SE-L3 | `PROVISION <unix>` then TLS | `0x00` arms mode 1, then `0x01` | Unsigned arm. Then mTLS: SAE CA from flash page 21, device cert, exporter-bound uplink | SAE session. Device sends uplink v5, erases R-MEM 0–509, stores downlink v3 |
+| SE-L3 | `PROVISION <unix>` then TLS | `0x00` arms mode 1, then `0x01` | Unsigned arm. Then mTLS: SAE CA from flash pages 20–21, device cert, exporter-bound uplink | SAE session. Device sends uplink v5, erases R-MEM 0–509, stores downlink v3 |
 | SE-L4 | Read-only console | `0x00` | None | Public or occupancy data only. See the read-only rows |
 
 DTR off, CDC deactivate, RX overflow, or TLS end returns the parser to command mode.
@@ -71,7 +71,7 @@ DTR off, CDC deactivate, RX overflow, or TLS end returns the parser to command m
 | `MANAGE <unix>` | USER | none to arm; owner-pinned TLS, **no device client cert** | one unsigned command (table below) | **High.** Identity and PIN setup |
 | `PEER LIST` | — | none | no | Medium. Names, SPKI hashes, pad sizes |
 | `CLIENT HASH` | — | none | no | Medium. 48-byte `SHA384(device_cert_spki \|\| ecc_pub)` |
-| `CLIENT CSR` | — | none | no | Medium. Raw ML-DSA-44 public key (1312 bytes) |
+| `CLIENT CSR` | — | none | no | Medium. Raw ML-DSA-65 public key (1952 bytes) |
 | `TROPIC PING` | — | none | no | Low. Liveness |
 | `TROPIC INFO` | — | none | no | Low. Chip id / firmware string |
 | `TROPIC PUB` | — | none | no | Low. P-256 public key, or `empty` |
@@ -91,7 +91,7 @@ One request per session: `u8 cmd | u8 pin_len | pin | u16le body_len | body`. PI
 | 2 | KEYGEN | P-256 key in Tropic ECC slot 0 (generate, or replace if occupied) | **High.** Uplink signatures |
 | 3 | PEER ADD | Nickname + SPKI hash + pad length in NV (max 8) | Medium |
 | 4 | PEER REMOVE | Deletes that peer | Medium |
-| 5 | CREDS SAE | Replaces the SAE CA on flash page 21 | **High.** Chooses who `PROVISION` trusts |
+| 5 | CREDS SAE | Replaces the SAE CA on flash pages 20–21 | **High.** Chooses who `PROVISION` trusts |
 | 6 | INSERT SIGNED CSR | Device cert, must match the on-chip ML-DSA key | High |
 | 7 | OWNER REPLACE | New owner SPKI if the reset password matches. Pairing key survives; pads and creds do not | **High** |
 | 8 | PAIRING | X25519 in slot 1–3, factory SH0 burned, private key returned **once** on this TLS session | **High.** Irreversible on silicon |
@@ -106,7 +106,7 @@ These are reachable only after NonSecure or the debug probe is already on the de
 | ID | Access point | Caller | Gate | What it reaches |
 | --- | --- | --- | --- | --- |
 | SE-N1 | NSC veneers (`SECURE_*_nsc_call` in [se_tls_nsc.h](../Secure_nsclib/se_tls_nsc.h)) | NonSecure | CMSE entry, 64-byte packets | Arm TLS mode and Unix time, USB RX/TX, OWNER SET begin, read-only Tropic/peer dumps, console TX. KEYGEN / KEM INIT / PEER ADD are not NSC entries |
-| SE-N2 | Secure flash page 21 | Secure code; SWD | TrustZone. Not in the ELF | SAE CA, device certificate |
+| SE-N2 | Secure flash pages 20–21 | Secure code; SWD | TrustZone. Not in the ELF | SAE CA, device certificate |
 | SE-N3 | Secure flash page 22 | Secure code; SWD | TrustZone. Plaintext record | `secure_dwk`, `fill_id`, cursors, owner SPKI, password hash, pairing private key, ML-DSA secret, ML-KEM public key |
 | SE-N4 | Secure RAM | Secure code; SWD at RDP 0 | TrustZone | Live TLS keys, PIN `final_key`, session exporter. Wiped after use on the paths that copy them. Zeroed by `Reset_Handler` at every boot; erased on reset by `SRAM_RST=0x0 SRAM2_RST=0x0` and on internal tamper |
 
@@ -149,7 +149,7 @@ Copy this and mark each row when the review is done.
 
 | ID | Question |
 | --- | --- |
-| SE-P1 | Can SWD or a firmware image dump page 21 and page 22? |
+| SE-P1 | Can SWD or a firmware image dump pages 20–21 and page 22? |
 | SE-P2 | Can BOOT0 enter the ROM bootloader and rewrite flash or option bytes? |
 | SE-P3 | Is USB the only external data port, and is CDC ACM the only class? |
 | SE-P4 | Who can observe or inject SPI before and after PAIRING? |
@@ -160,6 +160,6 @@ Copy this and mark each row when the review is done.
 | SE-T1 | Is factory SH0 still valid on the chip under test? |
 | SE-T4 | Is the live PIN budget still 7 on silicon (`SE_TROPIC_PIN_ROUNDS`; 4 in the host model), and can tries be made without the MCU? |
 | SAE-1 | Who else can open the CDC port while SaeNode is running? |
-| SAE-2 | Does the SAE leaf chain to the CA currently on flash page 21? |
+| SAE-2 | Does the SAE leaf chain to the CA currently on flash pages 20–21? |
 | SAE-3 | Is pad plaintext present on the SAE host, and who can read it there? |
 | SAE-5 | Where is the SAE CA private key stored, and who can replace the cert on the SE (`OWNER SET`, CREDS SAE)? |

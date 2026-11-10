@@ -169,7 +169,7 @@ uint32_t se_manage_store_device_cert(const uint8_t *cert, uint16_t cert_len)
     if ((cert == NULL) || (cert_len == 0U) || (cert_len > SE_CREDS_DER_MAX)) {
         return SE_MANAGE_PARSE;
     }
-    if (se_nv_has_device_sk() == 0) {
+    if (se_nv_has_device_seed() == 0) {
         return SE_MANAGE_NOT_READY;
     }
     if (se_device_id_cert_matches(cert, cert_len) == 0) {

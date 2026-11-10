@@ -85,7 +85,7 @@ uint32_t CSME_NSE_API SECURE_UsbLog_nsc_call(const uint8_t *msg, uint32_t len);
 #define SECURE_TROPIC_ERR      1u
 
 #define SECURE_USB_DUMP_EMPTY    2u
-#define SECURE_USB_REPLY_BODY_MAX 1312u
+#define SECURE_USB_REPLY_BODY_MAX 1952u
 #define SE_TROPIC_MLKEM_PK_LEN   1184u
 
 uint32_t CSME_NSE_API SECURE_TropicPing_nsc_call(void);
@@ -93,7 +93,7 @@ uint32_t CSME_NSE_API SECURE_TropicInfo_nsc_call(void);
 uint32_t CSME_NSE_API SECURE_TropicPub_nsc_call(uint8_t *out_xy64);
 /** SHA-384 client hash, 48 bytes. */
 uint32_t CSME_NSE_API SECURE_TropicClientHash_nsc_call(uint8_t *out48);
-/** Raw ML-DSA-44 pub, hex on the USB TX ring. */
+/** Raw ML-DSA-65 pub, hex on the USB TX ring. */
 uint32_t CSME_NSE_API SECURE_ClientCsr_nsc_call(void);
 /** ML-KEM-768 pk, hex on the USB TX ring. EMPTY when no key is stored. */
 uint32_t CSME_NSE_API SECURE_TropicKemPub_nsc_call(void);

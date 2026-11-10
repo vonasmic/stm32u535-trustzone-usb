@@ -282,7 +282,7 @@ lt_ret_t se_creds_clear(void)
 int se_ready_encrypt(void)
 {
     return (se_nv_has_owner() != 0) && (se_creds_has_device_cert() != 0) &&
-           (se_nv_has_device_sk() != 0);
+           (se_nv_has_device_seed() != 0);
 }
 
 int se_ready_provision(void)

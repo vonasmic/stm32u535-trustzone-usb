@@ -7,6 +7,7 @@
 #include "se_le.h"
 #include "se_manage.h"
 #include "se_nv.h"
+#include "se_ram.h"
 #include "se_device_id.h"
 #include "se_owner.h"
 #include "se_tropic.h"
@@ -22,7 +23,7 @@ static int make_owner(dilithium_key *key, WC_RNG *rng, uint8_t *pub, word32 *pub
 
     rc = wc_dilithium_init_ex(key, NULL, INVALID_DEVID);
     if (rc == 0) {
-        rc = wc_dilithium_set_level(key, WC_ML_DSA_44);
+        rc = wc_dilithium_set_level(key, WC_ML_DSA_65);
     }
     if (rc == 0) {
         rc = wc_dilithium_make_key(key, rng);
@@ -87,7 +88,7 @@ int main(void)
     TEST_ASSERT_EQ(se_owner_set((const uint8_t *)"password2", 9U, pub_b, (uint16_t)pub_len_b),
                    LT_FAIL, "first-wins");
     TEST_ASSERT_EQ(se_device_id_ensure(), LT_OK, "device ML-DSA");
-    TEST_ASSERT(se_nv_has_device_sk() != 0, "device SK");
+    TEST_ASSERT(se_nv_has_device_seed() != 0, "device SK");
     {
         uint8_t device_pub[SE_NV_OWNER_SPKI_MAX];
         uint16_t device_pub_len = 0U;
@@ -95,8 +96,35 @@ int main(void)
         TEST_ASSERT_EQ(se_device_id_export_pub(device_pub, &device_pub_len,
                                                (uint16_t)sizeof(device_pub)),
                        LT_OK, "CLIENT CSR pub");
-        TEST_ASSERT_EQ(device_pub_len, 1312U, "ML-DSA-44 pub len");
-        TEST_ASSERT(device_pub[0] != 0U || device_pub[1311U] != 0U, "CLIENT CSR pub not all-zero");
+        TEST_ASSERT_EQ(device_pub_len, 1952U, "ML-DSA-65 pub len");
+        TEST_ASSERT(device_pub[0] != 0U || device_pub[1951U] != 0U, "CLIENT CSR pub not all-zero");
+    }
+    {
+        uint8_t seed[SE_NV_DEVICE_SEED_LEN];
+        uint8_t pub1[SE_NV_OWNER_SPKI_MAX], pub2[SE_NV_OWNER_SPKI_MAX];
+        uint8_t private_der[SE_DER_SCRATCH_SIZE];
+        uint16_t seed_len = 0U, n1 = 0U, n2 = 0U;
+        word32 idx = 0U, n = sizeof(pub2);
+        dilithium_key decoded;
+        int der_len;
+
+        TEST_ASSERT_EQ(se_nv_get_device_seed(seed, &seed_len, sizeof(seed)), LT_OK, "read seed");
+        TEST_ASSERT_EQ(seed_len, 32U, "NV stores exactly one seed");
+        TEST_ASSERT_EQ(se_nv_set_device_seed(seed, 31U), LT_PARAM_ERR, "reject short seed");
+        TEST_ASSERT_EQ(se_device_id_export_pub(pub1, &n1, sizeof(pub1)), LT_OK, "regenerate first");
+        TEST_ASSERT_EQ(se_device_id_export_pub(pub2, &n2, sizeof(pub2)), LT_OK, "regenerate second");
+        TEST_ASSERT_EQ(n1, n2, "stable pub length");
+        TEST_ASSERT(memcmp(pub1, pub2, n1) == 0, "seed regenerates same identity");
+        der_len = se_device_id_export_private_der(private_der, sizeof(private_der));
+        TEST_ASSERT_EQ(der_len, 6016, "expanded PKCS8 size");
+        TEST_ASSERT_EQ(wc_dilithium_init(&decoded), 0, "DER key init");
+        TEST_ASSERT_EQ(wc_Dilithium_PrivateKeyDecode(private_der, &idx, &decoded, der_len), 0, "decode regenerated key");
+        TEST_ASSERT_EQ(wc_dilithium_export_public(&decoded, pub2, &n), 0, "decoded public");
+        TEST_ASSERT_EQ(n, n1, "decoded length");
+        TEST_ASSERT(memcmp(pub1, pub2, n1) == 0, "TLS DER matches CLIENT CSR");
+        wc_dilithium_free(&decoded);
+        (void)memset(seed, 0, sizeof(seed));
+        (void)memset(private_der, 0, sizeof(private_der));
     }
     TEST_ASSERT(se_ready_encrypt() == 0, "encrypt needs device cert");
 
@@ -148,7 +176,7 @@ int main(void)
         TEST_ASSERT_EQ(se_tropic_kem_init_probe(), SE_TROPIC_OK, "slot 510 empty after replace");
     }
     TEST_ASSERT_EQ(se_device_id_ensure(), LT_OK, "device ML-DSA after replace");
-    TEST_ASSERT(se_nv_has_device_sk() != 0, "device SK after replace");
+    TEST_ASSERT(se_nv_has_device_seed() != 0, "device SK after replace");
     TEST_ASSERT(se_ready_encrypt() == 0, "encrypt still needs device cert");
 
     (void)memset(der, 0x33, sizeof(der));
@@ -236,6 +264,28 @@ int main(void)
         TEST_ASSERT_EQ(rsp_n, (uint16_t)(3U + 20U), "rsp len");
         TEST_ASSERT_EQ(rsp[0], (uint8_t)SE_MANAGE_OK, "rsp status");
         TEST_ASSERT_EQ((uint16_t)(rsp[1] | ((uint16_t)rsp[2] << 8)), 20U, "rsp msg len");
+    }
+
+    {
+        uint8_t ca[SE_CREDS_DER_MAX], cert[SE_CREDS_DER_MAX], out[SE_CREDS_DER_MAX];
+        uint8_t blob[1U + 64U + 2U + SE_NV_OWNER_SPKI_MAX + 2U + SE_CREDS_DER_MAX];
+        uint16_t len = 0U;
+        (void)memset(ca, 0x51, sizeof(ca));
+        (void)memset(cert, 0x63, sizeof(cert));
+        TEST_ASSERT_EQ(se_creds_set_sae_ca(ca, sizeof(ca)), LT_OK, "full CA");
+        TEST_ASSERT_EQ(se_creds_set_device_cert(cert, sizeof(cert)), LT_OK, "full leaf across pages");
+        TEST_ASSERT_EQ(se_creds_get_sae_ca(out, &len, sizeof(out)), LT_OK, "reload full CA");
+        TEST_ASSERT_EQ(len, sizeof(ca), "CA length");
+        TEST_ASSERT(memcmp(ca, out, len) == 0, "CA preserved across leaf write");
+        TEST_ASSERT_EQ(se_creds_get_device_cert(out, &len, sizeof(out)), LT_OK, "reload full leaf");
+        TEST_ASSERT(memcmp(cert, out, len) == 0, "full leaf preserved");
+        (void)memset(blob, 'p', sizeof(blob));
+        blob[0] = 64U;
+        se_put_u16le(blob + 65U, SE_NV_OWNER_SPKI_MAX);
+        se_put_u16le(blob + 67U + SE_NV_OWNER_SPKI_MAX, SE_CREDS_DER_MAX);
+        TEST_ASSERT_EQ(sizeof(blob), 8021U, "max enrollment size");
+        TEST_ASSERT(sizeof(blob) <= SE_MANAGE_BUF_MAX, "OWNER SET fits ingest cap");
+        TEST_ASSERT_EQ(se_manage_owner_set_need(blob, sizeof(blob)), sizeof(blob), "full OWNER SET parser");
     }
 
     wc_dilithium_free(&key_a);

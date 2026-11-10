@@ -216,7 +216,7 @@ Host-only (do not exist on silicon):
 | Device AEAD key | HKDF from `secure_dwk` | Fixed 32-byte test key |
 | ML-KEM pub | NV (KEM INIT) | NV first, else RAM `host_fw_mlkem_pk[]` |
 | NV page | Secure flash page 22 (8 KB, dwk + plaintext) | 8 KB RAM |
-| Creds page | Secure flash page 21 | 8 KB RAM |
+| Creds page | Secure flash pages 20–21 | 16 KB RAM |
 | CDC bytes | USBX CDC ACM | PTY `--tty` (lab: `/tmp/ttyACM-se1` / `se2`) |
 | SH0 | prod0 unless `SE_TROPIC_SH0_ENG` | Forced prod0 (`host_libtropic_config.h`) |
 | PIN rounds | silicon default 7 tries / 14 M&D slots | 4 tries / 8 slots (`SE_TROPIC_PIN_ROUNDS`) |

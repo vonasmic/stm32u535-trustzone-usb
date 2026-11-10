@@ -235,7 +235,7 @@ int main(void)
     (void)memset(fill_id, 0x11, sizeof(fill_id));
     TEST_ASSERT_EQ(se_nv_commit_fill(fill_id), LT_OK, "commit fill");
     TEST_ASSERT_EQ(se_nv_arm_otp_cursors(0U, 253U), LT_OK, "arm otp");
-    TEST_ASSERT(se_nv_has_device_sk() == 0, "cursor path needs no device SK");
+    TEST_ASSERT(se_nv_has_device_seed() == 0, "cursor path needs no device SK");
     TEST_ASSERT_EQ(se_nv_get_cursor(SE_NV_OTP_ENCRYPT, &cursor), LT_OK, "get cursor");
     TEST_ASSERT_EQ(cursor, 0U, "encrypt cursor at base");
 

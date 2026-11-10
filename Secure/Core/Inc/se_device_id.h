@@ -1,6 +1,6 @@
 /**
  * @file    se_device_id.h
- * @brief   On-device ML-DSA-44 identity (never imported over USB)
+ * @brief   On-device ML-DSA-65 identity (never imported over USB)
  */
 #ifndef SE_DEVICE_ID_H
 #define SE_DEVICE_ID_H
@@ -12,10 +12,13 @@
 extern "C" {
 #endif
 
-/** Generate ML-DSA-44 in NV if no device SK is present. */
+/** Generate a 32-byte ML-DSA-65 seed in NV if none is present. */
 lt_ret_t se_device_id_ensure(void);
 
-/** Copy raw ML-DSA-44 public key. LT_FAIL when SK is missing. */
+/** Expand the NV seed to PKCS#8 in caller-owned RAM (not se_der_scratch). */
+int se_device_id_export_private_der(uint8_t *out, uint16_t cap);
+
+/** Copy raw ML-DSA-65 public key. LT_FAIL when SK is missing. */
 lt_ret_t se_device_id_export_pub(uint8_t *out, uint16_t *len, uint16_t cap);
 
 /**

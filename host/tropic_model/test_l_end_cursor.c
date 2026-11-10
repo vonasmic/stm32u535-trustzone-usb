@@ -185,7 +185,7 @@ int main(void)
     TEST_ASSERT(h != NULL, "handle");
 
     TEST_ASSERT_EQ(wc_dilithium_init_ex(&owner, NULL, INVALID_DEVID), 0, "owner init");
-    TEST_ASSERT_EQ(wc_dilithium_set_level(&owner, WC_ML_DSA_44), 0, "owner level");
+    TEST_ASSERT_EQ(wc_dilithium_set_level(&owner, WC_ML_DSA_65), 0, "owner level");
     TEST_ASSERT_EQ(wc_dilithium_make_key(&owner, &rng), 0, "owner keygen");
     TEST_ASSERT_EQ(wc_dilithium_export_public(&owner, owner_pub, &owner_pub_len), 0, "owner pub");
     TEST_ASSERT_EQ(se_owner_set((const uint8_t *)"password1", 9U, owner_pub, (uint16_t)owner_pub_len),

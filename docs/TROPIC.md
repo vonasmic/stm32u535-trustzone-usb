@@ -97,11 +97,11 @@ Advance **before** erase: a power cut loses that pad and never rewinds it.
 
 Plaintext record on Secure flash **page 22** (`0x0C02C000`). The page is **8 KB** (same size in the host RAM model). Bytes `[0,32)` are generate-once `secure_dwk` (Tropic AEAD / PIN pepper / pw hash only — **not** an NV seal). The record starts at offset 32 (`SE_NV_REC_OFF`).
 
-Magic `SENV` (`0x53454E56`) + version **9** (v9 added the two end cursors after `pad_plain` and shifted every later field by 4 bytes). Erased page or unknown magic → empty (`flags` 0, `LT_OK`). Older records (v3–v8) are **not** migrated: after flashing v9 firmware over a v8 record every NV read returns `DEVICE_TAMPERED`, so erase the flash (the normal mass-erase download blanks page 22) and set the device up again from scratch. Wrong version with a valid magic → `DEVICE_TAMPERED`. Length overflow on owner/SK/ML-KEM/peer fields → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is still caught by MCU vs Tropic mcounter mismatch.
+Magic `SENV` (`0x53454E56`) + version **10**. Erased page or unknown magic → empty (`flags` 0, `LT_OK`). A different version with valid magic → `DEVICE_TAMPERED`; the firmware has no compatibility or migration path. Invalid owner/seed/ML-KEM/peer lengths → `DEVICE_TAMPERED`. There is no NV GCM MAC; OTP rewind is caught by MCU vs Tropic mcounter mismatch.
 
 Reads replay the provision log, then copy only the fields the caller needs. Pairing priv and the device ML-DSA SK are not loaded on fill/OTP/peer/KEM-PUB paths. A provision appends fill, arm, pad length, and the end cursors into the blank tail (eight fills, then the next provision is refused). Encrypt, decrypt, and other full-page updates erase the page, fold a log that matches the Tropic counters into the record, and clear the tail. `secure_dwk` is in the SRAM4 work buffer only for that erase. `SE_OK` is sent after the end-cursor slot has been read back.
 
-Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER sit at the end of the record.
+Operational fields sit first; `pw_hash`, pairing **priv**, and the device seed sit at the end of the record.
 
 | Field | Size | Meaning |
 | --- | --- | --- |
@@ -116,11 +116,15 @@ Operational fields sit first; `pw_hash`, pairing **priv**, and the device SK DER
 | `pairing_pub` | 32 B | X25519 host public |
 | `peer_count` | 1 B | Occupied peers, 0–8 |
 | 8 × `{name_len, name[16], hash[48], pad_plain}` | 67 B × 8 | Compact slots `0..count-1`; `PEER ADD` / `REMOVE` / `LIST` |
-| `owner_len` + owner SPKI | u16 + 1312 B | Enrolled owner (`OWNER SET`) |
+| `owner_len` + owner SPKI | u16 + 1952 B | Enrolled owner (`OWNER SET`) |
 | `mlkem_len` + ML-KEM pk | u16 + 1184 B | NV copy from `KEM INIT` |
 | `pw_hash` | 48 B | `SHA-384(secure_dwk \|\| password)` |
 | `pairing_priv` | 32 B | X25519 host private (MCU NV; also returned once on MANAGE PAIRING TLS) |
-| `sk_len` + device SK DER | u16 + 4096 B | ML-DSA-44 PKCS#8 with public key (`CLIENT CSR` / mTLS); loaded only for mTLS |
+| `sk_len` + device seed | u16 + 32 B | ML-DSA-65 seed at byte 3884; regenerated for `CLIENT CSR` and mTLS |
+
+The record ends at byte 3916. Bytes 3916–7343 are reserved; the fixed provision log starts at byte 7344 and holds eight 96-byte fills.
+
+The expanded 6016-byte PKCS#8 key exists only in Secure RAM. The 6 KiB DER scratch is in main Secure RAM, not SRAM4.
 
 RAM-only until `kem_ct` write: `pending_fill_id` from the uplink (item 5).
 
