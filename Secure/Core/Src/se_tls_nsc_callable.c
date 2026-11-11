@@ -223,6 +223,9 @@ uint32_t CSME_NSE_API SECURE_TlsStart_nsc_call(uint32_t mode, uint32_t unix_utc)
         (mode != SECURE_TLS_MODE_DECRYPT) && (mode != SECURE_TLS_MODE_MANAGE)) {
         return SECURE_USB_ERR;
     }
+    /* The previous handshake may still be up. Drop its RX and TLS state so
+     * se_tls_arm is not refused for lack of IDLE. */
+    se_tls_reset_quiet();
 
     rc = se_time_set_unix(unix_utc);
     if (rc < 0) {

@@ -251,6 +251,30 @@ static int parse_unix_arg(char *args, uint32_t *out)
     return 0;
 }
 
+static int command_arms_tls(const char *line)
+{
+    char *args = NULL;
+
+    return cmd_match(line, "PROVISION", &args)
+        || cmd_match(line, "ENCRYPT", &args)
+        || cmd_match(line, "DECRYPT", &args)
+        || cmd_match(line, "MANAGE", &args);
+}
+
+/** Drop a frame already popped for USB. Secure discards the rest in TlsStart.
+ * Abort the IN pipe so write_state returns to RESET. Clearing s_tx_in_flight
+ * alone leaves write_run in WRITE_WAIT, which ignores the next buffer. */
+static void tls_usb_drop_tx(void)
+{
+    if ((s_cdc != NULL) && (s_tx_in_flight != 0U)) {
+        (void)ux_device_class_cdc_acm_ioctl(s_cdc,
+                UX_SLAVE_CLASS_CDC_ACM_IOCTL_ABORT_PIPE,
+                (VOID *)UX_SLAVE_CLASS_CDC_ACM_ENDPOINT_XMIT);
+    }
+    s_tx_in_flight = 0U;
+    s_tx_pkt_len = 0U;
+}
+
 static void cmd_tls_start(uint32_t mode, char *args)
 {
     uint32_t unix_utc;
@@ -259,8 +283,10 @@ static void cmd_tls_start(uint32_t mode, char *args)
         usb_failed();
         return;
     }
-    /* Send queued plain text before ClientHello. Its frame type stays 0x00. */
-    tls_usb_drain_tx();
+    /* Abort the popped IN frame. TlsStart clears Secure RX and the TLS stack;
+     * this command's ClientHello is the next TX. */
+    tls_usb_drop_tx();
+    tls_disarm();
     if (SECURE_TlsStart_nsc_call(mode, unix_utc) != SECURE_USB_OK) {
         usb_failed();
         return;
@@ -503,7 +529,8 @@ static void dispatch_command_payload(const uint8_t *data, uint32_t len)
     if (n == 0U) {
         return;
     }
-    if (pipe_armed() != 0) {
+    /* A new TLS verb aborts the leftover session instead of waiting for it. */
+    if ((pipe_armed() != 0) && (command_arms_tls(line) == 0)) {
         queue_command(line);
         return;
     }
@@ -700,6 +727,13 @@ static void tls_usb_drain_tx(void)
     }
 
     for (;;) {
+        /* Completions that land during a Secure call stay pending in the DCD
+         * until this runs. write_run before that returns an error. */
+        (void)ux_system_tasks_run();
+        if (s_cdc == NULL || s_active == 0U) {
+            return;
+        }
+
         if (s_tx_in_flight == 0U) {
             uint32_t out_type = USB_FRAME_TYPE_CMD;
 
@@ -732,11 +766,9 @@ static void tls_usb_drain_tx(void)
             s_tx_pkt_len = 0U;
             continue;
         }
-        if (status == UX_STATE_ERROR || status == UX_STATE_EXIT) {
-            s_tx_in_flight = 0U;
-            s_tx_pkt_len = 0U;
-            break;
-        }
+        /* ERROR and EXIT reset USBX write_state. The bytes are already out of
+         * the Secure ring, so keep s_tx_pkt and retry after the next tasks_run.
+         * Discarding them left the host waiting on an empty ring. */
         break;
     }
 }
@@ -839,6 +871,10 @@ void tls_usb_poll(void)
 
         if (s_rx_hold_len == 0U) {
             actual = 0U;
+            (void)ux_system_tasks_run();
+            if (s_cdc == NULL) {
+                return;
+            }
             status = ux_device_class_cdc_acm_read_run(s_cdc, s_rx_pkt, sizeof(s_rx_pkt), &actual);
             if (status == UX_STATE_NEXT) {
                 if (actual == 0U) {

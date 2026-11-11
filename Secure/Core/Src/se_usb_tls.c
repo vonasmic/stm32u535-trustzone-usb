@@ -153,6 +153,10 @@ static int tx_read(uint8_t *out, uint32_t max, uint32_t *got, uint8_t *out_type)
         return -1;
     }
     if ((s_span_count == 0U) || (s_tx.count == 0U)) {
+        /* NonSecure pops only when its IN transfer is idle, so this empty
+         * read means the host already has the previous frame. Clearing the
+         * drain flag on the pop that filled that frame let the pipe go idle
+         * while USBX still held the bytes, and the next command discarded them. */
         tx_note_tls_drained();
         return 1;
     }
@@ -173,7 +177,6 @@ static int tx_read(uint8_t *out, uint32_t max, uint32_t *got, uint8_t *out_type)
     if (got != NULL) {
         *got = n;
     }
-    tx_note_tls_drained();
     return 0;
 }
 
