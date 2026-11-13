@@ -178,22 +178,33 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE3) != HAL_OK)
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI
-                              |RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI48
+                              |RCC_OSCILLATORTYPE_LSI|RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_0;
   RCC_OscInitStruct.LSIDiv = RCC_LSI_DIV1;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLMBOOST = RCC_PLLMBOOST_DIV1;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 10;
+  RCC_OscInitStruct.PLL.PLLP = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 1;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLLVCIRANGE_1;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -204,13 +215,13 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
                               |RCC_CLOCKTYPE_PCLK3;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB3CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -283,6 +294,64 @@ static void MX_GTZC_S_Init(void)
   /* PWR/RCC are not in TZSC on STM32U535 (HAL rejects GTZC_PERIPH_PWR/RCC).
    * They default to non-secure; use HAL_RCC_ConfigAttributes + Secure VDDUSB. */
   HAL_RCC_ConfigAttributes(RCC_HSI48 | RCC_ICLK, RCC_NSEC_NPRIV);
+
+  /* Lock GTZC after the last attribute write. CFGLOCK, MPCBB CR GLOCK and
+   * TZSC CR LCK are hardware locks cleared only by a system reset, not by
+   * option bytes. There is no GTZC_TZSC symbol on STM32U535; the instances
+   * are GTZC_TZSC1 and GTZC_TZSC2. */
+  {
+    MPCBB_ConfigTypeDef MPCBB_ResetLayout = {0};
+    uint32_t i;
+    const uint32_t sram2_superblock_locks[4] = {
+      GTZC_MPCBB_SUPERBLOCK_LOCKED, GTZC_MPCBB_SUPERBLOCK_LOCKED,
+      GTZC_MPCBB_SUPERBLOCK_LOCKED, GTZC_MPCBB_SUPERBLOCK_LOCKED
+    };
+
+    /* MPCBB1: explicit TZEN=1 reset layout (SRAM1 all Secure and privileged,
+     * not inverted, illegal-access detection enabled) and lock all 12
+     * 16 KB super-blocks (192 KB). */
+    MPCBB_ResetLayout.SecureRWIllegalMode = GTZC_MPCBB_SRWILADIS_ENABLE;
+    MPCBB_ResetLayout.InvertSecureState = GTZC_MPCBB_INVSECSTATE_NOT_INVERTED;
+    for (i = 0U; i < 12U; i++)
+    {
+      MPCBB_ResetLayout.AttributeConfig.MPCBB_SecConfig_array[i] = 0xFFFFFFFFU;
+      MPCBB_ResetLayout.AttributeConfig.MPCBB_PrivConfig_array[i] = 0xFFFFFFFFU;
+    }
+    MPCBB_ResetLayout.AttributeConfig.MPCBB_LockConfig_array[0] = 0x00000FFFU;
+    if (HAL_GTZC_MPCBB_ConfigMem(SRAM1_BASE, &MPCBB_ResetLayout) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    /* MPCBB4: 16 KB SRAM4, same reset layout, used by Secure SE_SRAM4_BSS.
+     * Super-block 0 is already all-Secure / all-privileged in this desc. */
+    MPCBB_ResetLayout.AttributeConfig.MPCBB_LockConfig_array[0] = 0x00000001U;
+    if (HAL_GTZC_MPCBB_ConfigMem(SRAM4_BASE, &MPCBB_ResetLayout) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    /* MPCBB2 attributes were set above; lock the four SRAM2 super-blocks. */
+    if (HAL_GTZC_MPCBB_LockConfig(SRAM2_BASE, 4U, sram2_superblock_locks) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    if (HAL_GTZC_MPCBB_Lock(SRAM1_BASE) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    if (HAL_GTZC_MPCBB_Lock(SRAM2_BASE) != HAL_OK)
+    {
+      Error_Handler();
+    }
+    if (HAL_GTZC_MPCBB_Lock(SRAM4_BASE) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    HAL_GTZC_TZSC_Lock(GTZC_TZSC1);
+    HAL_GTZC_TZSC_Lock(GTZC_TZSC2);
+  }
   /* USER CODE END GTZC_S_Init 2 */
 
 }
@@ -437,7 +506,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;

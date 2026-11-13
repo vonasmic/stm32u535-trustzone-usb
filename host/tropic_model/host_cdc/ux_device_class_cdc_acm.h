@@ -21,6 +21,8 @@ typedef struct {
 } UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_PARAMETER;
 
 #define UX_SLAVE_CLASS_CDC_ACM_IOCTL_GET_LINE_STATE 1u
+#define UX_SLAVE_CLASS_CDC_ACM_IOCTL_ABORT_PIPE    4u
+#define UX_SLAVE_CLASS_CDC_ACM_ENDPOINT_XMIT       1u
 
 UINT ux_device_class_cdc_acm_read_run(UX_SLAVE_CLASS_CDC_ACM *cdc, UCHAR *buffer,
                                       ULONG requested_length, ULONG *actual_length);

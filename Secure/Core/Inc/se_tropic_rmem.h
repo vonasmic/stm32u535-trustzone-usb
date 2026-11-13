@@ -219,6 +219,12 @@ lt_ret_t se_tropic_get_pad_encryption_key(const uint8_t ss[SE_TROPIC_MLKEM_SS_LE
 void se_tropic_qkd_set_wiped(uint8_t wiped);
 
 /**
+ * Erase every QKD R-MEM slot (0..509), stopping at the first erase error.
+ * Leaves PIN NVM (511) and the wrapped ML-KEM seed (510) alone.
+ */
+lt_ret_t se_tropic_qkd_wipe_slots(lt_handle_t *h);
+
+/**
  * Erase every QKD R-MEM slot (0..509) unless se_tropic_qkd_set_wiped(1) ran.
  * Leaves PIN NVM (511) and the wrapped ML-KEM seed (510) alone. Does not arm
  * OTP cursors. Called from kem_ct_write after committing fill_id to MCU NV.

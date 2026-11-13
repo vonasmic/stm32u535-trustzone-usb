@@ -479,6 +479,12 @@ UINT ux_device_class_cdc_acm_ioctl(UX_SLAVE_CLASS_CDC_ACM *cdc, ULONG ioctl_func
     UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_PARAMETER *line;
 
     (void)cdc;
+    if (ioctl_function == UX_SLAVE_CLASS_CDC_ACM_IOCTL_ABORT_PIPE &&
+            parameter == (VOID *)UX_SLAVE_CLASS_CDC_ACM_ENDPOINT_XMIT) {
+        /* Drop a partial write. The next write_run starts at the new buffer. */
+        s_write_off = 0U;
+        return UX_SUCCESS;
+    }
     if (ioctl_function != UX_SLAVE_CLASS_CDC_ACM_IOCTL_GET_LINE_STATE || parameter == NULL) {
         return UX_SUCCESS;
     }

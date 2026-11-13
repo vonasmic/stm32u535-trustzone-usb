@@ -114,7 +114,7 @@ void se_tropic_qkd_set_wiped(uint8_t wiped)
     s_qkd_wiped = (wiped != 0U) ? 1U : 0U;
 }
 
-lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
+lt_ret_t se_tropic_qkd_wipe_slots(lt_handle_t *h)
 {
     uint16_t slot;
     lt_ret_t ret;
@@ -122,12 +122,8 @@ lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
     if (h == NULL) {
         return LT_PARAM_ERR;
     }
-    if (s_qkd_wiped != 0U) {
-        s_qkd_wiped = 0U;
-        return LT_OK;
-    }
 
-    /* Chip has no bulk erase; one erase per slot, once per new fill. */
+    /* Chip has no bulk erase; one erase per slot. */
     for (slot = SE_TROPIC_QKD_SLOT_BASE; slot <= SE_TROPIC_QKD_SLOT_LAST; slot++) {
         ret = lt_r_mem_data_erase(h, slot);
         if (ret != LT_OK) {
@@ -136,6 +132,19 @@ lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
     }
 
     return LT_OK;
+}
+
+lt_ret_t se_tropic_qkd_provision_begin(lt_handle_t *h)
+{
+    if (h == NULL) {
+        return LT_PARAM_ERR;
+    }
+    if (s_qkd_wiped != 0U) {
+        s_qkd_wiped = 0U;
+        return LT_OK;
+    }
+
+    return se_tropic_qkd_wipe_slots(h);
 }
 
 lt_ret_t se_tropic_qkd_arm_halves(lt_handle_t *h, uint8_t decrypt_half)
@@ -434,23 +443,6 @@ lt_ret_t se_tropic_kem_ct_read(lt_handle_t *h, uint8_t ct[SE_TROPIC_KEM_CT_LEN])
     return LT_OK;
 }
 
-static uint32_t rmem_slot_has_data(lt_handle_t *h, uint16_t slot)
-{
-    uint8_t probe[SE_TROPIC_RMEM_BLOB_MAX];
-    uint16_t got = 0U;
-    lt_ret_t ret;
-
-    ret = lt_r_mem_data_read(h, slot, probe, sizeof(probe), &got);
-    if (ret == LT_L3_R_MEM_DATA_READ_SLOT_EMPTY) {
-        return 0U;
-    }
-    if (ret == LT_OK) {
-        return (got > 0U) ? 1U : 0U;
-    }
-    /* Non-empty slot when the caller's buffer was too small. */
-    return 1U;
-}
-
 /** MCU NV cursor -> expected Tropic mcounter: the exhausted sentinel is CURSOR_END. */
 static uint32_t nv_cursor_raw(uint16_t cur)
 {
@@ -524,10 +516,6 @@ lt_ret_t se_tropic_qkd_store(lt_handle_t *h, uint16_t slot, const uint8_t *image
     }
     end = ((phys >= base_e) && (phys <= last_e)) ? &s_end_encrypt : &s_end_decrypt;
     if (phys != *end) {
-        return LT_FAIL;
-    }
-
-    if (rmem_slot_has_data(h, phys) != 0U) {
         return LT_FAIL;
     }
 

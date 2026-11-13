@@ -22,6 +22,12 @@ typedef void          VOID;
 #define UX_STATE_EXIT   2u
 #define UX_STATE_ERROR  3u
 
+/* Standalone USBX runs deferred controller work here. The PTY has none. */
+static inline UINT ux_system_tasks_run(void)
+{
+    return UX_SUCCESS;
+}
+
 #ifdef __cplusplus
 }
 #endif

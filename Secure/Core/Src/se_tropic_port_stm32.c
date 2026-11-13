@@ -49,7 +49,7 @@ uint32_t se_tropic_port_attach(lt_handle_t *h)
     (void)memset(&s_lt_crypto, 0, sizeof(s_lt_crypto));
 
     s_lt_dev.spi_instance = SPI1;
-    s_lt_dev.baudrate_prescaler = SPI_BAUDRATEPRESCALER_32;
+    s_lt_dev.baudrate_prescaler = SPI_BAUDRATEPRESCALER_8;
     s_lt_dev.spi_cs_gpio_bank = CS_GPIO_Port;
     s_lt_dev.spi_cs_gpio_pin = CS_Pin;
     s_lt_dev.rng_handle = &hrng;

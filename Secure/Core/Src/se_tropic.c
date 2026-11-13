@@ -547,7 +547,6 @@ uint32_t se_tropic_pairing_load(uint8_t slot, const uint8_t priv[32], const uint
 
 uint32_t se_tropic_user_wipe(void)
 {
-    uint16_t slot;
     lt_ret_t ret;
 
     if (se_tropic_init_session() != SE_TROPIC_OK) {
@@ -555,8 +554,16 @@ uint32_t se_tropic_user_wipe(void)
     }
     /* No bulk erase: one L3 SPI round-trip per slot (same cost as PROVISION
      * wiping 0–509). MANAGE holds the TLS reply until this returns. */
-    for (slot = 0U; slot <= (uint16_t)TR01_R_MEM_DATA_SLOT_MAX; slot++) {
-        (void)lt_r_mem_data_erase(&s_lt, slot);
+    ret = se_tropic_qkd_wipe_slots(&s_lt);
+    if (ret == LT_OK) {
+        ret = lt_r_mem_data_erase(&s_lt, SE_TROPIC_MLKEM_SEED_SLOT);
+    }
+    if (ret == LT_OK) {
+        ret = lt_r_mem_data_erase(&s_lt, SE_TROPIC_PIN_NVM_SLOT);
+    }
+    if (ret != LT_OK) {
+        se_tropic_die = (int)ret;
+        return SE_TROPIC_ERR;
     }
     /* End (write) cursors back to 0 pads; NV ends are zeroed by the NV clear. */
     ret = se_tropic_qkd_ends_reset(&s_lt);
